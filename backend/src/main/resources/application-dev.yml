@@ -1,0 +1,10 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/chatplatform
+    username: chatplatform
+    password: chatplatform
+
+logging:
+  level:
+    com.chatplatform: DEBUG
+    org.springframework.jdbc: DEBUG

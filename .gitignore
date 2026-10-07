@@ -1,0 +1,23 @@
+# Compiled class files
+backend/build/
+backend/.gradle/
+
+# Gradle caches
+.gradle/
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+*.DS_Store
+
+# Environment files (never commit secrets)
+.env
+.env.local
+*.env
+
+# OS files
+Thumbs.db
+
+# Agents files
+.agent/

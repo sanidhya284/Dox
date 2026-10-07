@@ -1,0 +1,76 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.3.4'
+    id 'io.spring.dependency-management' version '1.1.6'
+}
+
+group = 'com.chatplatform'
+version = '0.1.0-SNAPSHOT'
+
+// ── Java Source/Target Compatibility ────────────────────────────────────────
+// We target Java 21 (LTS) bytecode for maximum runtime compatibility.
+// The build uses whatever JDK is installed locally (23 on dev machines).
+// CI installs JDK 21 explicitly via actions/setup-java.
+//
+// NOTE: If you later add a toolchain resolver plugin (e.g. Foojay), you can
+// revert this to a toolchain block and Gradle will auto-download JDK 21.
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // ── Spring Web (REST) ──────────────────────────────────────────────────
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+
+    // ── Database: Spring JDBC ──────────────────────────────────────────────
+    // JdbcClient (Spring 6.1+) gives a fluent, type-safe API over plain JDBC.
+    // We deliberately avoid Hibernate/JPA to keep query behaviour explicit and
+    // predictable — critical for a messaging system that will need fine-grained
+    // query control in later milestones.
+    implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+
+    // ── Connection Pool: HikariCP ──────────────────────────────────────────
+    // spring-boot-starter-jdbc pulls HikariCP transitively; listed here
+    // explicitly so the dependency is visible and intentional.
+    implementation 'com.zaxxer:HikariCP'
+
+    // ── PostgreSQL JDBC Driver ─────────────────────────────────────────────
+    runtimeOnly 'org.postgresql:postgresql'
+
+    // ── Database Migrations: Flyway ────────────────────────────────────────
+    implementation 'org.flywaydb:flyway-core'
+    // Flyway's PostgreSQL-specific support module (required for Flyway 10+)
+    runtimeOnly 'org.flywaydb:flyway-database-postgresql'
+
+    // ── Observability: Spring Boot Actuator ───────────────────────────────
+    // Exposes /actuator/health and other management endpoints out of the box.
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+
+    // ── Testing ────────────────────────────────────────────────────────────
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+
+    // H2 in-memory DB for unit/context tests (no PostgreSQL needed in CI).
+    // Integration tests use Testcontainers with a real PostgreSQL container.
+    testRuntimeOnly 'com.h2database:h2'
+
+    // Testcontainers — wired now so integration tests can use a real
+    // PostgreSQL container in later milestones without changing the build.
+    testImplementation 'org.testcontainers:junit-jupiter'
+    testImplementation 'org.testcontainers:postgresql'
+}
+
+dependencyManagement {
+    imports {
+        // Align Testcontainers BOM with Spring Boot's managed version
+        mavenBom "org.testcontainers:testcontainers-bom:1.20.1"
+    }
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}

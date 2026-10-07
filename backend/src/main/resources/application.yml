@@ -1,0 +1,60 @@
+spring:
+  application:
+    name: chatplatform-backend
+
+  datasource:
+    # ── Connection coordinates ─────────────────────────────────────────────
+    # All values come from environment variables so that the same image runs
+    # in local Docker, CI, and (eventually) production without code changes.
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/chatplatform}
+    username: ${DB_USER:chatplatform}
+    password: ${DB_PASSWORD:chatplatform}
+    driver-class-name: org.postgresql.Driver
+
+    # ── HikariCP connection pool ───────────────────────────────────────────
+    # APPLICATION THREADS ≠ DB CONNECTIONS — this is a critical distinction.
+    #
+    # Your web server (Tomcat) creates one thread per request (default 200).
+    # If every thread tried to hold a DB connection simultaneously you would
+    # exhaust the DB's max_connections instantly.
+    #
+    # HikariCP maintains a *bounded* pool of long-lived connections that
+    # threads borrow and return.  Threads that arrive when the pool is full
+    # wait up to connection-timeout ms before failing.
+    #
+    # Rule of thumb for a single-node backend with PostgreSQL:
+    #   pool_size = (core_count × 2) + effective_spindle_count
+    # We start conservatively at 10 — tune in production after profiling.
+    hikari:
+      pool-name: chatplatform-pool
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000     # ms — how long a thread waits for a connection
+      idle-timeout: 600000          # ms — how long an idle connection survives
+      max-lifetime: 1800000         # ms — hard cap on connection age (prevents stale sockets)
+      connection-test-query: SELECT 1
+
+  # ── Flyway ──────────────────────────────────────────────────────────────
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+
+# ── Actuator ──────────────────────────────────────────────────────────────
+# Expose health endpoint only.  We will expose more endpoints selectively
+# in later milestones (metrics, info) once we have something worth reporting.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: always
+
+# ── Logging ───────────────────────────────────────────────────────────────
+logging:
+  level:
+    root: INFO
+    com.chatplatform: DEBUG
+    org.flywaydb: INFO
