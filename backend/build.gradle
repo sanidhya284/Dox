@@ -26,6 +26,21 @@ repositories {
 dependencies {
     // ── Spring Web (REST) ──────────────────────────────────────────────────
     implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+
+    // ── Spring Security ────────────────────────────────────────────────────
+    // Provides: filter chain, BCryptPasswordEncoder, SecurityContext,
+    // @AuthenticationPrincipal, method-level @PreAuthorize.
+    implementation 'org.springframework.boot:spring-boot-starter-security'
+    testImplementation 'org.springframework.security:spring-security-test'
+
+    // ── JWT (JJWT) ────────────────────────────────────────────────────────
+    // jjwt-api: the public API (builder, parser)
+    // jjwt-impl: runtime implementation (not on compile classpath by design)
+    // jjwt-jackson: JSON serialisation for claims
+    implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
+    runtimeOnly   'io.jsonwebtoken:jjwt-impl:0.12.6'
+    runtimeOnly   'io.jsonwebtoken:jjwt-jackson:0.12.6'
 
     // ── Database: Spring JDBC ──────────────────────────────────────────────
     // JdbcClient (Spring 6.1+) gives a fluent, type-safe API over plain JDBC.
@@ -73,4 +88,21 @@ dependencyManagement {
 
 tasks.named('test') {
     useJUnitPlatform()
+    // Exclude Testcontainers tests from the default unit-test run.
+    // Integration tests require Docker and run separately via: ./gradlew integrationTest
+    exclude '**/integration/**'
+}
+
+// ── Integration tests (require Docker / Testcontainers) ───────────────────────
+// Run with: ./gradlew integrationTest
+// These tests are skipped in CI unless Docker is available.
+tasks.register('integrationTest', Test) {
+    useJUnitPlatform()
+    include '**/integration/**'
+    // Re-use the test classpath; no separate source set needed.
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    shouldRunAfter tasks.named('test')
+    description = 'Runs integration tests that require a running Docker daemon.'
+    group = 'verification'
 }
