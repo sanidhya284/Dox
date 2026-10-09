@@ -7,19 +7,21 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
+
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("integration")
-@Testcontainers
 public abstract class AbstractIntegrationTest {
 
-    @Container
     static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine")
             .withDatabaseName("chatplatform_test")
             .withUsername("test")
             .withPassword("test");
+
+    // Singleton container: started once per JVM, shared by all integration test classes, cleaned up by Testcontainers Ryuk at JVM exit. Do not use @Container here: it stops the container after each class while Spring caches the context.
+    static {
+        postgres.start();
+    }
 
     @DynamicPropertySource
     static void configureProperties(DynamicPropertyRegistry registry) {
