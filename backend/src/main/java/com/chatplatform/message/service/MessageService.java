@@ -84,6 +84,7 @@ public class MessageService {
     private MessageResponse toResponse(Message message) {
         return new MessageResponse(
                 message.id(),
+                message.conversationId(),
                 message.seq(),
                 message.senderId(),
                 message.clientMsgId(),
