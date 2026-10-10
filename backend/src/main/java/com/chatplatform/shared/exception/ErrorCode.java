@@ -20,8 +20,6 @@ public enum ErrorCode {
     TOKEN_INVALID(HttpStatus.UNAUTHORIZED, "Token is invalid, expired, or revoked"),
     NOT_AUTHENTICATED(HttpStatus.UNAUTHORIZED, "Authentication required"),
 
-    // 403
-    NOT_A_PARTICIPANT(HttpStatus.FORBIDDEN, "You are not a participant in this conversation"),
 
     // 404
     USER_NOT_FOUND(HttpStatus.NOT_FOUND, "User not found"),

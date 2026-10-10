@@ -361,6 +361,20 @@ class Phase1ReviewTest extends AbstractIntegrationTest {
         assertThat(res.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
+    @Test
+    void malformedUuidInPathReturns400() {
+        String s = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+        AuthResponse a = register("mal_uuid_" + s);
+
+        ResponseEntity<Object> res = restTemplate.exchange(
+                "/api/conversations/not-a-uuid",
+                HttpMethod.GET,
+                new HttpEntity<>(bearer(a.accessToken())),
+                Object.class
+        );
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
     // ── item 7: refresh-token rotation, replay, and concurrent refresh ────────
 
     @Test
