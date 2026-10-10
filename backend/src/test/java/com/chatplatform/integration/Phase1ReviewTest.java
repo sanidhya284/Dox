@@ -282,22 +282,83 @@ class Phase1ReviewTest extends AbstractIntegrationTest {
         );
         assertThat(getConv.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
 
-        // Outsider GET /api/conversations/{id}/messages → 403
+        // Outsider GET /api/conversations/{id}/messages → 404
         ResponseEntity<Object> getMsgs = restTemplate.exchange(
                 "/api/conversations/" + conv + "/messages",
                 HttpMethod.GET,
                 new HttpEntity<>(bearer(outsider.accessToken())),
                 Object.class
         );
-        assertThat(getMsgs.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(getMsgs.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
 
-        // Outsider POST /api/conversations/{id}/messages → 403
+        // Outsider POST /api/conversations/{id}/messages → 404
         ResponseEntity<Object> sendMsg = restTemplate.postForEntity(
                 "/api/conversations/" + conv + "/messages",
                 new HttpEntity<>(new SendMessageRequest(UUID.randomUUID(), "hack"), bearer(outsider.accessToken())),
                 Object.class
         );
-        assertThat(sendMsg.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(sendMsg.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void nonMemberSendPersistsNothing() {
+        String s = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+        AuthResponse a = register("nm_a_" + s);
+        AuthResponse b = register("nm_b_" + s);
+        AuthResponse outsider = register("nm_out_" + s);
+
+        UUID conv = createDm(a.accessToken(), b.user().id());
+
+        ResponseEntity<Object> sendMsg = restTemplate.postForEntity(
+                "/api/conversations/" + conv + "/messages",
+                new HttpEntity<>(new SendMessageRequest(UUID.randomUUID(), "hack"), bearer(outsider.accessToken())),
+                Object.class
+        );
+        assertThat(sendMsg.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+
+        // Check messages as a member
+        ResponseEntity<java.util.Map> getMsgs = restTemplate.exchange(
+                "/api/conversations/" + conv + "/messages",
+                HttpMethod.GET,
+                new HttpEntity<>(bearer(a.accessToken())),
+                java.util.Map.class
+        );
+        assertThat(getMsgs.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat((java.util.List<?>) getMsgs.getBody().get("messages")).isEmpty();
+
+        // Send a legitimate message
+        MessageResponse firstLegit = sendMessage(a.accessToken(), conv, UUID.randomUUID(), "hello");
+        assertThat(firstLegit.seq()).isEqualTo(1);
+    }
+
+    @Test
+    void unknownRouteReturns404() {
+        String s = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+        AuthResponse a = register("unk_" + s);
+
+        ResponseEntity<Object> res = restTemplate.exchange(
+                "/api/does-not-exist",
+                HttpMethod.GET,
+                new HttpEntity<>(bearer(a.accessToken())),
+                Object.class
+        );
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void malformedJsonReturns400() {
+        String s = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+        AuthResponse a = register("mal_" + s);
+
+        HttpHeaders h = bearer(a.accessToken());
+        h.set(HttpHeaders.CONTENT_TYPE, "application/json");
+
+        ResponseEntity<Object> res = restTemplate.postForEntity(
+                "/api/conversations/direct",
+                new HttpEntity<>("{bad json", h),
+                Object.class
+        );
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
     // ── item 7: refresh-token rotation, replay, and concurrent refresh ────────
