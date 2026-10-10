@@ -65,7 +65,7 @@ public class AuthService {
         return tokenService.generateTokenPair(user.id());
     }
     
-    @Transactional
+    @Transactional(noRollbackFor = ApiException.class)
     public TokenPair refresh(String refreshToken) {
         return tokenService.refreshTokens(refreshToken);
     }

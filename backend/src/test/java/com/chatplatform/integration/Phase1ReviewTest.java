@@ -309,16 +309,31 @@ class Phase1ReviewTest extends AbstractIntegrationTest {
 
         long successes = 0;
         long failures = 0;
+        ResponseEntity<Object> successfulResponse = null;
+
         for (CompletableFuture<ResponseEntity<Object>> f : futures) {
             ResponseEntity<Object> r = f.get();
-            if (r.getStatusCode() == HttpStatus.OK) successes++;
+            if (r.getStatusCode() == HttpStatus.OK) {
+                successes++;
+                successfulResponse = r;
+            }
             else if (r.getStatusCode() == HttpStatus.UNAUTHORIZED) failures++;
         }
 
-        // Exactly one request should have succeeded (one token can only be used once)
-        // OR the theft-detection kicked in and ALL were rejected after the first.
-        // Either way: successes <= 1 and successes + failures == threadCount.
-        assertThat(successes).isLessThanOrEqualTo(1);
-        assertThat(successes + failures).isEqualTo(threadCount);
+        // Exactly 1 response is 200 and exactly 4 are 401
+        assertThat(successes).isEqualTo(1);
+        assertThat(failures).isEqualTo(4);
+
+        // Then take the refresh token from the 200 response and use it
+        java.util.Map<String, String> body = (java.util.Map<String, String>) successfulResponse.getBody();
+        String newRefreshToken = body.get("refreshToken");
+        
+        ResponseEntity<Object> subsequentRefresh = restTemplate.postForEntity(
+                "/api/auth/refresh",
+                new com.chatplatform.auth.dto.RefreshRequest(newRefreshToken),
+                Object.class
+        );
+        // It must return 401 (the family was revoked by the losing attempts)
+        assertThat(subsequentRefresh.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
 }

@@ -62,4 +62,16 @@ public class RefreshTokenRepository {
                 .param("familyId", familyId)
                 .update();
     }
+
+    public Optional<RefreshToken> revokeIfActive(String tokenHash) {
+        return jdbcClient.sql("""
+                UPDATE refresh_tokens SET revoked_at = :now
+                WHERE token_hash = :tokenHash AND revoked_at IS NULL AND expires_at > :now
+                RETURNING *
+                """)
+                .param("now", OffsetDateTime.ofInstant(Instant.now(), ZoneOffset.UTC))
+                .param("tokenHash", tokenHash)
+                .query(MAPPER)
+                .optional();
+    }
 }
