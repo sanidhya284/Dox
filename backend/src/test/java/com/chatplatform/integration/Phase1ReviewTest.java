@@ -216,6 +216,23 @@ class Phase1ReviewTest extends AbstractIntegrationTest {
     // ── item 6: authorization on every endpoint ───────────────────────────────
 
     @Test
+    void actuatorHealthIsPublicButHidesDetails() {
+        ResponseEntity<String> res = restTemplate.getForEntity("/actuator/health", String.class);
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.OK);
+        String body = res.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body).doesNotContain("components");
+        assertThat(body).doesNotContain("details");
+        assertThat(body).doesNotContain("db");
+    }
+
+    @Test
+    void actuatorNonHealthEndpointsRequireAuth() {
+        ResponseEntity<String> res = restTemplate.getForEntity("/actuator/env", String.class);
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
     void unauthenticatedRequestsToProtectedEndpointsReturn401() {
         UUID randomId = UUID.randomUUID();
 
