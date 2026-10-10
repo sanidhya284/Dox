@@ -79,7 +79,7 @@ class Phase1ReviewTest extends AbstractIntegrationTest {
     // ── item 3: client_msg_id scoping ────────────────────────────────────────
 
     @Test
-    void sameClientMsgIdInDifferentConversationProducesSeparateMessages() {
+    void sameClientMsgIdInDifferentConversationIsRejectedWith409() {
         String s = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
         AuthResponse a = register("a3_" + s);
         AuthResponse b = register("b3_" + s);
@@ -88,21 +88,23 @@ class Phase1ReviewTest extends AbstractIntegrationTest {
         UUID convAB = createDm(a.accessToken(), b.user().id());
         UUID convAC = createDm(a.accessToken(), c.user().id());
 
-        // Same sender, same clientMsgId, two different conversations
         UUID sharedClientMsgId = UUID.randomUUID();
 
+        // First send succeeds
         MessageResponse msgAB = sendMessage(a.accessToken(), convAB, sharedClientMsgId, "message in AB");
-        MessageResponse msgAC = sendMessage(a.accessToken(), convAC, sharedClientMsgId, "message in AC");
 
-        // Must be different persisted messages (different DB rows)
-        assertThat(msgAB.id()).isNotEqualTo(msgAC.id());
-        // Each conversation's seq must be independent
-        assertThat(msgAB.conversationId()).isEqualTo(convAB);
-        assertThat(msgAC.conversationId()).isEqualTo(convAC);
+        // Second send with same clientMsgId to a DIFFERENT conversation fails with 409
+        SendMessageRequest req = new SendMessageRequest(sharedClientMsgId, "message in AC");
+        ResponseEntity<Object> res = restTemplate.postForEntity(
+                "/api/conversations/" + convAC + "/messages",
+                new HttpEntity<>(req, bearer(a.accessToken())),
+                Object.class
+        );
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
     }
 
     @Test
-    void sameClientMsgIdWithDifferentBodyReturnsSamePersistedMessage() {
+    void sameClientMsgIdWithDifferentBodyIsRejectedWith409() {
         String s = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
         AuthResponse a = register("a3b_" + s);
         AuthResponse b = register("b3b_" + s);
@@ -112,12 +114,33 @@ class Phase1ReviewTest extends AbstractIntegrationTest {
 
         // First send
         MessageResponse first = sendMessage(a.accessToken(), conv, clientMsgId, "original body");
-        // Retry with a different body — idempotency must return the FIRST message unchanged
-        MessageResponse retry = sendMessage(a.accessToken(), conv, clientMsgId, "different body");
+        
+        // Retry with a different body -> HTTP 409
+        SendMessageRequest req = new SendMessageRequest(clientMsgId, "different body");
+        ResponseEntity<Object> res = restTemplate.postForEntity(
+                "/api/conversations/" + conv + "/messages",
+                new HttpEntity<>(req, bearer(a.accessToken())),
+                Object.class
+        );
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+    }
+
+    @Test
+    void sameClientMsgIdWithSameBodyReturnsSamePersistedMessage() {
+        String s = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+        AuthResponse a = register("a3c_" + s);
+        AuthResponse b = register("b3c_" + s);
+        UUID conv = createDm(a.accessToken(), b.user().id());
+
+        UUID clientMsgId = UUID.randomUUID();
+
+        // First send
+        MessageResponse first = sendMessage(a.accessToken(), conv, clientMsgId, "original body");
+        // Retry with SAME body
+        MessageResponse retry = sendMessage(a.accessToken(), conv, clientMsgId, "original body");
 
         assertThat(retry.id()).isEqualTo(first.id());
         assertThat(retry.seq()).isEqualTo(first.seq());
-        assertThat(retry.body()).isEqualTo("original body"); // original body wins
     }
 
     // ── item 4: transactional group creation and concurrent DM dedup ─────────

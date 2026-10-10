@@ -67,6 +67,13 @@ public class ConversationRepository {
                 .optional();
     }
 
+    public void lockForUpdate(UUID id) {
+        jdbcClient.sql("SELECT id FROM conversations WHERE id = :id FOR UPDATE")
+                .param("id", id)
+                .query(UUID.class)
+                .optional();
+    }
+
     public long incrementAndGetLastSeq(UUID conversationId) {
         return jdbcClient.sql("""
                 UPDATE conversations

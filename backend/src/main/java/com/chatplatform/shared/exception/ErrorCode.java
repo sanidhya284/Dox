@@ -28,6 +28,7 @@ public enum ErrorCode {
     CONVERSATION_NOT_FOUND(HttpStatus.NOT_FOUND, "Conversation does not exist or is inaccessible"),
 
     // 409
+    IDEMPOTENCY_KEY_CONFLICT(HttpStatus.CONFLICT, "client_msg_id was already used for a different message"),
     USERNAME_TAKEN(HttpStatus.CONFLICT, "Username is already taken"),
     EMAIL_TAKEN(HttpStatus.CONFLICT, "Email is already registered");
 

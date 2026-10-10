@@ -13,6 +13,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import com.chatplatform.shared.exception.ApiException;
+import com.chatplatform.shared.exception.ErrorCode;
 
 @Service
 public class MessageService {
@@ -31,29 +33,34 @@ public class MessageService {
 
     @Transactional
     public MessageResponse sendMessage(UUID conversationId, UUID senderId, SendMessageRequest request) {
-        // IDOR check
+        // 1. requireParticipant (unchanged)
         conversationService.requireParticipant(conversationId, senderId);
 
-        // Fast path idempotency check
+        // 2. lockForUpdate
+        conversationRepository.lockForUpdate(conversationId);
+
+        // 3. findByClientMsgId check
         Optional<Message> existing = messageRepository.findByClientMsgId(senderId, request.clientMsgId());
         if (existing.isPresent()) {
-            return toResponse(existing.get());
+            Message existingMsg = existing.get();
+            if (existingMsg.conversationId().equals(conversationId) && existingMsg.body().equals(request.body())) {
+                return toResponse(existingMsg);
+            } else {
+                throw new ApiException(ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
+            }
         }
 
-        // Allocate sequence number (acquires row lock on conversation)
+        // 4. incrementAndGetLastSeq, then insert
         long seq = conversationRepository.incrementAndGetLastSeq(conversationId);
 
-        // Insert message
         Optional<Message> inserted = messageRepository.insert(
                 conversationId, seq, senderId, request.clientMsgId(), request.body());
         
+        // 5. If the insert returns empty, throw ApiException
         if (inserted.isPresent()) {
             return toResponse(inserted.get());
         } else {
-            // ON CONFLICT DO NOTHING returned 0 rows. A concurrent retry beat us.
-            Message concurrentExisting = messageRepository.findByClientMsgId(senderId, request.clientMsgId())
-                    .orElseThrow(() -> new IllegalStateException("Message should exist after conflict"));
-            return toResponse(concurrentExisting);
+            throw new ApiException(ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
         }
     }
 
