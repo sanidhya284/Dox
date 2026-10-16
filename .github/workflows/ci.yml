@@ -5,10 +5,12 @@ on:
     branches: [ "main", "develop" ]
     paths:
       - "backend/**"
+      - ".github/workflows/**"
   pull_request:
     branches: [ "main", "develop" ]
     paths:
       - "backend/**"
+      - ".github/workflows/**"
 
 # Cancel superseded runs on the same branch to save CI minutes.
 concurrency:
@@ -19,10 +21,10 @@ jobs:
   build-and-test:
     name: Build & Test (Java 21)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
-    # The backend tests use H2 for unit/context tests, so PostgreSQL is NOT
-    # needed here. When we introduce Testcontainers integration tests in
-    # Milestone 1, Docker is already available on ubuntu-latest runners.
+    # Unit tests use H2. Integration tests use Testcontainers (real PostgreSQL)
+    # and need Docker, which ubuntu-latest provides.
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -52,8 +54,12 @@ jobs:
         run: ./gradlew classes testClasses --no-daemon
         working-directory: backend
 
-      - name: Run tests
+      - name: Unit tests
         run: ./gradlew test --no-daemon
+        working-directory: backend
+
+      - name: Integration tests (Testcontainers + PostgreSQL)
+        run: ./gradlew integrationTest --no-daemon
         working-directory: backend
 
       - name: Upload test reports
