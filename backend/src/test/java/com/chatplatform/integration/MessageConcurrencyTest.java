@@ -14,7 +14,6 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -57,19 +56,22 @@ class MessageConcurrencyTest extends AbstractIntegrationTest {
 
     @Test
     void test100ConcurrentSends() {
+        HttpHeaders headersA = new HttpHeaders();
+        headersA.setBearerAuth(tokenA);
+        CreateDirectRequest dmReq = new CreateDirectRequest(userBId);
+        ResponseEntity<ConversationResponse> dmRes = restTemplate.postForEntity("/api/conversations/direct", new HttpEntity<>(dmReq, headersA), ConversationResponse.class);
+        UUID freshConvId = dmRes.getBody().id();
+
         int threadCount = 100;
         ExecutorService executor = Executors.newFixedThreadPool(threadCount);
         List<CompletableFuture<ResponseEntity<MessageResponse>>> futures = new ArrayList<>();
-
-        HttpHeaders headersA = new HttpHeaders();
-        headersA.setBearerAuth(tokenA);
 
         for (int i = 0; i < threadCount; i++) {
             final int index = i;
             CompletableFuture<ResponseEntity<MessageResponse>> future = CompletableFuture.supplyAsync(() -> {
                 SendMessageRequest req = new SendMessageRequest(UUID.randomUUID(), "Concurrent msg " + index);
                 return restTemplate.postForEntity(
-                        "/api/conversations/" + conversationId + "/messages",
+                        "/api/conversations/" + freshConvId + "/messages",
                         new HttpEntity<>(req, headersA),
                         MessageResponse.class
                 );
@@ -82,6 +84,8 @@ class MessageConcurrencyTest extends AbstractIntegrationTest {
 
         Set<Long> seqs = ConcurrentHashMap.newKeySet();
         List<MessageResponse> responses = new ArrayList<>();
+        long min = Long.MAX_VALUE;
+        long max = Long.MIN_VALUE;
 
         for (var f : futures) {
             ResponseEntity<MessageResponse> responseEntity = f.join();
@@ -90,27 +94,25 @@ class MessageConcurrencyTest extends AbstractIntegrationTest {
             assertThat(msg).isNotNull();
             seqs.add(msg.seq());
             responses.add(msg);
+            if (msg.seq() < min) min = msg.seq();
+            if (msg.seq() > max) max = msg.seq();
         }
 
-        // Assert no gaps, no duplicates
         assertThat(seqs).hasSize(threadCount);
-        
-        long maxSeq = Collections.max(seqs);
-        long minSeq = Collections.min(seqs);
-        
-        // Since other tests might have run, the minSeq might not be 1.
-        // But the range (max - min + 1) must equal threadCount.
-        assertThat(maxSeq - minSeq + 1).isEqualTo((long) threadCount);
+        assertThat(max - min + 1).isEqualTo(threadCount);
     }
 
     @Test
     void testIdempotencyUnderFire() {
+        HttpHeaders headersA = new HttpHeaders();
+        headersA.setBearerAuth(tokenA);
+        CreateDirectRequest dmReq = new CreateDirectRequest(userBId);
+        ResponseEntity<ConversationResponse> dmRes = restTemplate.postForEntity("/api/conversations/direct", new HttpEntity<>(dmReq, headersA), ConversationResponse.class);
+        UUID freshConvId = dmRes.getBody().id();
+
         int threadCount = 10;
         ExecutorService executor = Executors.newFixedThreadPool(threadCount);
         List<CompletableFuture<ResponseEntity<MessageResponse>>> futures = new ArrayList<>();
-
-        HttpHeaders headersA = new HttpHeaders();
-        headersA.setBearerAuth(tokenA);
 
         // Same client msg ID for all requests
         UUID clientMsgId = UUID.randomUUID();
@@ -119,7 +121,7 @@ class MessageConcurrencyTest extends AbstractIntegrationTest {
             CompletableFuture<ResponseEntity<MessageResponse>> future = CompletableFuture.supplyAsync(() -> {
                 SendMessageRequest req = new SendMessageRequest(clientMsgId, "Idempotent msg");
                 return restTemplate.postForEntity(
-                        "/api/conversations/" + conversationId + "/messages",
+                        "/api/conversations/" + freshConvId + "/messages",
                         new HttpEntity<>(req, headersA),
                         MessageResponse.class
                 );
@@ -146,5 +148,59 @@ class MessageConcurrencyTest extends AbstractIntegrationTest {
                 assertThat(msg.id()).isEqualTo(assignedId);
             }
         }
+    }
+
+    @Test
+    void duplicateConcurrentSendsLeaveNoSequenceGap() {
+        HttpHeaders headersA = new HttpHeaders();
+        headersA.setBearerAuth(tokenA);
+        CreateDirectRequest dmReq = new CreateDirectRequest(userBId);
+        ResponseEntity<ConversationResponse> dmRes = restTemplate.postForEntity("/api/conversations/direct", new HttpEntity<>(dmReq, headersA), ConversationResponse.class);
+        UUID freshConvId = dmRes.getBody().id();
+
+        int threadCount = 20;
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        List<CompletableFuture<ResponseEntity<MessageResponse>>> futures = new ArrayList<>();
+        UUID clientMsgId = UUID.randomUUID();
+
+        for (int i = 0; i < threadCount; i++) {
+            CompletableFuture<ResponseEntity<MessageResponse>> future = CompletableFuture.supplyAsync(() -> {
+                SendMessageRequest req = new SendMessageRequest(clientMsgId, "Concurrent duplicate body");
+                return restTemplate.postForEntity(
+                        "/api/conversations/" + freshConvId + "/messages",
+                        new HttpEntity<>(req, headersA),
+                        MessageResponse.class
+                );
+            }, executor);
+            futures.add(future);
+        }
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+        long firstSeq = -1;
+        UUID firstId = null;
+        for (var f : futures) {
+            ResponseEntity<MessageResponse> responseEntity = f.join();
+            assertThat(responseEntity.getStatusCode().is2xxSuccessful()).isTrue();
+            MessageResponse msg = responseEntity.getBody();
+            if (firstSeq == -1) {
+                firstSeq = msg.seq();
+                firstId = msg.id();
+            } else {
+                assertThat(msg.id()).isEqualTo(firstId);
+                assertThat(msg.seq()).isEqualTo(firstSeq);
+            }
+        }
+
+        // Now send 1 further distinct message
+        SendMessageRequest nextReq = new SendMessageRequest(UUID.randomUUID(), "Next distinct message");
+        ResponseEntity<MessageResponse> nextRes = restTemplate.postForEntity(
+                "/api/conversations/" + freshConvId + "/messages",
+                new HttpEntity<>(nextReq, headersA),
+                MessageResponse.class
+        );
+        assertThat(nextRes.getStatusCode().is2xxSuccessful()).isTrue();
+        
+        long nextSeq = nextRes.getBody().seq();
+        assertThat(nextSeq).isEqualTo(firstSeq + 1);
     }
 }

@@ -1,7 +1,7 @@
 # Architecture — Phase 1: REST Core
 
 > Status: **Phase 1 — REST Core (complete)**
-> Last updated: 2026-10-08
+> Last updated: 2026-10-17
 
 ---
 
@@ -109,23 +109,23 @@ Runs before every request. Extracts `Authorization: Bearer <token>`, validates t
 ### SecurityConfig
 - CSRF disabled (stateless API — no sessions, no cookies).
 - Session management: `STATELESS` — Spring never creates an `HttpSession`.
-- Public routes: `/api/auth/**`, `/actuator/**`.
-- All other routes require a valid JWT.
+- Public routes: `/api/auth/**`, `/actuator/health` and `/actuator/health/**` only.
+- All other routes require a valid JWT. Unauthenticated requests get a bare `401` (HttpStatusEntryPoint).
 - BCrypt cost factor 12 (≈ 300 ms per hash on modern hardware).
 
 ### AuthService / TokenService
 - Registration: BCrypt hash → INSERT user → issue token pair.
 - Login: lookup by username (citext — case-insensitive) → BCrypt verify → issue token pair.
-- Refresh: SHA-256(rawToken) lookup → revoke old → issue new in same family.
-- Theft detection: if a revoked token is presented, the entire `family_id` is revoked (see ADR-0003).
+- Refresh: SHA-256(rawToken), then one atomic conditional `UPDATE ... WHERE revoked_at IS NULL AND expires_at > now RETURNING *` claims the token. Only the winner issues a new token in the same family; concurrent losers see a revoked token and trigger family revocation.
+- Theft detection: if a revoked token is presented, the entire `family_id` is revoked (see ADR-0003). The revocation is committed even though the request returns 401 (`@Transactional(noRollbackFor = ApiException.class)`).
 
 ### ConversationService
 - DM uniqueness enforced by `direct_key = min(uid1,uid2) + ":" + max(uid1,uid2)` with a DB `UNIQUE` constraint.
-- IDOR protection: inaccessible conversations return `404`, not `403` (see ADR-0002).
+- IDOR protection: inaccessible conversations return `404`, not `403`, on every conversation and message endpoint (see ADR-0003, Decision 4).
 
 ### MessageService
-- Sequence allocation: `UPDATE conversations SET last_seq = last_seq + 1 RETURNING last_seq`. The row-level lock serialises concurrent senders. `MAX(seq)+1` is unsafe under concurrency (see ADR-0002).
-- Idempotency: `client_msg_id` is client-generated. `UNIQUE(sender_id, client_msg_id)` on the messages table is the correctness mechanism. `ON CONFLICT DO NOTHING RETURNING *` handles concurrent duplicates without application-level locking.
+- Send order inside one transaction: membership check, `SELECT ... FOR UPDATE` on the conversation row, idempotency lookup, then `UPDATE conversations SET last_seq = last_seq + 1 RETURNING last_seq`, then insert. The row lock serialises concurrent senders; because the idempotency check happens before the increment, duplicates never burn a sequence number. `MAX(seq)+1` is unsafe under concurrency (see ADR-0002).
+- Idempotency: `client_msg_id` is client-generated. A retry with the same conversation and body returns the original message. Reusing the key in another conversation or with a different body returns `409 IDEMPOTENCY_KEY_CONFLICT`. `UNIQUE(sender_id, client_msg_id)` stays as the database backstop; if an insert still conflicts, the request returns 409 rather than another message.
 - Pagination: keyset (`WHERE seq < :cursor ORDER BY seq DESC LIMIT :n`) — O(LIMIT) cost regardless of conversation size.
 
 ### HikariCP
@@ -150,17 +150,17 @@ Runs before every request. Extracts `Authorization: Bearer <token>`, validates t
 
 ## Configuration
 
-All environment-specific configuration is externalised via environment variables (12-Factor App, factor III):
+All environment-specific configuration comes from environment variables.
 
-| Variable | Default (dev) | Purpose |
+| Variable | Default | Purpose |
 |---|---|---|
 | `DB_URL` | `jdbc:postgresql://localhost:5432/chatplatform` | JDBC connection string |
 | `DB_USER` | `chatplatform` | PostgreSQL username |
 | `DB_PASSWORD` | `chatplatform` | PostgreSQL password |
-| `JWT_SECRET` | (insecure dev default — **must** be overridden in production) | HMAC-SHA256 signing key for JWTs. Must be ≥ 32 bytes. |
-| `SPRING_PROFILES_ACTIVE` | (not set) | Set to `dev` for verbose SQL logging |
+| `JWT_SECRET` | none (required) | HMAC-SHA256 signing key, at least 32 bytes. The app refuses to start if it is missing, blank, shorter than 32 bytes, or the old built-in default. |
+| `SPRING_PROFILES_ACTIVE` | not set | Set to `dev` for local development: loads a dev-only JWT secret and verbose SQL logging. Never use `dev` in production. |
 
-> ⚠️ **Production requirement:** `JWT_SECRET` must be set to a cryptographically random string of at least 32 bytes. The dev default is intentionally weak and will cause JJWT to warn if used.
+Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `JWT_SECRET` to a cryptographically random value.
 
 ---
 
@@ -168,146 +168,50 @@ All environment-specific configuration is externalised via environment variables
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/api/auth/register` | ❌ | Register; returns user + token pair |
-| POST | `/api/auth/login` | ❌ | Login; returns token pair |
-| POST | `/api/auth/refresh` | ❌ | Rotate refresh token |
-| POST | `/api/auth/logout` | ❌ | Revoke refresh token |
-| POST | `/api/conversations/direct` | ✅ | Create or get direct conversation |
-| POST | `/api/conversations/group` | ✅ | Create group conversation |
-| GET  | `/api/conversations` | ✅ | List user's conversations |
-| GET  | `/api/conversations/{id}` | ✅ | Get one conversation |
-| POST | `/api/conversations/{id}/messages` | ✅ | Send message (idempotent) |
-| GET  | `/api/conversations/{id}/messages` | ✅ | Paginate messages (keyset) |
-| GET  | `/actuator/health` | ❌ | Health check |
+| POST | `/api/auth/register` | no | Register; returns user + token pair |
+| POST | `/api/auth/login` | no | Login; returns token pair |
+| POST | `/api/auth/refresh` | no | Rotate refresh token |
+| POST | `/api/auth/logout` | no | Revoke refresh token |
+| POST | `/api/conversations/direct` | yes | Create or get direct conversation |
+| POST | `/api/conversations/group` | yes | Create group conversation |
+| GET | `/api/conversations` | yes | List user's conversations |
+| GET | `/api/conversations/{id}` | yes | Get one conversation |
+| POST | `/api/conversations/{id}/messages` | yes | Send message (idempotent) |
+| GET | `/api/conversations/{id}/messages` | yes | Paginate messages (keyset) |
+| GET | `/actuator/health` | no | Health check (status only, no details) |
 
 ---
+
+## Behaviour Guarantees (each covered by an integration or unit test)
+
+- **Ordering:** each conversation's `seq` is allocated under a row lock on the conversation. Concurrent senders get unique, contiguous sequence numbers.
+- **Idempotency:** `(sender_id, client_msg_id)` is unique. A retry with the same conversation and body returns the original message. Reusing the key in another conversation or with a different body returns `409 IDEMPOTENCY_KEY_CONFLICT`. The conversation row is locked and the key checked BEFORE the sequence is incremented, so duplicates never create sequence gaps.
+- **Refresh tokens:** rotation is a single conditional `UPDATE ... WHERE revoked_at IS NULL ... RETURNING`, so concurrent use of one token yields exactly one success. Replaying a revoked token revokes the whole token family, and that revocation is committed even though the request returns 401 (`noRollbackFor = ApiException`).
+- **Authorization:** non-members get `404` on every conversation and message endpoint, and nothing is persisted. Unauthenticated requests get `401`.
+- **Transactions:** group creation (conversation plus participants) commits or rolls back as one unit; direct-conversation creation is deduplicated by a unique `direct_key`.
+- **Errors:** unknown routes return 404, malformed JSON or a malformed UUID returns 400, and unexpected errors return 500 without internals.
+- **Actuator:** only `/actuator/health` is public, and it shows no component details.
+- **Accounts:** usernames and emails are case-insensitive (`citext` column plus an explicit `CAST(... AS citext)` in queries, because a plain varchar parameter makes the comparison case-sensitive). Duplicates return `409 USERNAME_TAKEN` / `EMAIL_TAKEN`, including when two registrations race (the unique-constraint violation is translated to the same 409).
+- **History paging:** `limit` is clamped to 1..100 (default 50); the cursor is stable when new messages arrive.
+
+## Known Limitations
+
+- Strict theft detection: a client that submits the same refresh token twice (for example a double-click) is logged out. A short grace window could relax this later.
+- Browser refresh-token storage (HttpOnly cookie plus CSRF/Origin protection versus in-memory) is undecided; decide it in Phase 2 when the React client starts.
+- The 401 response from the security filter has an empty body; it is not yet in the standard error JSON format.
+- Integration tests need Docker. On a machine whose Docker Engine rejects old API versions, Testcontainers 1.20.1 may need a local `~/.docker-java.properties` containing `api.version=1.44`.
+- Unread counts include the sender's own messages, because nothing advances `last_read_seq` yet. Phase 2 (read cursors) owns this.
+- The 5,000-message test is a correctness check on one developer laptop, not a benchmark; no throughput claim is made until Phase 5.
 
 ## What Is Not Yet Implemented
 
 | Feature | Planned Phase |
 |---|---|
-| WebSocket for real-time delivery | Phase 2 |
-| Redis for presence / pub-sub | Phase 3 |
-| Kafka for durable event streaming | Phase 4 |
-| Horizontal scaling / load balancer | Phase 5 |
-| Kubernetes / container orchestration | Phase 5+ |
-
-
----
-
-## System Overview
-
-```
-┌─────────────────────────────────────────────┐
-│               React Frontend                │
-│  (placeholder — not yet implemented)        │
-│  Port: 3000 (planned)                       │
-└───────────────┬────────────────────────────-┘
-                │  HTTP/REST (JSON)
-                ▼
-┌─────────────────────────────────────────────┐
-│          Spring Boot Backend                │
-│  Java 21 · Spring Boot 3.3 · Gradle         │
-│  Port: 8080                                 │
-│                                             │
-│  ┌─────────────────────────────────────┐   │
-│  │  Spring Web (Tomcat embedded)       │   │
-│  │  REST Controllers (Phase 1+)        │   │
-│  └──────────────┬──────────────────────┘   │
-│                 │                           │
-│  ┌──────────────▼──────────────────────┐   │
-│  │  Service Layer (Phase 1+)           │   │
-│  └──────────────┬──────────────────────┘   │
-│                 │                           │
-│  ┌──────────────▼──────────────────────┐   │
-│  │  Repository Layer — JdbcClient      │   │
-│  │  (Spring JDBC, explicit SQL)        │   │
-│  └──────────────┬──────────────────────┘   │
-│                 │                           │
-│  ┌──────────────▼──────────────────────┐   │
-│  │  HikariCP Connection Pool           │   │
-│  │  max: 10 connections                │   │
-│  └──────────────┬──────────────────────┘   │
-└─────────────────┼───────────────────────────┘
-                  │  JDBC
-                  ▼
-┌─────────────────────────────────────────────┐
-│             PostgreSQL 16                   │
-│  Port: 5432 (Docker Compose locally)        │
-│  Migrations: Flyway                         │
-└─────────────────────────────────────────────┘
-```
-
----
-
-## Component Responsibilities
-
-### React Frontend (placeholder)
-- Not yet implemented.
-- Will communicate with the backend exclusively over HTTP REST (Phase 1).
-- WebSocket upgrade will be introduced in a later milestone.
-
-### Spring Boot Backend
-The backend is a **modular monolith** — a single deployable JAR that contains
-all application logic, organised into distinct Java packages that enforce
-module boundaries without the operational overhead of separate services.
-
-| Package | Responsibility |
-|---|---|
-| `com.chatplatform` | Application entry point and Spring configuration |
-| `com.chatplatform.health` | Custom Actuator health indicators |
-| `com.chatplatform.user` | (Phase 1) User domain |
-| `com.chatplatform.workspace` | (Phase 1) Workspace domain |
-| `com.chatplatform.channel` | (Phase 1) Channel domain |
-| `com.chatplatform.message` | (Phase 1) Message domain |
-
-Each future package will own its own controllers, services, and repository
-classes. No shared mutable state crosses package boundaries — cross-package
-calls go through service interfaces.
-
-### HikariCP
-- A bounded, reusable pool of JDBC connections.
-- Application threads (Tomcat default: 200) ≠ DB connections (pool max: 10).
-- A thread that needs the DB borrows a connection, runs its query, then returns it.
-- If all 10 connections are in use, arriving threads wait up to 30 s before failing.
-- This prevents the backend from overwhelming PostgreSQL's `max_connections`.
-
-### Flyway
-- Tracks and runs SQL migration files in `src/main/resources/db/migration/`.
-- Files must follow the naming convention: `V{version}__{description}.sql`
-- Flyway records which migrations have run in the `flyway_schema_history` table.
-- **Never modify a migration file after it has been applied** — Flyway will refuse to start.
-
-### Spring Boot Actuator
-- Exposes `GET /actuator/health` — returns JSON with the application's health status.
-- Currently reports: Spring's built-in datasource check + our custom `DatabaseHealthIndicator`.
-- Returns HTTP 200 (UP) or 503 (DOWN).
-
----
-
-## Configuration Strategy
-
-All environment-specific configuration is externalised via environment variables:
-
-| Variable | Default (dev) | Purpose |
-|---|---|---|
-| `DB_URL` | `jdbc:postgresql://localhost:5432/chatplatform` | JDBC connection string |
-| `DB_USER` | `chatplatform` | PostgreSQL username |
-| `DB_PASSWORD` | `chatplatform` | PostgreSQL password |
-| `SPRING_PROFILES_ACTIVE` | (not set) | Set to `dev` for verbose SQL logging |
-
-This follows the [12-Factor App](https://12factor.net/config) principle: **configuration lives in the environment, not in the code**.
-
----
-
-## What Is Not Yet Implemented
-
-| Feature | Planned Milestone |
-|---|---|
-| User accounts & authentication | Phase 1 |
-| Workspaces, channels, messages | Phase 1 |
-| WebSocket for real-time delivery | Phase 2 |
-| Redis for presence/pub-sub | Phase 3 |
-| Kafka for durable event streaming | Phase 4 |
-| Horizontal scaling / load balancer | Phase 5 |
-| Kubernetes / container orchestration | Phase 5+ |
+| WebSocket real-time delivery, presence, React UI | Phase 2 |
+| Client retries, sync cursors, reconnect recovery | Phase 3 |
+| Multiple instances and Redis pub/sub | Phase 4 |
+| Metrics, tracing, load tests | Phase 5 |
+| Transactional outbox and notifications | Phase 6 |
+| Collaborative editing (Yjs) | Phase 7 |
+| Kafka experiment (optional) | Phase 8 |
+| Production deployment | Phase 9 |

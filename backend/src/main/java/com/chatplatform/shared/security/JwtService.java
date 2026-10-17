@@ -20,9 +20,21 @@ import java.util.UUID;
 @Service
 public class JwtService {
 
+    private static final String REJECTED_LEGACY_DEFAULT = "default-secret-key-for-development-only-must-be-long-enough";
+
     private final SecretKey key;
 
-    public JwtService(@Value("${jwt.secret:default-secret-key-for-development-only-must-be-long-enough}") String secret) {
+    public JwtService(@Value("${jwt.secret:}") String secret) {
+        if (secret == null || secret.trim().isEmpty()) {
+            throw new IllegalStateException("jwt.secret is not set. Set the JWT_SECRET environment variable, or activate the 'dev' profile for local development.");
+        }
+        if (secret.equals(REJECTED_LEGACY_DEFAULT)) {
+            throw new IllegalStateException("JWT secret is the insecure development default. Set the JWT_SECRET environment variable before starting in production.");
+        }
+        if (secret.getBytes(StandardCharsets.UTF_8).length < 32) {
+            throw new IllegalStateException("jwt.secret must be at least 32 bytes long.");
+        }
+        
         this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
     }
 

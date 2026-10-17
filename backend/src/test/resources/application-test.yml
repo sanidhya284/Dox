@@ -11,3 +11,6 @@ spring:
     # Integration tests (Testcontainers) use the PostgreSQL container directly
     # and re-enable Flyway with the real driver.
     enabled: false
+
+jwt:
+  secret: "this-is-a-test-secret-key-that-is-at-least-40-bytes-long"

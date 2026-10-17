@@ -47,7 +47,13 @@ public class AuthService {
                 null
         );
 
-        User savedUser = userRepository.save(user);
+        User savedUser;
+        try {
+            savedUser = userRepository.save(user);
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            String m = String.valueOf(e.getMostSpecificCause().getMessage());
+            throw new ApiException(m.contains("uq_users_email") ? ErrorCode.EMAIL_TAKEN : ErrorCode.USERNAME_TAKEN);
+        }
         TokenPair tokenPair = tokenService.generateTokenPair(savedUser.id());
 
         return new AuthResponse(UserResponse.from(savedUser), tokenPair.accessToken(), tokenPair.refreshToken());
@@ -65,7 +71,7 @@ public class AuthService {
         return tokenService.generateTokenPair(user.id());
     }
     
-    @Transactional
+    @Transactional(noRollbackFor = ApiException.class)
     public TokenPair refresh(String refreshToken) {
         return tokenService.refreshTokens(refreshToken);
     }

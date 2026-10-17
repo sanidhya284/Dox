@@ -56,11 +56,38 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<ErrorResponse> handleAccess(AccessDeniedException ex) {
         // Spring Security throws this for any @PreAuthorize failure or filter-chain 403.
-        // We return a generic FORBIDDEN rather than the domain-specific NOT_A_PARTICIPANT
-        // because this handler catches all security-level denials, not just participation checks.
+        // We return a generic FORBIDDEN because this handler catches all security-level denials.
         return ResponseEntity
                 .status(HttpStatus.FORBIDDEN)
                 .body(buildError("FORBIDDEN", "You do not have permission to perform this action"));
+    }
+
+    @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ErrorResponse> handleTypeMismatch(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException ex) {
+        return ResponseEntity
+                .status(HttpStatus.BAD_REQUEST)
+                .body(buildError(ErrorCode.VALIDATION_ERROR.name(), "Invalid parameter"));
+    }
+
+    @ExceptionHandler(org.springframework.web.servlet.resource.NoResourceFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNotFound(org.springframework.web.servlet.resource.NoResourceFoundException ex) {
+        return ResponseEntity
+                .status(HttpStatus.NOT_FOUND)
+                .body(buildError("NOT_FOUND", ex.getMessage()));
+    }
+
+    @ExceptionHandler(org.springframework.web.HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ErrorResponse> handleMethodNotAllowed(org.springframework.web.HttpRequestMethodNotSupportedException ex) {
+        return ResponseEntity
+                .status(HttpStatus.METHOD_NOT_ALLOWED)
+                .body(buildError("METHOD_NOT_ALLOWED", ex.getMessage()));
+    }
+
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> handleMessageNotReadable(org.springframework.http.converter.HttpMessageNotReadableException ex) {
+        return ResponseEntity
+                .status(HttpStatus.BAD_REQUEST)
+                .body(buildError(ErrorCode.VALIDATION_ERROR.name(), "Malformed request body"));
     }
 
     @ExceptionHandler(Exception.class)

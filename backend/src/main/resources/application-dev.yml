@@ -8,3 +8,7 @@ logging:
   level:
     com.chatplatform: DEBUG
     org.springframework.jdbc: DEBUG
+
+jwt:
+  # LOCAL DEVELOPMENT ONLY. Never use in production.
+  secret: "local-dev-secret-key-that-is-at-least-40-bytes-long-12345"

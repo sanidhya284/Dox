@@ -5,6 +5,8 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -36,7 +38,7 @@ public class RefreshTokenRepository {
                 .param("userId", token.userId())
                 .param("tokenHash", token.tokenHash())
                 .param("familyId", token.familyId())
-                .param("expiresAt", token.expiresAt())
+                .param("expiresAt", token.expiresAt() == null ? null : OffsetDateTime.ofInstant(token.expiresAt(), ZoneOffset.UTC))
                 .update();
     }
 
@@ -49,15 +51,27 @@ public class RefreshTokenRepository {
 
     public void revoke(String tokenHash) {
         jdbcClient.sql("UPDATE refresh_tokens SET revoked_at = :now WHERE token_hash = :tokenHash")
-                .param("now", Instant.now())
+                .param("now", OffsetDateTime.ofInstant(Instant.now(), ZoneOffset.UTC))
                 .param("tokenHash", tokenHash)
                 .update();
     }
 
     public void revokeFamily(UUID familyId) {
         jdbcClient.sql("UPDATE refresh_tokens SET revoked_at = :now WHERE family_id = :familyId")
-                .param("now", Instant.now())
+                .param("now", OffsetDateTime.ofInstant(Instant.now(), ZoneOffset.UTC))
                 .param("familyId", familyId)
                 .update();
+    }
+
+    public Optional<RefreshToken> revokeIfActive(String tokenHash) {
+        return jdbcClient.sql("""
+                UPDATE refresh_tokens SET revoked_at = :now
+                WHERE token_hash = :tokenHash AND revoked_at IS NULL AND expires_at > :now
+                RETURNING *
+                """)
+                .param("now", OffsetDateTime.ofInstant(Instant.now(), ZoneOffset.UTC))
+                .param("tokenHash", tokenHash)
+                .query(MAPPER)
+                .optional();
     }
 }

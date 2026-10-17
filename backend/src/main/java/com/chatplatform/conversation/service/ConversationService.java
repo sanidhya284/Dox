@@ -109,7 +109,7 @@ public class ConversationService {
     
     public void requireParticipant(UUID conversationId, UUID userId) {
         if (!participantRepository.isParticipant(conversationId, userId)) {
-            throw new ApiException(ErrorCode.NOT_A_PARTICIPANT);
+            throw new ApiException(ErrorCode.CONVERSATION_NOT_FOUND);
         }
     }
     

@@ -20,14 +20,13 @@ public enum ErrorCode {
     TOKEN_INVALID(HttpStatus.UNAUTHORIZED, "Token is invalid, expired, or revoked"),
     NOT_AUTHENTICATED(HttpStatus.UNAUTHORIZED, "Authentication required"),
 
-    // 403
-    NOT_A_PARTICIPANT(HttpStatus.FORBIDDEN, "You are not a participant in this conversation"),
 
     // 404
     USER_NOT_FOUND(HttpStatus.NOT_FOUND, "User not found"),
     CONVERSATION_NOT_FOUND(HttpStatus.NOT_FOUND, "Conversation does not exist or is inaccessible"),
 
     // 409
+    IDEMPOTENCY_KEY_CONFLICT(HttpStatus.CONFLICT, "client_msg_id was already used for a different message"),
     USERNAME_TAKEN(HttpStatus.CONFLICT, "Username is already taken"),
     EMAIL_TAKEN(HttpStatus.CONFLICT, "Email is already registered");
 
