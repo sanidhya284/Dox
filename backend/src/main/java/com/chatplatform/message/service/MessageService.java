@@ -73,18 +73,13 @@ public class MessageService {
         // Clamp limit between 1 and 100
         int actualLimit = Math.max(1, Math.min(100, limit));
 
-        List<Message> messages = messageRepository.findMessages(conversationId, cursor, actualLimit);
-        
-        List<MessageResponse> responses = messages.stream().map(this::toResponse).toList();
-        
-        Long nextCursor = null;
-        boolean hasMore = false;
-        
-        if (responses.size() == actualLimit && !responses.isEmpty()) {
-            nextCursor = responses.getLast().seq();
-            hasMore = true;
-        }
-        
+        List<Message> fetched = messageRepository.findMessages(conversationId, cursor, actualLimit + 1);
+        boolean hasMore = fetched.size() > actualLimit;
+        List<Message> trimmed = hasMore ? fetched.subList(0, actualLimit) : fetched;
+
+        List<MessageResponse> responses = trimmed.stream().map(this::toResponse).toList();
+        Long nextCursor = hasMore ? responses.getLast().seq() : null;
+
         return new MessagePage(responses, nextCursor, hasMore);
     }
 

@@ -737,4 +737,73 @@ class Phase1CoverageTest extends AbstractIntegrationTest {
         assertThat(resNeg.getBody().messages()).hasSize(1);
         assertThat(resNeg.getBody().messages().get(0).seq()).isEqualTo(105L);
     }
+
+    @Test
+    void hasMoreIsFalseWhenLastPageIsExactlyFull() {
+        String s = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+        AuthResponse a = register("hm_a_" + s);
+        AuthResponse b = register("hm_b_" + s);
+
+        UUID dmId = createDm(a.accessToken(), b.user().id());
+        for (int i = 1; i <= 9; i++) {
+            sendMessage(a.accessToken(), dmId, UUID.randomUUID(), "msg " + i);
+        }
+
+        // Page 1: limit=3 -> [9, 8, 7], hasMore true, cursor 7
+        ResponseEntity<MessagePage> p1 = restTemplate.exchange(
+                "/api/conversations/" + dmId + "/messages?limit=3",
+                HttpMethod.GET,
+                new HttpEntity<>(bearer(a.accessToken())),
+                MessagePage.class
+        );
+        assertThat(p1.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(p1.getBody()).isNotNull();
+        assertThat(p1.getBody().messages().stream().map(MessageResponse::seq).toList())
+                .containsExactly(9L, 8L, 7L);
+        assertThat(p1.getBody().hasMore()).isTrue();
+        assertThat(p1.getBody().nextCursor()).isEqualTo(7L);
+
+        // Page 2: before=7&limit=3 -> [6, 5, 4], hasMore true, cursor 4
+        ResponseEntity<MessagePage> p2 = restTemplate.exchange(
+                "/api/conversations/" + dmId + "/messages?before=7&limit=3",
+                HttpMethod.GET,
+                new HttpEntity<>(bearer(a.accessToken())),
+                MessagePage.class
+        );
+        assertThat(p2.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(p2.getBody()).isNotNull();
+        assertThat(p2.getBody().messages().stream().map(MessageResponse::seq).toList())
+                .containsExactly(6L, 5L, 4L);
+        assertThat(p2.getBody().hasMore()).isTrue();
+        assertThat(p2.getBody().nextCursor()).isEqualTo(4L);
+
+        // Page 3: before=4&limit=3 -> [3, 2, 1], hasMore FALSE and nextCursor null
+        ResponseEntity<MessagePage> p3 = restTemplate.exchange(
+                "/api/conversations/" + dmId + "/messages?before=4&limit=3",
+                HttpMethod.GET,
+                new HttpEntity<>(bearer(a.accessToken())),
+                MessagePage.class
+        );
+        assertThat(p3.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(p3.getBody()).isNotNull();
+        assertThat(p3.getBody().messages().stream().map(MessageResponse::seq).toList())
+                .containsExactly(3L, 2L, 1L);
+        assertThat(p3.getBody().hasMore()).isFalse();
+        assertThat(p3.getBody().nextCursor()).isNull();
+
+        // Also with limit=9: all 9 messages, hasMore false, nextCursor null
+        ResponseEntity<MessagePage> pAll = restTemplate.exchange(
+                "/api/conversations/" + dmId + "/messages?limit=9",
+                HttpMethod.GET,
+                new HttpEntity<>(bearer(a.accessToken())),
+                MessagePage.class
+        );
+        assertThat(pAll.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(pAll.getBody()).isNotNull();
+        assertThat(pAll.getBody().messages().stream().map(MessageResponse::seq).toList())
+                .containsExactly(9L, 8L, 7L, 6L, 5L, 4L, 3L, 2L, 1L);
+        assertThat(pAll.getBody().hasMore()).isFalse();
+        assertThat(pAll.getBody().nextCursor()).isNull();
+    }
 }
+
