@@ -191,6 +191,8 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 - **Transactions:** group creation (conversation plus participants) commits or rolls back as one unit; direct-conversation creation is deduplicated by a unique `direct_key`.
 - **Errors:** unknown routes return 404, malformed JSON or a malformed UUID returns 400, and unexpected errors return 500 without internals.
 - **Actuator:** only `/actuator/health` is public, and it shows no component details.
+- **Accounts:** usernames and emails are case-insensitive (`citext` column plus an explicit `CAST(... AS citext)` in queries, because a plain varchar parameter makes the comparison case-sensitive). Duplicates return `409 USERNAME_TAKEN` / `EMAIL_TAKEN`, including when two registrations race (the unique-constraint violation is translated to the same 409).
+- **History paging:** `limit` is clamped to 1..100 (default 50); the cursor is stable when new messages arrive.
 
 ## Known Limitations
 
@@ -198,6 +200,8 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 - Browser refresh-token storage (HttpOnly cookie plus CSRF/Origin protection versus in-memory) is undecided; decide it in Phase 2 when the React client starts.
 - The 401 response from the security filter has an empty body; it is not yet in the standard error JSON format.
 - Integration tests need Docker. On a machine whose Docker Engine rejects old API versions, Testcontainers 1.20.1 may need a local `~/.docker-java.properties` containing `api.version=1.44`.
+- Unread counts include the sender's own messages, because nothing advances `last_read_seq` yet. Phase 2 (read cursors) owns this.
+- The 5,000-message test is a correctness check on one developer laptop, not a benchmark; no throughput claim is made until Phase 5.
 
 ## What Is Not Yet Implemented
 
