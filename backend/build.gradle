@@ -106,4 +106,5 @@ tasks.register('integrationTest', Test) {
     shouldRunAfter tasks.named('test')
     description = 'Runs integration tests that require a running Docker daemon.'
     group = 'verification'
+    timeout = java.time.Duration.ofMinutes(10)
 }
