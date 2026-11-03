@@ -9,9 +9,9 @@ Written 2026-11-03 for Claude Code taking over from a Claude-chat architect + Ge
 | Phase 0 (skeleton, Flyway, CI) | Done |
 | Phase 1 (REST core: auth, conversations, ordered idempotent messaging, keyset paging) | Done and verified by tests that were seen failing first, then passing. Tag `phase-1-verified` = commit `9004cd1` (pushed). |
 | Phase 2a (WebSocket one-time tickets in PostgreSQL) | Done. 9 tests + a mutation proof (a plain SELECT instead of `DELETE ... RETURNING` fails 3 tests). ADR-0004 written. |
-| Phase 2b-i (handshake interceptor: Origin check + ticket consume) | Built and tested (10 tests), **hardening not yet applied** (Section 3). |
+| Phase 2b-i (handshake interceptor: Origin check + ticket consume) | Done, including the Section 3 hardening (2026-11-03, branch `phase-2-hardening`). |
 | Phase 2b-ii onward | Not started. |
-| Last full local run | 6 unit + 59 integration tests, all green (counts read from XML). CI integration step went green on PR #2 after the Docker fix; the 59 count in CI was not confirmed from the artifact. |
+| Last full local run (2026-11-03, after hardening) | 10 unit (1 + 5 + 4) all green; 66 integration (WsHandshakeAuthTest now 16), 65 green, 1 failure from a **pre-existing refresh-token deadlock** (Section 3a). |
 
 ## 1. First task: verify and tidy git (before any feature work)
 The repo state was left mid-cleanup. Don't assume; check:
@@ -41,6 +41,17 @@ Found in code review of `WsAuthHandshakeInterceptor`, `WebSocketConfig`, `Securi
 6. Real boot checks: with only `JWT_SECRET` set and no profile it must refuse to start; with `SPRING_PROFILES_ACTIVE=dev` it starts; with `WS_ALLOWED_ORIGINS='*'` it refuses.
 7. `NoOpPlaceholderHandler` keeps raw tickets in a never-cleared map as a test seam. It disappears in 2b-ii when the real handler lands (tests that rely on `getUserIdForTicket` must be reworked then).
 Also confirm no code logs the ticket or the request query string. Note for Phase 9: reverse-proxy access logs record full URLs including `?ticket=`; the 30-second single-use design limits the damage.
+
+### 3 status (2026-11-03): items 1 to 6 done
+- Items 1 and 5: the allowlist has no default and refuses startup if empty, blank or containing `*`. `WsAuthHandshakeInterceptorTest` has 4 unit tests (3 seen failing first). Origins are set in `application-dev.yml`, `application-test.yml` and `application-integration.yml`.
+- Item 2: `setAllowedOrigins(list)` replaces `"*"`. Our interceptor still runs first, so rejections stay 401. `assertHandshakeFails` now asserts `[401]`.
+- Item 3: only `/ws` is public. `pathsUnderWsAreNotPublic` failed first (404) and now passes (401).
+- Item 4: near-miss origins (plus `HTTP://LOCALHOST:3000`) are a parameterized test. Mutation checks: prefix matching fails 2 tests. Turning off our check fails 7, because Spring's check alone lets through a missing Origin, a trailing slash and an uppercase origin.
+- Item 6: verified on the real jar. No profile refuses ("ws.allowed-origins is not set"), `WS_ALLOWED_ORIGINS='*'` refuses, and `dev` starts. Live: `/ws/anything` gives 401, and an upgrade from `localhost:3000.evil.com` gives 401.
+- No code logs the ticket or the query string. Item 7 stays as written (it goes away in 2b-ii).
+
+## 3a. Open bug found 2026-11-03: concurrent refresh replay deadlock
+`Phase1ReviewTest.concurrentRefreshWithSameTokenReturnsOneSuccessAndRevokesFamily` failed once with 1 success and 3 x 401 instead of 4: the fifth request got a 500. The log shows `PSQLException: deadlock detected ... while updating tuple in relation "refresh_tokens"` from `RefreshTokenRepository.revokeFamily` (via `TokenService.refreshTokens`). Two replays each revoke the family and lock its rows in different orders. The same test passed in the baseline run, so the failure is intermittent. Fix test-first: lock the family's rows in a consistent order (e.g. `SELECT ... ORDER BY id FOR UPDATE` before the update), or make `revokeFamily` a single statement that cannot interleave with another, and make the test reliably reproduce the race (more threads or repetitions).
 
 ## 4. Decisions already made (don't relitigate)
 - WebSocket handshake auth = one-time ticket in a **PostgreSQL table** (`ws_tickets`: SHA-256 hash PK, user_id, expires_at 30 s), consumed via `DELETE ... RETURNING`. Chosen over in-memory (breaks in Phase 4) and Redis (not in the stack until Phase 4). See ADR-0004. Issue endpoint: `POST /api/ws/ticket` (JWT required) returns `{ticket, expiresInSeconds}`.

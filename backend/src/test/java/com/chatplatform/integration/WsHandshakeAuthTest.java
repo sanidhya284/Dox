@@ -6,6 +6,8 @@ import com.chatplatform.realtime.dto.IssuedTicket;
 import com.chatplatform.realtime.service.WsTicketService;
 import com.chatplatform.realtime.websocket.NoOpPlaceholderHandler;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpStatus;
@@ -76,7 +78,10 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
     private void assertHandshakeFails(String ticket, String origin) {
         long start = System.nanoTime();
         assertThatThrownBy(() -> connect(ticket, origin))
-                .isInstanceOf(ExecutionException.class);
+                .isInstanceOf(ExecutionException.class)
+                // Every rejection is a 401 from our interceptor (not e.g. a 403 from Spring's own origin check).
+                .rootCause()
+                .hasMessageContaining("[401]");
         long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
         assertThat(elapsedMs)
                 .as("Handshake rejection must fail promptly, not hang until timeout")
@@ -223,5 +228,35 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
             session1.close();
             session2.close();
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "http://localhost:3000.evil.com",
+            "http://localhost:3000/",
+            "http://localhost:3001",
+            "https://localhost:3000",
+            "HTTP://LOCALHOST:3000"
+    })
+    void nearMissOriginFailsHandshakeAndLeavesTicketUnconsumed(String nearMiss) throws Exception {
+        UUID userId = registerAndGetId(UUID.randomUUID().toString().substring(0, 8));
+        IssuedTicket ticket = wsTicketService.issue(userId);
+
+        assertHandshakeFails(ticket.ticket(), nearMiss);
+
+        WebSocketSession session = connect(ticket.ticket(), "http://localhost:3000");
+        try {
+            assertThat(session.isOpen()).isTrue();
+            assertThat(noOpPlaceholderHandler.getUserIdForTicket(ticket.ticket())).isEqualTo(userId);
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void pathsUnderWsAreNotPublic() {
+        // Only the exact /ws endpoint bypasses JWT auth; anything below it must require a token.
+        ResponseEntity<String> res = restTemplate.getForEntity("/ws/anything", String.class);
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
 }

@@ -109,7 +109,7 @@ Runs before every request. Extracts `Authorization: Bearer <token>`, validates t
 ### SecurityConfig
 - CSRF disabled (stateless API — no sessions, no cookies).
 - Session management: `STATELESS` — Spring never creates an `HttpSession`.
-- Public routes: `/api/auth/**`, `/actuator/health` and `/actuator/health/**` only.
+- Public routes: `/api/auth/**`, `/actuator/health` and `/actuator/health/**`, plus the exact WebSocket handshake path `/ws` (authenticated by a one-time ticket instead of a JWT; see ADR-0004). Paths below it, such as `/ws/anything`, still need a JWT.
 - All other routes require a valid JWT. Unauthenticated requests get a bare `401` (HttpStatusEntryPoint).
 - BCrypt cost factor 12 (≈ 300 ms per hash on modern hardware).
 
@@ -158,9 +158,10 @@ All environment-specific configuration comes from environment variables.
 | `DB_USER` | `chatplatform` | PostgreSQL username |
 | `DB_PASSWORD` | `chatplatform` | PostgreSQL password |
 | `JWT_SECRET` | none (required) | HMAC-SHA256 signing key, at least 32 bytes. The app refuses to start if it is missing, blank, shorter than 32 bytes, or the old built-in default. |
-| `SPRING_PROFILES_ACTIVE` | not set | Set to `dev` for local development: loads a dev-only JWT secret and verbose SQL logging. Never use `dev` in production. |
+| `WS_ALLOWED_ORIGINS` | none (required) | Comma-separated exact origins allowed to open `/ws` (scheme, host and port, e.g. `https://app.example.com`). The app refuses to start if it is missing, has a blank entry, or contains `*`. |
+| `SPRING_PROFILES_ACTIVE` | not set | Set to `dev` for local development: loads a dev-only JWT secret, the local frontend origins (`http://localhost:3000`, `http://localhost:5173`) and verbose SQL logging. Never use `dev` in production. |
 
-Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `JWT_SECRET` to a cryptographically random value.
+Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `JWT_SECRET` to a cryptographically random value and `WS_ALLOWED_ORIGINS` to the real frontend origin(s).
 
 ---
 
@@ -190,12 +191,14 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 - **Authorization:** non-members get `404` on every conversation and message endpoint, and nothing is persisted. Unauthenticated requests get `401`.
 - **Transactions:** group creation (conversation plus participants) commits or rolls back as one unit; direct-conversation creation is deduplicated by a unique `direct_key`.
 - **Errors:** unknown routes return 404, malformed JSON or a malformed UUID returns 400, and unexpected errors return 500 without internals.
+- **WebSocket handshake:** the `Origin` header must exactly match an entry in `ws.allowed-origins` (no prefix, case or trailing-slash tolerance) and is checked before the ticket is consumed, so a rejected handshake leaves the ticket usable for a legitimate retry. Every rejection is `401`. Spring's own origin check runs afterwards on the same list as a second layer.
 - **Actuator:** only `/actuator/health` is public, and it shows no component details.
 - **Accounts:** usernames and emails are case-insensitive (`citext` column plus an explicit `CAST(... AS citext)` in queries, because a plain varchar parameter makes the comparison case-sensitive). Duplicates return `409 USERNAME_TAKEN` / `EMAIL_TAKEN`, including when two registrations race (the unique-constraint violation is translated to the same 409).
 - **History paging:** `limit` is clamped to 1..100 (default 50); the cursor is stable when new messages arrive.
 
 ## Known Limitations
 
+- **Concurrent refresh-token replay can deadlock (open bug):** when several requests replay the same revoked refresh token at once, two `revokeFamily` updates can lock the family's rows in different orders. PostgreSQL then aborts one of them and that request returns `500` instead of `401`. Seen intermittently in `Phase1ReviewTest.concurrentRefreshWithSameTokenReturnsOneSuccessAndRevokesFamily` (2026-11-03). Not fixed yet.
 - Strict theft detection: a client that submits the same refresh token twice (for example a double-click) is logged out. A short grace window could relax this later.
 - Browser refresh-token storage (HttpOnly cookie plus CSRF/Origin protection versus in-memory) is undecided; decide it in Phase 2 when the React client starts.
 - The 401 response from the security filter has an empty body; it is not yet in the standard error JSON format.
