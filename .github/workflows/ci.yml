@@ -58,6 +58,10 @@ jobs:
         run: ./gradlew test --no-daemon
         working-directory: backend
 
+      - name: Let Testcontainers talk to newer Docker Engines
+        run: echo "api.version=1.44" > ~/.docker-java.properties
+        working-directory: backend
+
       - name: Integration tests (Testcontainers + PostgreSQL)
         run: ./gradlew integrationTest --no-daemon
         working-directory: backend
