@@ -35,14 +35,14 @@ public class UserRepository {
 
     public Optional<User> findByUsername(String username) {
         // citext makes this case-insensitive automatically at the DB layer
-        return jdbcClient.sql("SELECT * FROM users WHERE username = :username")
+        return jdbcClient.sql("SELECT * FROM users WHERE username = CAST(:username AS citext)")
                 .param("username", username)
                 .query(USER_ROW_MAPPER)
                 .optional();
     }
 
     public boolean existsByUsername(String username) {
-        Integer count = jdbcClient.sql("SELECT 1 FROM users WHERE username = :username")
+        Integer count = jdbcClient.sql("SELECT 1 FROM users WHERE username = CAST(:username AS citext)")
                 .param("username", username)
                 .query(Integer.class)
                 .optional()
@@ -51,7 +51,7 @@ public class UserRepository {
     }
 
     public boolean existsByEmail(String email) {
-        Integer count = jdbcClient.sql("SELECT 1 FROM users WHERE email = :email")
+        Integer count = jdbcClient.sql("SELECT 1 FROM users WHERE email = CAST(:email AS citext)")
                 .param("email", email)
                 .query(Integer.class)
                 .optional()

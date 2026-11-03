@@ -29,7 +29,7 @@ lifecycle and what our actual constraints are.
 **We will build a modular monolith for the first several milestones.**
 
 The codebase is organised as a single Spring Boot application with clearly
-separated Java packages per domain (`user`, `workspace`, `channel`, `message`).
+separated Java packages per domain (`user`, `auth`, `conversation`, `message`).
 Package boundaries are enforced by convention — cross-package calls go through
 service interfaces, never directly to another package's repository.
 
@@ -95,5 +95,5 @@ We would re-evaluate this decision if:
 - Technology lock-in per module (all modules must be Java 21 + Spring)
 
 **Mitigations:**
-- Architecture tests (ArchUnit, planned Phase 1) can enforce package boundary rules programmatically
+- Architecture tests (ArchUnit) could enforce package boundary rules programmatically; not implemented yet.
 - The HikariCP pool and Flyway migrations are already designed to be compatible with an eventual extraction

@@ -1,7 +1,7 @@
 # ADR-0002 — Message Sequencing, Idempotency, and Pagination Strategy
 
 **Status:** Accepted
-**Date:** 2026-10-08
+**Date:** 2026-10-08 (amended 2026-10-17)
 **Phase:** 1 — REST Core
 
 ---
@@ -45,7 +45,7 @@ A PostgreSQL `UPDATE` on a row acquires a **row-level exclusive lock** before mo
 
 **Properties:**
 - Allocation and message timestamp update happen atomically in one statement.
-- No additional round-trip compared to a `SELECT … FOR UPDATE` + separate `UPDATE`.
+- The lock is taken one statement earlier (`SELECT ... FOR UPDATE`, see Decision 2a) so the idempotency check runs under it; the `UPDATE` still performs the allocation.
 - Correct at `READ COMMITTED` (the default). Escalating to `SERIALIZABLE` would add unnecessary abort risk.
 
 ---
@@ -64,13 +64,29 @@ RETURNING *
 ```
 
 - If `RETURNING *` returns a row: the insert succeeded — return it as 201.
-- If `RETURNING *` returns nothing: a concurrent duplicate beat us — fetch and return the existing row as 200.
+- If `RETURNING *` returns nothing, the key already exists somewhere the pre-check did not catch (for example the same key racing in a different conversation). The request fails with `409 IDEMPOTENCY_KEY_CONFLICT`; it never returns another conversation's message.
 
-Two concurrent requests with the same `client_msg_id` cannot both insert. The database constraint is the single source of truth. Application-level checks (e.g., a `SELECT` before `INSERT`) are a performance fast-path, not a correctness guarantee — two simultaneous requests both pass the `SELECT` check, then one wins the INSERT and one hits the constraint.
+Two concurrent requests with the same `client_msg_id` cannot both insert. Within one conversation the row lock makes the pre-insert lookup authoritative; the UNIQUE constraint remains the backstop for the cross-conversation case. See Decision 2a.
 
 **Security note:** `client_msg_id` is scoped by `sender_id`. User A cannot affect User B's idempotency keys.
 
 ---
+
+## Decision 2a — Send Order and Key Reuse (amended 2026-10-17)
+
+The first implementation did: membership check, lookup by `(sender_id, client_msg_id)`, increment `last_seq`, then `INSERT ... ON CONFLICT DO NOTHING`. Integration tests exposed two defects:
+
+1. **Burned sequence numbers.** Concurrent duplicates both passed the lookup and both incremented `last_seq`. The loser's insert returned nothing, but the transaction still committed, leaving a sequence number with no message (a test saw seq 5 where 2 was expected). Phase 3 gap detection would have read that as a lost message.
+2. **Wrong message returned.** The lookup ignored conversation and body, so reusing a key in another conversation silently returned the message from the first one.
+
+The fix, inside one transaction:
+
+1. Check membership (non-members get 404).
+2. `SELECT id FROM conversations WHERE id = :id FOR UPDATE`.
+3. Look up `(sender_id, client_msg_id)`. If found with the same conversation and body, return the original message. If found with a different conversation or body, return `409 IDEMPOTENCY_KEY_CONFLICT`.
+4. Only then increment `last_seq` and insert. If the insert still hits the unique constraint, return 409.
+
+Duplicates in one conversation queue on the row lock and never reach the increment, so no sequence number is burned. Covered by `duplicateConcurrentSendsLeaveNoSequenceGap`, the two 409 tests, and a 100-sender contiguity assertion.
 
 ## Decision 3 — Pagination: Keyset (`WHERE seq < :cursor`) instead of OFFSET
 
@@ -100,5 +116,5 @@ The index `ON messages (conversation_id, seq DESC)` means PostgreSQL performs a 
 
 ## Consequences
 
-- Sequence numbers are gapless within a single sending transaction. If a transaction is rolled back (e.g., the `INSERT INTO messages` fails after the sequence is allocated), a gap appears. This is acceptable — gaps are observable but do not violate correctness. Clients must not assume sequence numbers are contiguous.
-- The `client_msg_id` uniqueness scope is `(sender_id, client_msg_id)`. A client must not reuse a UUID for a different message (even to a different conversation). A UUID generated per send is always safe.
+- Sequence numbers within a conversation are contiguous: the increment and the insert commit or roll back together, and duplicate sends never reach the increment. Clients can still treat a gap in received sequence numbers as a sign of a missed message.
+- The `client_msg_id` uniqueness scope is `(sender_id, client_msg_id)`. Reusing a key for a different conversation or body is rejected with 409, so a client must generate a fresh UUID per logical message and reuse it only when retrying that same message.

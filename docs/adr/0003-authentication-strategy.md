@@ -1,7 +1,7 @@
 # ADR-0003 — Authentication Strategy: Stateless JWT + Stored Refresh Tokens
 
 **Status:** Accepted
-**Date:** 2026-10-08
+**Date:** 2026-10-08 (amended 2026-10-17)
 **Phase:** 1 — REST Core
 
 ---
@@ -26,10 +26,12 @@ A JSON Web Token signed with HMAC-SHA256 (`HS256`) using a server-side secret (`
 
 **Validation is pure computation** — the server verifies the signature and checks the expiry with no database access. This means an access token cannot be individually revoked before its `exp`. A stolen access token is valid for up to 15 minutes.
 
+**The secret fails closed.** The application refuses to start if `jwt.secret` is missing, blank, shorter than 32 bytes, or equal to the old built-in default. Local development uses the `dev` profile, which supplies a dev-only secret. Production must set `JWT_SECRET`.
+
 **Why 15 minutes?**
 - Long enough that clients do not need to refresh constantly (one refresh per session typical).
 - Short enough to limit the blast radius of a stolen token.
-- Token blacklisting (Redis) would eliminate this window but introduces distributed state — a Phase 3 decision.
+- Token blacklisting (Redis) would eliminate this window but introduces distributed state — a Phase 4 decision.
 
 **Payload:**
 ```json
@@ -59,6 +61,8 @@ Login → token1 (family: F1)
 Use token1 → revoke token1, issue token2 (family: F1)
 Use token2 → revoke token2, issue token3 (family: F1)
 ```
+
+**Rotation is atomic.** A token is claimed with a single conditional `UPDATE ... WHERE revoked_at IS NULL AND expires_at > now RETURNING *`. The row lock makes concurrent requests with the same token queue up, so exactly one wins and the rest find it already revoked. An earlier SELECT-then-UPDATE version let five concurrent requests all succeed.
 
 ### Theft detection via `family_id`
 
@@ -92,7 +96,7 @@ This upgrade is recommended as a future hardening milestone.
 
 ## Decision 4 — IDOR Protection: 404 for Inaccessible Conversations
 
-A request by User C for a conversation between Users A and B returns `404 NOT FOUND`, not `403 FORBIDDEN`.
+A request by User C for a conversation between Users A and B returns `404 NOT FOUND`, not `403 FORBIDDEN`. This applies to every conversation and message endpoint, including sending, and nothing is persisted.
 
 **Why not 403?**
 Returning 403 confirms that the conversation exists. An attacker could enumerate conversation UUIDs and use 403 responses to map the graph of existing conversations. 404 reveals nothing about existence.
@@ -103,6 +107,8 @@ This is the standard defense against **Insecure Direct Object Reference (IDOR)**
 
 ## Consequences
 
-- **Access token non-revocability:** A user who changes their password or is suspended will still have valid access tokens for up to 15 minutes. Mitigation: short TTL. Full mitigation requires a token blacklist (Redis, Phase 3).
+- **Access token non-revocability:** A user who changes their password or is suspended will still have valid access tokens for up to 15 minutes. Mitigation: short TTL. Full mitigation requires a token blacklist (Redis, Phase 4).
 - **Refresh token one-time use:** Clients must treat refresh tokens as single-use. A client that fails to store the new refresh token after a successful rotation will be locked out of their session.
 - **Family revocation on theft:** A false positive is possible — if a legitimate client's refresh request fails mid-flight (network error after the server committed but before the client received the response), the client retries with a now-revoked token and triggers family revocation, logging everyone in that session out. This is an acceptable tradeoff: a false positive causes inconvenience (re-login); a false negative leaves a stolen session active.
+- **Revocation must survive the 401:** the refresh methods use `noRollbackFor = ApiException.class`. Without it the family revocation was rolled back when the exception propagated, and a replayed token left the legitimate token valid. An integration test covers this.
+- **Browser storage is undecided:** whether the refresh token lives in an HttpOnly cookie (needing CSRF/Origin protection) or in memory is decided in Phase 2, when the React client starts.

@@ -6,6 +6,8 @@ import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
 import java.util.List;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -65,6 +67,13 @@ public class ConversationRepository {
                 .optional();
     }
 
+    public void lockForUpdate(UUID id) {
+        jdbcClient.sql("SELECT id FROM conversations WHERE id = :id FOR UPDATE")
+                .param("id", id)
+                .query(UUID.class)
+                .optional();
+    }
+
     public long incrementAndGetLastSeq(UUID conversationId) {
         return jdbcClient.sql("""
                 UPDATE conversations
@@ -73,7 +82,7 @@ public class ConversationRepository {
                 RETURNING last_seq
                 """)
                 .param("id", conversationId)
-                .param("now", Instant.now())
+                .param("now", OffsetDateTime.ofInstant(Instant.now(), ZoneOffset.UTC))
                 .query(Long.class)
                 .single();
     }

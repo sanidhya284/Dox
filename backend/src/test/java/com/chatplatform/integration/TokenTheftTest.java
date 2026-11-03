@@ -17,11 +17,19 @@ class TokenTheftTest extends AbstractIntegrationTest {
     @Test
     void testTokenRotationTheftDetection() {
         // Setup: user logs in (registers for simplicity here)
-        RegisterRequest req = new RegisterRequest("thief_" + UUID.randomUUID(), "thief_" + UUID.randomUUID() + "@example.com", "password", "Thief");
+        // Username must be 3-50 chars, password must be 8+ chars
+        String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+        RegisterRequest req = new RegisterRequest(
+                "thief_" + suffix,
+                "thief_" + suffix + "@example.com",
+                "password123",
+                "Thief"
+        );
         ResponseEntity<AuthResponse> res1 = restTemplate.postForEntity("/api/auth/register", req, AuthResponse.class);
-        
+
         assertThat(res1.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        
+        assertThat(res1.getBody()).isNotNull();
+
         String refreshToken1 = res1.getBody().refreshToken();
         
         // Action: legitimate client uses refreshToken1 -> gets refreshToken2 (refreshToken1 revoked)

@@ -15,6 +15,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.HexFormat;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -33,28 +34,24 @@ public class TokenService {
         return createTokenPair(userId, UUID.randomUUID());
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = ApiException.class)
     public TokenPair refreshTokens(String rawRefreshToken) {
         String tokenHash = hashToken(rawRefreshToken);
+        
+        Optional<RefreshToken> claimed = refreshTokenRepository.revokeIfActive(tokenHash);
+        if (claimed.isPresent()) {
+            return createTokenPair(claimed.get().userId(), claimed.get().familyId());
+        }
+        
         RefreshToken storedToken = refreshTokenRepository.findByTokenHash(tokenHash)
                 .orElseThrow(() -> new ApiException(ErrorCode.TOKEN_INVALID, "Token not found"));
-
+        
         if (storedToken.revokedAt() != null) {
-            // THEFT DETECTION: this token was revoked but is being used again.
-            // Revoke the entire family to protect the user.
             refreshTokenRepository.revokeFamily(storedToken.familyId());
             throw new ApiException(ErrorCode.TOKEN_INVALID, "Token was revoked");
         }
-
-        if (storedToken.expiresAt().isBefore(Instant.now())) {
-            throw new ApiException(ErrorCode.TOKEN_INVALID, "Token expired");
-        }
-
-        // Revoke the old token
-        refreshTokenRepository.revoke(tokenHash);
-
-        // Generate a new token pair in the same family
-        return createTokenPair(storedToken.userId(), storedToken.familyId());
+        
+        throw new ApiException(ErrorCode.TOKEN_INVALID, "Token expired");
     }
 
     @Transactional
