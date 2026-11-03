@@ -26,6 +26,7 @@ repositories {
 dependencies {
     // ── Spring Web (REST) ──────────────────────────────────────────────────
     implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-websocket'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
 
     // ── Spring Security ────────────────────────────────────────────────────
@@ -106,4 +107,5 @@ tasks.register('integrationTest', Test) {
     shouldRunAfter tasks.named('test')
     description = 'Runs integration tests that require a running Docker daemon.'
     group = 'verification'
+    timeout = java.time.Duration.ofMinutes(10)
 }
