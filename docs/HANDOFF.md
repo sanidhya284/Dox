@@ -11,7 +11,7 @@ Written 2026-11-03 for Claude Code taking over from a Claude-chat architect + Ge
 | Phase 2a (WebSocket one-time tickets in PostgreSQL) | Done. 9 tests + a mutation proof (a plain SELECT instead of `DELETE ... RETURNING` fails 3 tests). ADR-0004 written. |
 | Phase 2b-i (handshake interceptor: Origin check + ticket consume) | Done, including the Section 3 hardening (2026-11-03, branch `phase-2-hardening`). |
 | Phase 2b-ii onward | Not started. |
-| Last full local run (2026-11-03, after hardening) | 10 unit (1 + 5 + 4) all green; 66 integration (WsHandshakeAuthTest now 16), 65 green, 1 failure from a **pre-existing refresh-token deadlock** (Section 3a). |
+| Last full local run (2026-11-03, after hardening) | 10 unit (1 + 5 + 4) all green; 65 integration (59 + 6 new, WsHandshakeAuthTest now 16), 64 green, 1 intermittent failure from a **pre-existing refresh-token deadlock** (Section 3a). |
 
 ## 1. First task: verify and tidy git (before any feature work)
 The repo state was left mid-cleanup. Don't assume; check:
@@ -58,19 +58,20 @@ Also confirm no code logs the ticket or the request query string. Note for Phase
 - Idempotency/ordering design: ADR-0002 (amended). Auth design: ADR-0003 (amended). Modular monolith: ADR-0001.
 
 ## 5. Decisions still OPEN (ask the user; don't pick silently)
-1. **Socket lifetime vs the 15-minute access token.** A socket authenticates only at the handshake and can outlive the JWT. Options: **A** server closes every socket after about 15 minutes, client reconnects with a fresh ticket; **B** also close a user's sockets when a refresh-token family is revoked (theft) and on logout; **C** both. The architect's lean: A, plus B for theft only (logout would otherwise close the user's other devices unless sockets are tied to a session id). Not yet answered by the user.
+1. ~~Socket lifetime vs the 15-minute access token.~~ **Decided 2026-11-03 by the user: A + B (theft only).** The server closes every WebSocket after about 15 minutes, and the client reconnects with a fresh ticket. When a refresh-token replay is detected (family revocation), all of that user's sockets are closed immediately. Logout does **not** close sockets in this version, because the access token carries no session id to tell this device's sockets apart from the user's other devices; this is a known limitation (Section 7). Implemented in 2b-ii, not yet.
 2. Browser refresh-token storage (HttpOnly cookie + CSRF/Origin protection vs in-memory): deferred to Phase 2e, when the React client starts.
 3. Testcontainers upgrade path (see CLAUDE.md gotchas).
 4. Whether to relax strict theft detection with a short grace window (today a double-submitted refresh logs the user out).
 
 ## 6. Remaining Phase 2 plan (each step small enough to test and review)
-- **2b-ii: connection registry + real handler.** Replace `NoOpPlaceholderHandler`. Registry maps userId to active sessions (a user can have several tabs/devices); remove on close/error; close sockets per decision 5.1; close on logout/family revocation per the same decision. Tests: multiple sessions per user, cleanup on close, handshake-authenticated user id is the one bound to the session.
+- **2b-ii: connection registry + real handler.** Replace `NoOpPlaceholderHandler`. Registry maps userId to active sessions (a user can have several tabs/devices); remove on close/error. Per decision 5.1: close every socket about 15 minutes after its handshake (the client reconnects with a fresh ticket), and close all of a user's sockets when their refresh-token family is revoked for replay. Do **not** close on logout. Tests: multiple sessions per user, cleanup on close, handshake-authenticated user id is the one bound to the session, sockets closed after the lifetime (configurable short value in tests), family revocation closes all of that user's sockets and no one else's.
 - **2c: send, ack, push.** Define a small versioned frame envelope (proposal: `{ "v":1, "type":"...", ...}`) so Phase 3 can add sync cursors without breaking clients. Client sends a message frame reusing the existing `MessageService.sendMessage` (do not duplicate its transaction logic). The **ack is sent only after the PostgreSQL commit**. Recipient push must happen **after commit** (e.g. `TransactionSynchronization.afterCommit`), never inside the transaction, so a rollback can't leak a phantom message. Duplicate sends with the same `clientMsgId` return the same message and don't re-push. Non-members get no delivery and nothing persisted. Tests: ack-after-commit (inject a failure before commit: no ack, no push), duplicate send, authorization, slow/closed recipient doesn't fail the sender.
 - **2d: heartbeats and connection cleanup, in-memory presence, typing indicators, delivered/read cursors** (monotonic updates; also fixes the known "unread count includes my own messages" limitation).
 - **2e: minimal React UI** and the refresh-token storage decision; then deploy a simple version behind a proxy with TLS to find proxy/CORS/timeout problems early.
 - After Phase 2: Phase 3 reliable delivery (client queues, retries with the same idempotency key, backoff with jitter, cursor-based sync, gap detection, bounded outbound queues), Phase 4 Redis multi-instance (pub/sub is not durable; recovery still comes from Postgres), Phase 5 observability and real benchmarks, Phase 6 outbox + notifications, Phase 7 Yjs, Phase 8 optional Kafka, Phase 9 deployment. A fully working Phase 0 to 5 with strong tests and measured results beats an unfinished system with every technology.
 
 ## 7. Known limitations (documented in `docs/architecture.md`; keep it current)
+- Logout does not close the user's open WebSockets (no session id in the access token). They still close within about 15 minutes (decision 5.1, from 2b-ii).
 - Strict theft detection logs out a legitimately double-submitting client.
 - Unread counts include the sender's own messages until read cursors exist (Phase 2d).
 - The 401 from the security filter has an empty body, not the standard error JSON.

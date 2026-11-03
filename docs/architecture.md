@@ -196,8 +196,16 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 - **Accounts:** usernames and emails are case-insensitive (`citext` column plus an explicit `CAST(... AS citext)` in queries, because a plain varchar parameter makes the comparison case-sensitive). Duplicates return `409 USERNAME_TAKEN` / `EMAIL_TAKEN`, including when two registrations race (the unique-constraint violation is translated to the same 409).
 - **History paging:** `limit` is clamped to 1..100 (default 50); the cursor is stable when new messages arrive.
 
+## WebSocket Socket Lifetime (decided 2026-11-03, implemented in Phase 2b-ii)
+
+A socket authenticates once, at the handshake, so it could otherwise outlive the 15-minute access token that minted its ticket. Decision: **A + B (theft only)**.
+- **A:** the server closes every WebSocket about 15 minutes after its handshake; the client reconnects with a fresh ticket (which needs a valid access token). Access revocation therefore takes effect within one token lifetime.
+- **B (theft only):** when a refresh-token replay is detected and the family is revoked, all of that user's sockets are closed immediately.
+- Logout does not close sockets in this version (see Known Limitations).
+
 ## Known Limitations
 
+- **Logout does not close WebSockets (by design for now):** a socket authenticates only at the handshake. The access token has no session id, so the server cannot tell which of a user's sockets belong to the device that logged out. Closing all of them would log out the user's other devices. An open socket therefore survives logout until the about-15-minute socket lifetime ends (see WebSocket socket lifetime below). Tying sockets to a session id would remove this.
 - **Concurrent refresh-token replay can deadlock (open bug):** when several requests replay the same revoked refresh token at once, two `revokeFamily` updates can lock the family's rows in different orders. PostgreSQL then aborts one of them and that request returns `500` instead of `401`. Seen intermittently in `Phase1ReviewTest.concurrentRefreshWithSameTokenReturnsOneSuccessAndRevokesFamily` (2026-11-03). Not fixed yet.
 - Strict theft detection: a client that submits the same refresh token twice (for example a double-click) is logged out. A short grace window could relax this later.
 - Browser refresh-token storage (HttpOnly cookie plus CSRF/Origin protection versus in-memory) is undecided; decide it in Phase 2 when the React client starts.
