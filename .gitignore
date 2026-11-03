@@ -1,6 +1,7 @@
 # Compiled class files
 backend/build/
 backend/.gradle/
+backend/bin/
 
 # Gradle caches
 .gradle/
