@@ -10,7 +10,8 @@ Written 2026-11-03 for Claude Code taking over from a Claude-chat architect + Ge
 | Phase 1 (REST core: auth, conversations, ordered idempotent messaging, keyset paging) | Done and verified by tests that were seen failing first, then passing. Tag `phase-1-verified` = commit `9004cd1` (pushed). |
 | Phase 2a (WebSocket one-time tickets in PostgreSQL) | Done. 9 tests + a mutation proof (a plain SELECT instead of `DELETE ... RETURNING` fails 3 tests). ADR-0004 written. |
 | Phase 2b-i (handshake interceptor: Origin check + ticket consume) | Done, including the Section 3 hardening (2026-11-03, branch `phase-2-hardening`). |
-| Phase 2b-ii onward | Not started. |
+| Refresh replay deadlock | Fixed on `fix-refresh-deadlock` (Section 3a). Full run after fix: 10 unit, 66 integration, all green. |
+| Phase 2b-ii onward | Not started. Socket-lifetime decision 5.1 is made (A + B theft only). |
 | Last full local run (2026-11-03, after hardening) | 10 unit (1 + 5 + 4) all green; 65 integration (59 + 6 new, WsHandshakeAuthTest now 16), 64 green, 1 intermittent failure from a **pre-existing refresh-token deadlock** (Section 3a). |
 
 ## 1. First task: verify and tidy git (before any feature work)
@@ -50,8 +51,8 @@ Also confirm no code logs the ticket or the request query string. Note for Phase
 - Item 6: verified on the real jar. No profile refuses ("ws.allowed-origins is not set"), `WS_ALLOWED_ORIGINS='*'` refuses, and `dev` starts. Live: `/ws/anything` gives 401, and an upgrade from `localhost:3000.evil.com` gives 401.
 - No code logs the ticket or the query string. Item 7 stays as written (it goes away in 2b-ii).
 
-## 3a. Open bug found 2026-11-03: concurrent refresh replay deadlock
-`Phase1ReviewTest.concurrentRefreshWithSameTokenReturnsOneSuccessAndRevokesFamily` failed once with 1 success and 3 x 401 instead of 4: the fifth request got a 500. The log shows `PSQLException: deadlock detected ... while updating tuple in relation "refresh_tokens"` from `RefreshTokenRepository.revokeFamily` (via `TokenService.refreshTokens`). Two replays each revoke the family and lock its rows in different orders. The same test passed in the baseline run, so the failure is intermittent. Fix test-first: lock the family's rows in a consistent order (e.g. `SELECT ... ORDER BY id FOR UPDATE` before the update), or make `revokeFamily` a single statement that cannot interleave with another, and make the test reliably reproduce the race (more threads or repetitions).
+## 3a. Refresh-token replay deadlock: FIXED 2026-11-03 (branch `fix-refresh-deadlock`, not pushed)
+Cause: `revokeFamily` rewrote every row of the family. Concurrent replays of one token (and the requests queued on the contested row) locked several rows in different orders, so PostgreSQL aborted one and the request returned 500. Fix: `... WHERE family_id = ? AND revoked_at IS NULL`, which touches at most one row because rotation keeps one active token per family. `RefreshReplayDeadlockTest` (30 rounds x 8 concurrent refreshes after 5 rotations): before the fix, 132/150 rounds bad (5/5 runs failed); after it, 30/30 runs green (0/900 bad rounds). Mutation: ordered locking of all rows (`ORDER BY id FOR UPDATE`) without the condition still failed 53/60 rounds. No 40P01 retry. ADR-0003 amended.
 
 ## 4. Decisions already made (don't relitigate)
 - WebSocket handshake auth = one-time ticket in a **PostgreSQL table** (`ws_tickets`: SHA-256 hash PK, user_id, expires_at 30 s), consumed via `DELETE ... RETURNING`. Chosen over in-memory (breaks in Phase 4) and Redis (not in the stack until Phase 4). See ADR-0004. Issue endpoint: `POST /api/ws/ticket` (JWT required) returns `{ticket, expiresInSeconds}`.

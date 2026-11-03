@@ -1,7 +1,7 @@
 # ADR-0003 — Authentication Strategy: Stateless JWT + Stored Refresh Tokens
 
 **Status:** Accepted
-**Date:** 2026-10-08 (amended 2026-10-17)
+**Date:** 2026-10-08 (amended 2026-10-17, 2026-11-03)
 **Phase:** 1 — REST Core
 
 ---
@@ -74,6 +74,8 @@ Attacker presents token1 → server sees it is revoked
 Server revokes ALL tokens with family_id = F1
 Both attacker and legitimate user are now logged out
 ```
+
+**Revocation touches only active rows (amended 2026-11-03).** Family revocation is `UPDATE refresh_tokens SET revoked_at = now WHERE family_id = ? AND revoked_at IS NULL`. Rotation keeps at most one active token per family, so this locks at most one row. The original statement rewrote every row in the family; under concurrent replays of one token, the losers (and requests queued on the contested row) locked several rows in different orders and deadlocked, and PostgreSQL aborted one, returning 500. `RefreshReplayDeadlockTest` (30 rounds of 8 concurrent refreshes after 5 rotations) failed in 132 of 150 rounds before the fix and passes after it. Locking all family rows in `id` order was tried and still deadlocked; skipping revoked rows is what removes the cycle. Already-revoked rows keep their original `revoked_at`, so the rotation history stays readable. No retry on SQLSTATE 40P01 was added: the cause is removed, and a retry would hide a regression.
 
 Without `family_id`, a replayed revoked token would just return a 401. With `family_id`, it triggers a cascade revocation of the entire session lineage — signalling a possible theft event and protecting the user.
 

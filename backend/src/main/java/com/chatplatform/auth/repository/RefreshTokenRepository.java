@@ -56,8 +56,26 @@ public class RefreshTokenRepository {
                 .update();
     }
 
+    /**
+     * Revokes every still-active token in the family.
+     *
+     * <p>Deadlock-free under concurrent replays because only rows with {@code revoked_at IS NULL} are
+     * touched. Rotation claims the old token and inserts its replacement in one transaction, so a
+     * family has at most one active row: this statement locks at most one row, and a single row lock
+     * cannot form a lock-ordering cycle. Rows that are already revoked fail the condition on the
+     * snapshot and are skipped without waiting.
+     *
+     * <p>The previous version rewrote every row of the family, so concurrent replays (and the
+     * requests queued on the contested row) locked several rows in different orders and deadlocked;
+     * PostgreSQL aborted one and the request returned 500. Locking all rows in {@code id} order
+     * was tried and did not remove the deadlock in RefreshReplayDeadlockTest; skipping revoked
+     * rows did. Already-revoked rows keep their original {@code revoked_at} (rotation history).
+     */
     public void revokeFamily(UUID familyId) {
-        jdbcClient.sql("UPDATE refresh_tokens SET revoked_at = :now WHERE family_id = :familyId")
+        jdbcClient.sql("""
+                UPDATE refresh_tokens SET revoked_at = :now
+                WHERE family_id = :familyId AND revoked_at IS NULL
+                """)
                 .param("now", OffsetDateTime.ofInstant(Instant.now(), ZoneOffset.UTC))
                 .param("familyId", familyId)
                 .update();

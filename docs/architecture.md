@@ -187,7 +187,7 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 
 - **Ordering:** each conversation's `seq` is allocated under a row lock on the conversation. Concurrent senders get unique, contiguous sequence numbers.
 - **Idempotency:** `(sender_id, client_msg_id)` is unique. A retry with the same conversation and body returns the original message. Reusing the key in another conversation or with a different body returns `409 IDEMPOTENCY_KEY_CONFLICT`. The conversation row is locked and the key checked BEFORE the sequence is incremented, so duplicates never create sequence gaps.
-- **Refresh tokens:** rotation is a single conditional `UPDATE ... WHERE revoked_at IS NULL ... RETURNING`, so concurrent use of one token yields exactly one success. Replaying a revoked token revokes the whole token family, and that revocation is committed even though the request returns 401 (`noRollbackFor = ApiException`).
+- **Refresh tokens:** rotation is a single conditional `UPDATE ... WHERE revoked_at IS NULL ... RETURNING`, so concurrent use of one token yields exactly one success. Replaying a revoked token revokes the whole token family, and that revocation is committed even though the request returns 401 (`noRollbackFor = ApiException`). Family revocation updates only still-active rows (at most one per family), so concurrent replays cannot deadlock: exactly one 200, the rest 401, never a 500 (`RefreshReplayDeadlockTest`).
 - **Authorization:** non-members get `404` on every conversation and message endpoint, and nothing is persisted. Unauthenticated requests get `401`.
 - **Transactions:** group creation (conversation plus participants) commits or rolls back as one unit; direct-conversation creation is deduplicated by a unique `direct_key`.
 - **Errors:** unknown routes return 404, malformed JSON or a malformed UUID returns 400, and unexpected errors return 500 without internals.
@@ -206,7 +206,6 @@ A socket authenticates once, at the handshake, so it could otherwise outlive the
 ## Known Limitations
 
 - **Logout does not close WebSockets (by design for now):** a socket authenticates only at the handshake. The access token has no session id, so the server cannot tell which of a user's sockets belong to the device that logged out. Closing all of them would log out the user's other devices. An open socket therefore survives logout until the about-15-minute socket lifetime ends (see WebSocket socket lifetime below). Tying sockets to a session id would remove this.
-- **Concurrent refresh-token replay can deadlock (open bug):** when several requests replay the same revoked refresh token at once, two `revokeFamily` updates can lock the family's rows in different orders. PostgreSQL then aborts one of them and that request returns `500` instead of `401`. Seen intermittently in `Phase1ReviewTest.concurrentRefreshWithSameTokenReturnsOneSuccessAndRevokesFamily` (2026-11-03). Not fixed yet.
 - Strict theft detection: a client that submits the same refresh token twice (for example a double-click) is logged out. A short grace window could relax this later.
 - Browser refresh-token storage (HttpOnly cookie plus CSRF/Origin protection versus in-memory) is undecided; decide it in Phase 2 when the React client starts.
 - The 401 response from the security filter has an empty body; it is not yet in the standard error JSON format.
