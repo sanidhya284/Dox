@@ -1,0 +1,21 @@
+-- V1__create_schema_baseline.sql
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Milestone 0 — Schema Baseline
+--
+-- This migration intentionally contains NO application tables.
+-- Its purpose is to:
+--   1. Establish Flyway's version history in a clean state
+--   2. Enable the schema_version table to be created before any app migration
+--   3. Serve as a documentation anchor for what Phase 1 will add
+--
+-- Phase 1 will add:
+--   - users
+--   - workspaces
+--   - channels
+--   - messages
+-- ─────────────────────────────────────────────────────────────────────────────
+
+-- Enable the pgcrypto extension for UUID generation.
+-- We do this now so Phase 1 migrations can use gen_random_uuid() without
+-- needing to enable extensions from inside a user migration (requires superuser).
+CREATE EXTENSION IF NOT EXISTS pgcrypto;

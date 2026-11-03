@@ -1,0 +1,6 @@
+spring:
+  datasource:
+    # URL/credentials injected by Testcontainers in AbstractIntegrationTest
+    driver-class-name: org.postgresql.Driver
+  flyway:
+    enabled: true
