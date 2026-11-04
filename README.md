@@ -9,7 +9,7 @@ A real-time chat backend built as a learning project for backend engineering: a 
 | 0: skeleton, Flyway, CI | Done |
 | 1: REST core (auth, conversations, ordered idempotent messages, keyset paging) | Done |
 | 2a/2b-i: WebSocket one-time tickets, authenticated handshake | Done |
-| 2b-ii: connection registry, socket lifetime, closing sockets on token theft | In progress (registry done) |
+| 2b-ii: connection registry, socket lifetime, closing sockets on token theft | In progress (registry and lifetime done) |
 | 2c to 2e: message frames and push, presence and read cursors, React UI | Not started |
 | 3 onward: reliable delivery, multi-instance, observability, ... | Not started |
 
@@ -31,6 +31,8 @@ The backend listens on http://localhost:8080. `curl http://localhost:8080/actuat
 The `dev` profile supplies a development-only JWT secret and the local frontend origins. Without it the app **refuses to start** unless you set:
 - `JWT_SECRET`: at least 32 bytes.
 - `WS_ALLOWED_ORIGINS`: comma-separated exact origins allowed to open WebSockets, e.g. `https://app.example.com`. A blank entry or `*` is refused.
+
+Optional: `WS_SESSION_MAX_LIFETIME` (ISO-8601 duration, default `PT15M`) is how long a WebSocket may stay open; zero or negative values refuse startup.
 
 All configuration: [architecture.md, Configuration](docs/architecture.md#configuration).
 
@@ -56,7 +58,14 @@ Connecting a WebSocket:
 2. Within 30 seconds, open `ws://localhost:8080/ws?ticket=<ticket>` from an allowed `Origin`. A ticket works once.
 3. A rejected handshake (bad, used or expired ticket, or an origin not on the list) gets HTTP `401`. A rejection for the origin leaves the ticket usable.
 
-The server tracks each open socket per user. Incoming frames are not handled yet; the frame protocol is Phase 2c. Close codes so far: `1008` if a socket somehow has no authenticated user (should not happen).
+The server tracks each open socket per user. Incoming frames are not handled yet; the frame protocol is Phase 2c.
+
+Close codes sent by the server:
+
+| Code | Meaning | Client should |
+|---|---|---|
+| `4001` | Socket lifetime reached (`WS_SESSION_MAX_LIFETIME`, default 15 minutes after the handshake) | Get a fresh ticket and reconnect |
+| `1008` | No authenticated user on the socket (should not happen) | Treat as a bug; get a new ticket |
 
 ## What is guaranteed (each covered by tests)
 Per-conversation ordering without gaps, idempotent sends (`client_msg_id`), atomic refresh-token rotation with theft detection, `404` for non-members, one-time WebSocket tickets, exact origin checks, and per-user socket tracking. The precise list, with test names: [architecture.md, Behaviour Guarantees](docs/architecture.md#behaviour-guarantees-each-covered-by-an-integration-or-unit-test).

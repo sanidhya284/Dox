@@ -1,14 +1,22 @@
 package com.chatplatform.realtime.websocket;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.scheduling.TaskScheduler;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.WebSocketSession;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ScheduledFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -16,8 +24,17 @@ import static org.mockito.Mockito.when;
 
 class ChatWebSocketHandlerTest {
 
+    private static final Duration LIFETIME = Duration.ofMinutes(15);
+
     private final ConnectionRegistry registry = new ConnectionRegistry();
-    private final ChatWebSocketHandler handler = new ChatWebSocketHandler(registry);
+    private final TaskScheduler scheduler = mock(TaskScheduler.class);
+    private final ScheduledFuture<?> lifetimeClose = mock(ScheduledFuture.class);
+    private final ChatWebSocketHandler handler;
+
+    ChatWebSocketHandlerTest() {
+        doReturn(lifetimeClose).when(scheduler).schedule(any(Runnable.class), any(Instant.class));
+        handler = new ChatWebSocketHandler(registry, scheduler, LIFETIME);
+    }
 
     private static WebSocketSession sessionWithAttributes(String id, Map<String, Object> attributes) {
         WebSocketSession s = mock(WebSocketSession.class);
@@ -61,5 +78,33 @@ class ChatWebSocketHandlerTest {
 
         handler.afterConnectionClosed(session, CloseStatus.NORMAL);
         assertThat(registry.hasEntry(user)).isFalse();
+    }
+
+    @Test
+    void connectSchedulesTheLifetimeCloseAndCloseCancelsIt() throws Exception {
+        UUID user = UUID.randomUUID();
+        Map<String, Object> attrs = new HashMap<>();
+        attrs.put(WsAuthHandshakeInterceptor.ATTR_USER_ID, user);
+        WebSocketSession session = sessionWithAttributes("s4", attrs);
+
+        Instant before = Instant.now();
+        handler.afterConnectionEstablished(session);
+
+        org.mockito.ArgumentCaptor<Instant> closeAt = org.mockito.ArgumentCaptor.forClass(Instant.class);
+        verify(scheduler).schedule(any(Runnable.class), closeAt.capture());
+        assertThat(closeAt.getValue()).isBetween(before.plus(LIFETIME), Instant.now().plus(LIFETIME));
+
+        handler.afterConnectionClosed(session, CloseStatus.NORMAL);
+        verify(lifetimeClose).cancel(anyBoolean());
+    }
+
+    @Test
+    void lifetimeMustBeSetAndPositive() {
+        for (Duration bad : new Duration[]{null, Duration.ZERO, Duration.ofSeconds(-1)}) {
+            assertThatThrownBy(() -> new ChatWebSocketHandler(registry, scheduler, bad))
+                    .as("lifetime %s", bad)
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("ws.session.max-lifetime");
+        }
     }
 }
