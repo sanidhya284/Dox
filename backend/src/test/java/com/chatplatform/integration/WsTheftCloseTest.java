@@ -34,6 +34,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -220,12 +221,18 @@ public class WsTheftCloseTest extends AbstractIntegrationTest {
                 .isZero();
     }
 
-    /** The public refresh endpoint must not wait for socket closes (a slow peer can stall a close). */
+    /**
+     * The public refresh endpoint must not run socket closes (a slow peer can stall a close).
+     * Deterministic check: the thread that runs closeAll is a realtime scheduler thread, never the
+     * Tomcat request thread. Response time is only a loose secondary check.
+     */
     @Test
-    void replayResponseDoesNotWaitForSocketCloses() throws Exception {
+    void closeAllRunsOnTheRealtimeSchedulerNotOnTheRequestThread() throws Exception {
         AuthResponse user = registerUser("thS_");
         UUID userId = user.user().id();
+        AtomicReference<String> closeAllThread = new AtomicReference<>();
         doAnswer(invocation -> {
+            closeAllThread.set(Thread.currentThread().getName());
             Thread.sleep(2000); // simulate a stalled peer
             return invocation.callRealMethod();
         }).when(registry).closeAll(eq(userId), any(CloseStatus.class));
@@ -237,9 +244,16 @@ public class WsTheftCloseTest extends AbstractIntegrationTest {
         long start = System.nanoTime();
         ResponseEntity<String> replay = refresh(user.refreshToken());
         long ms = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
-
         assertThat(replay.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
-        assertThat(ms).as("replay response time with closeAll stalled for 2 s").isLessThan(1000);
+
+        await("closeAll to be called").atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertThat(closeAllThread.get()).isNotNull());
+        assertThat(closeAllThread.get())
+                .as("thread that ran closeAll")
+                .startsWith("ws-sched-")
+                .doesNotStartWith("http-nio-");
+        assertThat(ms).as("loose secondary check: replay response time with closeAll stalled for 2 s")
+                .isLessThan(1500);
         await("the socket to be closed eventually")
                 .atMost(Duration.ofSeconds(8))
                 .untilAsserted(() -> assertThat(socket.closed).isDone());

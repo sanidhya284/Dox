@@ -9,7 +9,7 @@ A real-time chat backend built as a learning project for backend engineering: a 
 | 0: skeleton, Flyway, CI | Done |
 | 1: REST core (auth, conversations, ordered idempotent messages, keyset paging) | Done |
 | 2a/2b-i: WebSocket one-time tickets, authenticated handshake | Done |
-| 2b-ii: connection registry, socket lifetime, closing sockets on token theft | Done (PR open) |
+| 2b-ii: connection registry, socket lifetime, closing sockets on token theft | Done |
 | 2c to 2e: message frames and push, presence and read cursors, React UI | Not started |
 | 3 onward: reliable delivery, multi-instance, observability, ... | Not started |
 
@@ -51,7 +51,7 @@ echo "api.version=1.44" > ~/.docker-java.properties
 ```
 
 ## API and WebSocket
-The REST endpoints are `/api/auth/*` (register, login, refresh, logout), `/api/conversations/*` (direct and group conversations, sending and paging messages), `POST /api/ws/ticket` and `/actuator/health`. Full table: [architecture.md, API Surface](docs/architecture.md#api-surface).
+The REST endpoints are `/api/auth/*` (register, login, refresh, logout), `/api/conversations/*` (direct and group conversations, sending and paging messages; a message body is at most 4,000 characters, longer bodies get `400 VALIDATION_ERROR`), `POST /api/ws/ticket` and `/actuator/health`. Full table: [architecture.md, API Surface](docs/architecture.md#api-surface).
 
 Connecting a WebSocket:
 1. `POST /api/ws/ticket` with `Authorization: Bearer <access token>` returns `{"ticket": "...", "expiresInSeconds": 30}`.
@@ -69,7 +69,7 @@ Close codes sent by the server:
 | `1008` | No authenticated user on the socket (should not happen) | Treat as a bug; get a new ticket |
 
 ## What is guaranteed (each covered by tests)
-Per-conversation ordering without gaps, idempotent sends (`client_msg_id`), atomic refresh-token rotation with theft detection, `404` for non-members, one-time WebSocket tickets, exact origin checks, per-user socket tracking, socket lifetime, and closing a user's sockets after a refresh-token replay (only once the revocation has committed). The precise list, with test names: [architecture.md, Behaviour Guarantees](docs/architecture.md#behaviour-guarantees-each-covered-by-an-integration-or-unit-test).
+Per-conversation ordering without gaps, idempotent sends (`client_msg_id`), a 4,000-character body limit, atomic refresh-token rotation with theft detection, `404` for non-members, one-time WebSocket tickets, exact origin checks, per-user socket tracking, socket lifetime, and closing a user's sockets after a refresh-token replay (only once the revocation has committed). The precise list, with test names: [architecture.md, Behaviour Guarantees](docs/architecture.md#behaviour-guarantees-each-covered-by-an-integration-or-unit-test).
 
 No performance or capacity numbers are claimed. Tests that run on a laptop are correctness checks, not benchmarks.
 

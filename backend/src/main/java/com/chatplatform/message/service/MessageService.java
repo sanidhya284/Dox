@@ -1,5 +1,6 @@
 package com.chatplatform.message.service;
 
+import com.chatplatform.message.MessageLimits;
 import com.chatplatform.conversation.service.ConversationService;
 import com.chatplatform.conversation.repository.ConversationRepository;
 import com.chatplatform.message.dto.MessagePage;
@@ -33,6 +34,13 @@ public class MessageService {
 
     @Transactional
     public MessageResponse sendMessage(UUID conversationId, UUID senderId, SendMessageRequest request) {
+        // 0. Body length: enforced here too, so callers without REST validation (WebSocket, 2c) share it.
+        //    Pure input validation, checked before membership, so it reveals nothing about the conversation.
+        if (request.body() != null && request.body().length() > MessageLimits.MAX_BODY_CHARS) {
+            throw new ApiException(ErrorCode.VALIDATION_ERROR,
+                    "Message body must be at most " + MessageLimits.MAX_BODY_CHARS + " characters");
+        }
+
         // 1. requireParticipant (unchanged)
         conversationService.requireParticipant(conversationId, senderId);
 
