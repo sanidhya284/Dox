@@ -58,3 +58,11 @@ logging:
     root: INFO
     com.chatplatform: DEBUG
     org.flywaydb: INFO
+
+# ── WebSocket ─────────────────────────────────────────────────────────────
+# Every socket is closed (code 4001) this long after its handshake; the client
+# reconnects with a fresh ticket. Env override: WS_SESSION_MAX_LIFETIME (ISO-8601,
+# e.g. PT15M). Startup refuses zero or negative values. See ADR-0005.
+ws:
+  session:
+    max-lifetime: PT15M

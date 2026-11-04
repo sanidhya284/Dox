@@ -4,7 +4,7 @@ import com.chatplatform.auth.dto.AuthResponse;
 import com.chatplatform.auth.dto.RegisterRequest;
 import com.chatplatform.realtime.dto.IssuedTicket;
 import com.chatplatform.realtime.service.WsTicketService;
-import com.chatplatform.realtime.websocket.NoOpPlaceholderHandler;
+import com.chatplatform.realtime.websocket.ConnectionRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -45,7 +45,7 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
     private WsTicketService wsTicketService;
 
     @Autowired
-    private NoOpPlaceholderHandler noOpPlaceholderHandler;
+    private ConnectionRegistry connectionRegistry;
 
     @Autowired
     private JdbcClient jdbcClient;
@@ -91,21 +91,21 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
     }
 
     /**
-     * Waits until the server-side handler has bound {@code ticket} to exactly {@code expectedUserId}.
+     * Waits until the server has registered exactly one open session for {@code expectedUserId}.
      *
-     * <p>connect() returns when the client has received the 101 response, but the server calls
-     * afterConnectionEstablished (which fills the handler's map) after writing that response, on its
-     * own thread. Reading the map immediately after connect() is therefore a race: CI once saw null
-     * here. The check stays exact (equals the expected id); only the timing is relaxed.
+     * <p>The registry is keyed by the user id the handshake interceptor resolved from the ticket, so
+     * this proves the authenticated user is the one bound to the socket (fresh users per test, so one
+     * session is exact). connect() returns when the client has the 101 response, but the server
+     * registers in afterConnectionEstablished after writing it, so this polls instead of reading once.
      */
-    private void awaitBoundUser(String ticket, UUID expectedUserId) {
-        await("server-side session for ticket " + ticket + " to be bound to user " + expectedUserId)
+    private void awaitSessionFor(UUID expectedUserId) {
+        await("exactly one registered session for user " + expectedUserId)
                 .atMost(Duration.ofSeconds(5))
                 .pollDelay(Duration.ZERO)
                 .pollInterval(Duration.ofMillis(20))
-                .untilAsserted(() -> assertThat(noOpPlaceholderHandler.getUserIdForTicket(ticket))
-                        .as("user bound to ticket %s", ticket)
-                        .isEqualTo(expectedUserId));
+                .untilAsserted(() -> assertThat(connectionRegistry.sessionIdsFor(expectedUserId))
+                        .as("sessions registered for user %s", expectedUserId)
+                        .hasSize(1));
     }
 
     private String createExpiredTicket(UUID userId) {
@@ -126,7 +126,7 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
         WebSocketSession session = connect(ticket.ticket(), "http://localhost:3000");
         try {
             assertThat(session.isOpen()).isTrue();
-            awaitBoundUser(ticket.ticket(), userId);
+            awaitSessionFor(userId);
         } finally {
             session.close();
         }
@@ -140,7 +140,7 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
         WebSocketSession session = connect(ticket.ticket(), "http://localhost:5173");
         try {
             assertThat(session.isOpen()).isTrue();
-            awaitBoundUser(ticket.ticket(), userId);
+            awaitSessionFor(userId);
         } finally {
             session.close();
         }
@@ -196,7 +196,7 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
         WebSocketSession session = connect(ticket.ticket(), "http://localhost:3000");
         try {
             assertThat(session.isOpen()).isTrue();
-            awaitBoundUser(ticket.ticket(), userId);
+            awaitSessionFor(userId);
         } finally {
             session.close();
         }
@@ -214,7 +214,7 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
         WebSocketSession session = connect(ticket.ticket(), "http://localhost:3000");
         try {
             assertThat(session.isOpen()).isTrue();
-            awaitBoundUser(ticket.ticket(), userId);
+            awaitSessionFor(userId);
         } finally {
             session.close();
         }
@@ -234,10 +234,10 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
             assertThat(session1.isOpen()).isTrue();
             assertThat(session2.isOpen()).isTrue();
 
-            awaitBoundUser(ticket1.ticket(), user1Id);
-            awaitBoundUser(ticket2.ticket(), user2Id);
-            assertThat(noOpPlaceholderHandler.getUserIdForTicket(ticket1.ticket()))
-                    .isNotEqualTo(noOpPlaceholderHandler.getUserIdForTicket(ticket2.ticket()));
+            awaitSessionFor(user1Id);
+            awaitSessionFor(user2Id);
+            assertThat(connectionRegistry.sessionIdsFor(user1Id))
+                    .doesNotContainAnyElementsOf(connectionRegistry.sessionIdsFor(user2Id));
         } finally {
             session1.close();
             session2.close();
@@ -261,7 +261,7 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
         WebSocketSession session = connect(ticket.ticket(), "http://localhost:3000");
         try {
             assertThat(session.isOpen()).isTrue();
-            awaitBoundUser(ticket.ticket(), userId);
+            awaitSessionFor(userId);
         } finally {
             session.close();
         }

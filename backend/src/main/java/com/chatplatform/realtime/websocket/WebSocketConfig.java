@@ -6,9 +6,9 @@ import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
 import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
 
 /**
- * WebSocket configuration for Phase 2b-i.
+ * WebSocket configuration.
  *
- * <p>Registers the {@code /ws} endpoint with {@link NoOpPlaceholderHandler} and attaches
+ * <p>Registers the {@code /ws} endpoint with {@link ChatWebSocketHandler} and attaches
  * {@link WsAuthHandshakeInterceptor} to enforce origin validation and one-time ticket consumption.
  * Origins are checked twice against the same explicit list: first by WsAuthHandshakeInterceptor
  * (401, before the ticket is consumed), then by Spring's own origin check as defense in depth.
@@ -17,19 +17,19 @@ import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry
 @EnableWebSocket
 public class WebSocketConfig implements WebSocketConfigurer {
 
-    private final NoOpPlaceholderHandler noOpPlaceholderHandler;
+    private final ChatWebSocketHandler chatWebSocketHandler;
     private final WsAuthHandshakeInterceptor wsAuthHandshakeInterceptor;
 
     public WebSocketConfig(
-            NoOpPlaceholderHandler noOpPlaceholderHandler,
+            ChatWebSocketHandler chatWebSocketHandler,
             WsAuthHandshakeInterceptor wsAuthHandshakeInterceptor) {
-        this.noOpPlaceholderHandler = noOpPlaceholderHandler;
+        this.chatWebSocketHandler = chatWebSocketHandler;
         this.wsAuthHandshakeInterceptor = wsAuthHandshakeInterceptor;
     }
 
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-        registry.addHandler(noOpPlaceholderHandler, "/ws")
+        registry.addHandler(chatWebSocketHandler, "/ws")
                 .addInterceptors(wsAuthHandshakeInterceptor)
                 .setAllowedOrigins(wsAuthHandshakeInterceptor.getAllowedOrigins().toArray(String[]::new));
     }
