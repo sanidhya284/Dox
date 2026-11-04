@@ -11,6 +11,12 @@ public final class WsCloseStatuses {
     /** The user's refresh-token family was revoked (replay / theft signal): log in again. */
     public static final CloseStatus CREDENTIALS_REVOKED = new CloseStatus(4002, "credentials revoked");
 
+    /** The frame's "v" is not a protocol version this server speaks. */
+    public static final CloseStatus UNSUPPORTED_PROTOCOL_VERSION = new CloseStatus(4004, "unsupported protocol version");
+
+    /** The frame's "type" is not defined in this protocol version (a client bug; versioning handles evolution). */
+    public static final CloseStatus UNKNOWN_FRAME_TYPE = new CloseStatus(4005, "unknown frame type");
+
     private WsCloseStatuses() {
     }
 }

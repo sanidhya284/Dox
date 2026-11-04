@@ -6,7 +6,13 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.stereotype.Component;
+import com.chatplatform.realtime.websocket.protocol.FrameCodec;
+import com.chatplatform.realtime.websocket.protocol.Frames.Parsed;
+import com.chatplatform.realtime.websocket.protocol.Frames.Rejected;
+import com.chatplatform.realtime.websocket.protocol.Frames.SendCommand;
+import com.chatplatform.realtime.websocket.protocol.Frames.Violation;
 import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
@@ -21,7 +27,7 @@ import java.util.concurrent.ScheduledFuture;
  * {@link ConnectionRegistry}, closes it with 4001 after {@code ws.session.max-lifetime}, and forgets
  * it on close or transport error.
  *
- * <p>Incoming frames are ignored for now: the frame protocol arrives in Phase 2c.
+ * <p>Incoming frames follow protocol v1 (ADR-0006), parsed by {@link FrameCodec}.
  */
 @Component
 public class ChatWebSocketHandler extends TextWebSocketHandler {
@@ -34,13 +40,16 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private final ConnectionRegistry registry;
     private final TaskScheduler scheduler;
     private final Duration maxLifetime;
+    private final FrameCodec codec;
 
     public ChatWebSocketHandler(
             ConnectionRegistry registry,
             @Qualifier(RealtimeSchedulingConfig.WS_TASK_SCHEDULER) TaskScheduler scheduler,
-            @Value("${ws.session.max-lifetime:#{null}}") Duration maxLifetime) {
+            @Value("${ws.session.max-lifetime:#{null}}") Duration maxLifetime,
+            FrameCodec codec) {
         this.registry = registry;
         this.scheduler = scheduler;
+        this.codec = codec;
         if (maxLifetime == null || maxLifetime.isZero() || maxLifetime.isNegative()) {
             throw new IllegalStateException("ws.session.max-lifetime must be set to a positive duration "
                     + "(ISO-8601, e.g. PT15M; env WS_SESSION_MAX_LIFETIME), got: " + maxLifetime);
@@ -71,6 +80,22 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             session.close(WsCloseStatuses.SESSION_LIFETIME_REACHED);
         } catch (Exception e) {
             log.warn("Lifetime close of WebSocket session {} failed: {}", session.getId(), e.toString());
+        }
+    }
+
+    /**
+     * Protocol v1 (ADR-0006). Tomcat delivers one session's frames one at a time, on one thread.
+     * Violations close the socket; invalid content gets an error frame and the socket stays open.
+     */
+    @Override
+    protected void handleTextMessage(WebSocketSession session, TextMessage message) throws IOException {
+        Parsed parsed = codec.parse(message.getPayload());
+        switch (parsed) {
+            case Violation v -> session.close(v.status());
+            case Rejected r -> session.sendMessage(new TextMessage(codec.error(r)));
+            case SendCommand cmd -> {
+                // Handled in 2c step (b): persist through MessageService, then ack after commit.
+            }
         }
     }
 

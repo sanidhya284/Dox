@@ -10,7 +10,8 @@ A real-time chat backend built as a learning project for backend engineering: a 
 | 1: REST core (auth, conversations, ordered idempotent messages, keyset paging) | Done |
 | 2a/2b-i: WebSocket one-time tickets, authenticated handshake | Done |
 | 2b-ii: connection registry, socket lifetime, closing sockets on token theft | Done |
-| 2c to 2e: message frames and push, presence and read cursors, React UI | Not started |
+| 2c: WebSocket send, ack, push ([ADR-0006](docs/adr/0006-websocket-frame-protocol-v1.md)) | In progress (frame protocol and limits done) |
+| 2d, 2e: presence and read cursors, React UI | Not started |
 | 3 onward: reliable delivery, multi-instance, observability, ... | Not started |
 
 Details and the next steps: [docs/HANDOFF.md](docs/HANDOFF.md).
@@ -32,7 +33,7 @@ The `dev` profile supplies a development-only JWT secret and the local frontend 
 - `JWT_SECRET`: at least 32 bytes.
 - `WS_ALLOWED_ORIGINS`: comma-separated exact origins allowed to open WebSockets, e.g. `https://app.example.com`. A blank entry or `*` is refused.
 
-Optional: `WS_SESSION_MAX_LIFETIME` (ISO-8601 duration, default `PT15M`) is how long a WebSocket may stay open; zero or negative values refuse startup.
+Optional: `WS_SESSION_MAX_LIFETIME` (ISO-8601 duration, default `PT15M`) is how long a WebSocket may stay open; zero or negative values refuse startup. `WS_MAX_TEXT_FRAME_BYTES` (default `32768`) is the largest text frame accepted.
 
 All configuration: [architecture.md, Configuration](docs/architecture.md#configuration).
 
@@ -58,7 +59,7 @@ Connecting a WebSocket:
 2. Within 30 seconds, open `ws://localhost:8080/ws?ticket=<ticket>` from an allowed `Origin`. A ticket works once.
 3. A rejected handshake (bad, used or expired ticket, or an origin not on the list) gets HTTP `401`. A rejection for the origin leaves the ticket usable.
 
-The server tracks each open socket per user. Incoming frames are not handled yet; the frame protocol is Phase 2c.
+The server tracks each open socket per user. Frames follow protocol v1 ([ADR-0006](docs/adr/0006-websocket-frame-protocol-v1.md)): JSON text frames `{"v":1,"type":"..."}`. A client sends `{"v":1,"type":"send","conversationId":"...","clientMsgId":"...","body":"..."}`; invalid content gets an `error` frame (`{"v":1,"type":"error","clientMsgId":...,"code":"VALIDATION_ERROR","message":"..."}`) and the socket stays open. Persisting, acking and pushing sends are being implemented (Phase 2c, next steps).
 
 Close codes sent by the server:
 
@@ -66,6 +67,11 @@ Close codes sent by the server:
 |---|---|---|
 | `4001` | Socket lifetime reached (`WS_SESSION_MAX_LIFETIME`, default 15 minutes after the handshake) | Get a fresh ticket and reconnect |
 | `4002` | Credentials revoked: a refresh token of this user was replayed (theft signal), so all their sockets are closed | Log in again |
+| `4004` | Unsupported protocol version (`v` is not 1) | Fix the client |
+| `4005` | Unknown frame `type` | Fix the client |
+| `1007` | Frame is not valid protocol JSON (envelope, or a `clientMsgId` that is not a UUID) | Fix the client |
+| `1009` | Frame larger than `WS_MAX_TEXT_FRAME_BYTES` | Fix the client |
+| `1003` | Binary frame (not part of the protocol) | Fix the client |
 | `1008` | No authenticated user on the socket (should not happen) | Treat as a bug; get a new ticket |
 
 ## What is guaranteed (each covered by tests)

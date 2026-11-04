@@ -29,11 +29,14 @@ class ChatWebSocketHandlerTest {
     private final ConnectionRegistry registry = new ConnectionRegistry();
     private final TaskScheduler scheduler = mock(TaskScheduler.class);
     private final ScheduledFuture<?> lifetimeClose = mock(ScheduledFuture.class);
+    private final com.chatplatform.realtime.websocket.protocol.FrameCodec codec =
+            new com.chatplatform.realtime.websocket.protocol.FrameCodec(
+                    org.springframework.http.converter.json.Jackson2ObjectMapperBuilder.json().build());
     private final ChatWebSocketHandler handler;
 
     ChatWebSocketHandlerTest() {
         doReturn(lifetimeClose).when(scheduler).schedule(any(Runnable.class), any(Instant.class));
-        handler = new ChatWebSocketHandler(registry, scheduler, LIFETIME);
+        handler = new ChatWebSocketHandler(registry, scheduler, LIFETIME, codec);
     }
 
     private static WebSocketSession sessionWithAttributes(String id, Map<String, Object> attributes) {
@@ -101,7 +104,7 @@ class ChatWebSocketHandlerTest {
     @Test
     void lifetimeMustBeSetAndPositive() {
         for (Duration bad : new Duration[]{null, Duration.ZERO, Duration.ofSeconds(-1)}) {
-            assertThatThrownBy(() -> new ChatWebSocketHandler(registry, scheduler, bad))
+            assertThatThrownBy(() -> new ChatWebSocketHandler(registry, scheduler, bad, codec))
                     .as("lifetime %s", bad)
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("ws.session.max-lifetime");
