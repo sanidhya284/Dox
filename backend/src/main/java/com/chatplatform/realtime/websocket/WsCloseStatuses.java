@@ -11,6 +11,9 @@ public final class WsCloseStatuses {
     /** The user's refresh-token family was revoked (replay / theft signal): log in again. */
     public static final CloseStatus CREDENTIALS_REVOKED = new CloseStatus(4002, "credentials revoked");
 
+    /** The socket could not keep up (send-time or buffer limit exceeded, or a failed write): recover from history. */
+    public static final CloseStatus SLOW_CONSUMER = new CloseStatus(4003, "slow consumer");
+
     /** The frame's "v" is not a protocol version this server speaks. */
     public static final CloseStatus UNSUPPORTED_PROTOCOL_VERSION = new CloseStatus(4004, "unsupported protocol version");
 

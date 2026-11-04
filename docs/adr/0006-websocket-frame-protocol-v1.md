@@ -46,12 +46,13 @@ The handler is not transactional and calls the `@Transactional` `MessageService.
 ## Decision 5: push after commit, off the request and socket threads
 `sendMessage` publishes `MessageCreatedEvent` only when it inserts a new row, so duplicates are never pushed twice. Realtime handles it AFTER_COMMIT (as in ADR-0005) and queues the push on a bounded realtime executor. The push goes to every open socket of every active participant except the socket the message came from, which gets the ack instead. Messages sent over REST are pushed too.
 - Every send to a socket goes through a `ConcurrentWebSocketSessionDecorator` (send-time and buffer limits), because concurrent sends to one session are unsafe. Tomcat's own blocking-send timeout is set per session to the same time limit.
-- **A slow consumer** (limit exceeded, or a failed write) is closed with `4003` and forgotten; it recovers missed messages from history.
+- **A slow consumer** (limit exceeded, or a failed write) is closed with `4003` and forgotten; it recovers missed messages from history. The close goes through the raw session: once a `ConcurrentWebSocketSessionDecorator`'s limit has tripped, its own `close` rewrites any status to `4500` (Spring 6.1.13 source; a unit test fails if the close goes through the decorator).
 - **A full push queue** drops the push, logs it and counts it; clients recover from history.
 
 ## Consequences
 - **Out of order:** pushes may arrive out of `seq` order (after-commit handoffs can interleave). Clients order by `seq`; gap detection and resync are Phase 3.
 - **Not guaranteed:** delivery to sockets is best effort, by design; history is the guarantee.
 - **No rate limit:** there is no per-socket send rate limit yet.
-- **Needs a transaction:** `@TransactionalEventListener` ignores events published without an active transaction. `sendMessage` is always transactional, and a test pins this.
+- **Dropped pushes:** a full push queue drops pushes (logged and counted, `MessagePushListener.droppedPushes()`); clients recover from history.
+- **Needs a transaction:** `@TransactionalEventListener` ignores events published without an active transaction (no push would happen). `sendMessage` is `@Transactional`; the REST-send and WebSocket-send push tests would fail if it were not, but no test publishes outside a transaction on purpose.
 - **Single instance:** multi-instance push needs a Redis fan-out (Phase 4).

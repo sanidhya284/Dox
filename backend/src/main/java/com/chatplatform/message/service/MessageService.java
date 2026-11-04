@@ -8,6 +8,8 @@ import com.chatplatform.message.dto.MessageResponse;
 import com.chatplatform.message.dto.SendMessageRequest;
 import com.chatplatform.message.repository.Message;
 import com.chatplatform.message.repository.MessageRepository;
+import com.chatplatform.message.event.MessageCreatedEvent;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,17 +25,31 @@ public class MessageService {
     private final MessageRepository messageRepository;
     private final ConversationRepository conversationRepository;
     private final ConversationService conversationService;
+    private final ApplicationEventPublisher events;
 
     public MessageService(MessageRepository messageRepository,
                           ConversationRepository conversationRepository,
-                          ConversationService conversationService) {
+                          ConversationService conversationService,
+                          ApplicationEventPublisher events) {
         this.messageRepository = messageRepository;
         this.conversationRepository = conversationRepository;
         this.conversationService = conversationService;
+        this.events = events;
     }
 
     @Transactional
     public MessageResponse sendMessage(UUID conversationId, UUID senderId, SendMessageRequest request) {
+        return sendMessage(conversationId, senderId, request, null);
+    }
+
+    /**
+     * Same as {@link #sendMessage(UUID, UUID, SendMessageRequest)}; {@code originSessionId} is the
+     * WebSocket session the send came from (null for REST), carried on the push event so the origin
+     * socket is not pushed its own message (it gets the ack).
+     */
+    @Transactional
+    public MessageResponse sendMessage(UUID conversationId, UUID senderId, SendMessageRequest request,
+                                       String originSessionId) {
         // 0. Body length: enforced here too, so callers without REST validation (WebSocket, 2c) share it.
         //    Pure input validation, checked before membership, so it reveals nothing about the conversation.
         if (request.body() != null && request.body().length() > MessageLimits.MAX_BODY_CHARS) {
@@ -66,7 +82,11 @@ public class MessageService {
         
         // 5. If the insert returns empty, throw ApiException
         if (inserted.isPresent()) {
-            return toResponse(inserted.get());
+            MessageResponse created = toResponse(inserted.get());
+            // Only a NEW row is announced (duplicates returned above are never pushed again).
+            // Listeners deliver it after commit (realtime: MessagePushListener).
+            events.publishEvent(new MessageCreatedEvent(created, originSessionId));
+            return created;
         } else {
             throw new ApiException(ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
         }

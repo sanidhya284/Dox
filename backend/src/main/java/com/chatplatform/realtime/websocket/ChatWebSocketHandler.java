@@ -18,6 +18,7 @@ import com.chatplatform.realtime.websocket.protocol.Frames.Violation;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.adapter.NativeWebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
@@ -73,10 +74,25 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             session.close(CloseStatus.POLICY_VIOLATION);
             return;
         }
+        setTomcatBlockingSendTimeout(session);
         registry.register(userId, session);
         ScheduledFuture<?> lifetimeClose = scheduler.schedule(
                 () -> closeAtEndOfLifetime(session), Instant.now().plus(maxLifetime));
         session.getAttributes().put(ATTR_LIFETIME_CLOSE, lifetimeClose);
+    }
+
+    /**
+     * Bounds the thread that actually writes to this socket: the decorator's send-time limit only
+     * protects OTHER senders, while the writing thread itself would otherwise wait up to Tomcat's
+     * default blocking-send timeout (20 s) on a stalled peer. Tomcat reads this per-session user
+     * property (its own key, as a Long) before each blocking send.
+     */
+    private void setTomcatBlockingSendTimeout(WebSocketSession session) {
+        if (session instanceof NativeWebSocketSession nws
+                && nws.getNativeSession(jakarta.websocket.Session.class) instanceof jakarta.websocket.Session ns) {
+            ns.getUserProperties().put(org.apache.tomcat.websocket.Constants.BLOCKING_SEND_TIMEOUT_PROPERTY,
+                    Long.valueOf(registry.sendTimeLimitMs()));
+        }
     }
 
     private void closeAtEndOfLifetime(WebSocketSession session) {
@@ -99,7 +115,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         Parsed parsed = codec.parse(message.getPayload());
         switch (parsed) {
             case Violation v -> session.close(v.status());
-            case Rejected r -> session.sendMessage(new TextMessage(codec.error(r)));
+            case Rejected r -> reply(session, codec.error(r));
             case SendCommand cmd -> handleSend(session, cmd);
         }
     }
@@ -115,7 +131,8 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         String reply;
         try {
             MessageResponse saved = messageService.sendMessage(
-                    cmd.conversationId(), userId, new SendMessageRequest(cmd.clientMsgId(), cmd.body()));
+                    cmd.conversationId(), userId, new SendMessageRequest(cmd.clientMsgId(), cmd.body()),
+                    session.getId());
             reply = codec.ack(saved);
         } catch (ApiException e) {
             reply = codec.errorFor(cmd.clientMsgId(), e);
@@ -123,7 +140,18 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             log.error("WebSocket send failed on session {}", session.getId(), e); // never logs the body
             reply = codec.errorFor(cmd.clientMsgId(), e);
         }
-        session.sendMessage(new TextMessage(reply));
+        reply(session, reply);
+    }
+
+    /**
+     * Replies (acks, error frames) go through the registry's per-session decorator, like pushes, so
+     * concurrent sends to one socket are serialised and bounded.
+     */
+    private void reply(WebSocketSession session, String frame) {
+        UUID userId = (UUID) session.getAttributes().get(WsAuthHandshakeInterceptor.ATTR_USER_ID);
+        if (!registry.sendTo(userId, session.getId(), new TextMessage(frame))) {
+            log.debug("Reply not sent: WebSocket session {} is no longer registered", session.getId());
+        }
     }
 
     @Override
