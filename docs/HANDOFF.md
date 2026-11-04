@@ -12,7 +12,7 @@ Written 2026-11-03 for Claude Code taking over from a Claude-chat architect + Ge
 | Phase 2b-i (handshake interceptor: Origin check + ticket consume) | Done, including the Section 3 hardening. Merged (PR #3). |
 | Refresh replay deadlock | Fixed (Section 3a). Merged (PR #4). |
 | Phase 2b-ii (registry, lifetime 4001, theft close 4002; [ADR-0005](adr/0005-connection-registry-and-after-commit-socket-closing.md)) | Done. Merged (PR #5). Follow-ups on branch `phase-2b-ii` after the merge: deterministic thread check in `WsTheftCloseTest`, message body limit, ADR-0004 duplicate merged; these need a new PR. |
-| Phase 2c (send, ack, push; [ADR-0006](adr/0006-websocket-frame-protocol-v1.md)) | In progress on branch `phase-2c` (based on `phase-2b-ii` @ `851d5cd`, which has no PR yet). Step (a) protocol and limits: done. Step (b) send and ack: next. Step (c) push: pending. Plan (with the user's amendments): `~/.claude/plans/majestic-seeking-wreath.md`. |
+| Phase 2c (send, ack, push; [ADR-0006](adr/0006-websocket-frame-protocol-v1.md)) | In progress on branch `phase-2c` (based on `phase-2b-ii` @ `851d5cd`, which has no PR yet). Step (a) protocol and limits: done. Step (b) send and ack: done. Step (c) push: next. Plan (with the user's amendments): `~/.claude/plans/majestic-seeking-wreath.md`. |
 | Last full local run | See the latest commit message on `phase-2b-ii`; counts are read from the XML there. |
 
 ## 1. First task: verify and tidy git (before any feature work)

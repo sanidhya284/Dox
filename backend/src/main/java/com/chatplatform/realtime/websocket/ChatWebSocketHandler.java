@@ -6,7 +6,11 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.stereotype.Component;
+import com.chatplatform.message.dto.MessageResponse;
+import com.chatplatform.message.dto.SendMessageRequest;
+import com.chatplatform.message.service.MessageService;
 import com.chatplatform.realtime.websocket.protocol.FrameCodec;
+import com.chatplatform.shared.exception.ApiException;
 import com.chatplatform.realtime.websocket.protocol.Frames.Parsed;
 import com.chatplatform.realtime.websocket.protocol.Frames.Rejected;
 import com.chatplatform.realtime.websocket.protocol.Frames.SendCommand;
@@ -41,15 +45,18 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private final TaskScheduler scheduler;
     private final Duration maxLifetime;
     private final FrameCodec codec;
+    private final MessageService messageService;
 
     public ChatWebSocketHandler(
             ConnectionRegistry registry,
             @Qualifier(RealtimeSchedulingConfig.WS_TASK_SCHEDULER) TaskScheduler scheduler,
             @Value("${ws.session.max-lifetime:#{null}}") Duration maxLifetime,
-            FrameCodec codec) {
+            FrameCodec codec,
+            MessageService messageService) {
         this.registry = registry;
         this.scheduler = scheduler;
         this.codec = codec;
+        this.messageService = messageService;
         if (maxLifetime == null || maxLifetime.isZero() || maxLifetime.isNegative()) {
             throw new IllegalStateException("ws.session.max-lifetime must be set to a positive duration "
                     + "(ISO-8601, e.g. PT15M; env WS_SESSION_MAX_LIFETIME), got: " + maxLifetime);
@@ -93,10 +100,30 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         switch (parsed) {
             case Violation v -> session.close(v.status());
             case Rejected r -> session.sendMessage(new TextMessage(codec.error(r)));
-            case SendCommand cmd -> {
-                // Handled in 2c step (b): persist through MessageService, then ack after commit.
-            }
+            case SendCommand cmd -> handleSend(session, cmd);
         }
+    }
+
+    /**
+     * Persists through the same {@code @Transactional} MessageService.sendMessage as REST. This handler
+     * is not transactional, so when the call returns the transaction has committed: the ack is sent
+     * only after commit. If anything fails (including the commit), the client gets an error frame
+     * carrying its clientMsgId instead, and nothing is persisted.
+     */
+    private void handleSend(WebSocketSession session, SendCommand cmd) throws IOException {
+        UUID userId = (UUID) session.getAttributes().get(WsAuthHandshakeInterceptor.ATTR_USER_ID);
+        String reply;
+        try {
+            MessageResponse saved = messageService.sendMessage(
+                    cmd.conversationId(), userId, new SendMessageRequest(cmd.clientMsgId(), cmd.body()));
+            reply = codec.ack(saved);
+        } catch (ApiException e) {
+            reply = codec.errorFor(cmd.clientMsgId(), e);
+        } catch (RuntimeException e) {
+            log.error("WebSocket send failed on session {}", session.getId(), e); // never logs the body
+            reply = codec.errorFor(cmd.clientMsgId(), e);
+        }
+        session.sendMessage(new TextMessage(reply));
     }
 
     @Override

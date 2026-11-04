@@ -10,7 +10,7 @@ A real-time chat backend built as a learning project for backend engineering: a 
 | 1: REST core (auth, conversations, ordered idempotent messages, keyset paging) | Done |
 | 2a/2b-i: WebSocket one-time tickets, authenticated handshake | Done |
 | 2b-ii: connection registry, socket lifetime, closing sockets on token theft | Done |
-| 2c: WebSocket send, ack, push ([ADR-0006](docs/adr/0006-websocket-frame-protocol-v1.md)) | In progress (frame protocol and limits done) |
+| 2c: WebSocket send, ack, push ([ADR-0006](docs/adr/0006-websocket-frame-protocol-v1.md)) | In progress (frame protocol, send and ack done; push next) |
 | 2d, 2e: presence and read cursors, React UI | Not started |
 | 3 onward: reliable delivery, multi-instance, observability, ... | Not started |
 
@@ -59,7 +59,7 @@ Connecting a WebSocket:
 2. Within 30 seconds, open `ws://localhost:8080/ws?ticket=<ticket>` from an allowed `Origin`. A ticket works once.
 3. A rejected handshake (bad, used or expired ticket, or an origin not on the list) gets HTTP `401`. A rejection for the origin leaves the ticket usable.
 
-The server tracks each open socket per user. Frames follow protocol v1 ([ADR-0006](docs/adr/0006-websocket-frame-protocol-v1.md)): JSON text frames `{"v":1,"type":"..."}`. A client sends `{"v":1,"type":"send","conversationId":"...","clientMsgId":"...","body":"..."}`; invalid content gets an `error` frame (`{"v":1,"type":"error","clientMsgId":...,"code":"VALIDATION_ERROR","message":"..."}`) and the socket stays open. Persisting, acking and pushing sends are being implemented (Phase 2c, next steps).
+The server tracks each open socket per user. Frames follow protocol v1 ([ADR-0006](docs/adr/0006-websocket-frame-protocol-v1.md)): JSON text frames `{"v":1,"type":"..."}`. A client sends `{"v":1,"type":"send","conversationId":"...","clientMsgId":"...","body":"..."}`; invalid content gets an `error` frame (`{"v":1,"type":"error","clientMsgId":...,"code":"VALIDATION_ERROR","message":"..."}`) and the socket stays open. A valid send is stored exactly like a REST send, and only after it has committed does the sender get `{"v":1,"type":"ack","clientMsgId":"...","messageId":"...","conversationId":"...","seq":42,"createdAt":"..."}`; resending the same `clientMsgId` returns the same ack without storing a second message. Pushing new messages to other sockets is the next step of Phase 2c.
 
 Close codes sent by the server:
 
