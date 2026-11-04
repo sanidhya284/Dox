@@ -6,6 +6,8 @@ import com.chatplatform.realtime.dto.IssuedTicket;
 import com.chatplatform.realtime.service.WsTicketService;
 import com.chatplatform.realtime.websocket.NoOpPlaceholderHandler;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpStatus;
@@ -17,6 +19,7 @@ import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.net.URI;
+import java.time.Duration;
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -27,6 +30,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -76,11 +80,32 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
     private void assertHandshakeFails(String ticket, String origin) {
         long start = System.nanoTime();
         assertThatThrownBy(() -> connect(ticket, origin))
-                .isInstanceOf(ExecutionException.class);
+                .isInstanceOf(ExecutionException.class)
+                // Every rejection is a 401 from our interceptor (not e.g. a 403 from Spring's own origin check).
+                .rootCause()
+                .hasMessageContaining("[401]");
         long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
         assertThat(elapsedMs)
                 .as("Handshake rejection must fail promptly, not hang until timeout")
                 .isLessThan(2000);
+    }
+
+    /**
+     * Waits until the server-side handler has bound {@code ticket} to exactly {@code expectedUserId}.
+     *
+     * <p>connect() returns when the client has received the 101 response, but the server calls
+     * afterConnectionEstablished (which fills the handler's map) after writing that response, on its
+     * own thread. Reading the map immediately after connect() is therefore a race: CI once saw null
+     * here. The check stays exact (equals the expected id); only the timing is relaxed.
+     */
+    private void awaitBoundUser(String ticket, UUID expectedUserId) {
+        await("server-side session for ticket " + ticket + " to be bound to user " + expectedUserId)
+                .atMost(Duration.ofSeconds(5))
+                .pollDelay(Duration.ZERO)
+                .pollInterval(Duration.ofMillis(20))
+                .untilAsserted(() -> assertThat(noOpPlaceholderHandler.getUserIdForTicket(ticket))
+                        .as("user bound to ticket %s", ticket)
+                        .isEqualTo(expectedUserId));
     }
 
     private String createExpiredTicket(UUID userId) {
@@ -101,8 +126,7 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
         WebSocketSession session = connect(ticket.ticket(), "http://localhost:3000");
         try {
             assertThat(session.isOpen()).isTrue();
-            UUID resolved = noOpPlaceholderHandler.getUserIdForTicket(ticket.ticket());
-            assertThat(resolved).isEqualTo(userId);
+            awaitBoundUser(ticket.ticket(), userId);
         } finally {
             session.close();
         }
@@ -116,8 +140,7 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
         WebSocketSession session = connect(ticket.ticket(), "http://localhost:5173");
         try {
             assertThat(session.isOpen()).isTrue();
-            UUID resolved = noOpPlaceholderHandler.getUserIdForTicket(ticket.ticket());
-            assertThat(resolved).isEqualTo(userId);
+            awaitBoundUser(ticket.ticket(), userId);
         } finally {
             session.close();
         }
@@ -173,8 +196,7 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
         WebSocketSession session = connect(ticket.ticket(), "http://localhost:3000");
         try {
             assertThat(session.isOpen()).isTrue();
-            UUID resolved = noOpPlaceholderHandler.getUserIdForTicket(ticket.ticket());
-            assertThat(resolved).isEqualTo(userId);
+            awaitBoundUser(ticket.ticket(), userId);
         } finally {
             session.close();
         }
@@ -192,8 +214,7 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
         WebSocketSession session = connect(ticket.ticket(), "http://localhost:3000");
         try {
             assertThat(session.isOpen()).isTrue();
-            UUID resolved = noOpPlaceholderHandler.getUserIdForTicket(ticket.ticket());
-            assertThat(resolved).isEqualTo(userId);
+            awaitBoundUser(ticket.ticket(), userId);
         } finally {
             session.close();
         }
@@ -213,15 +234,43 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
             assertThat(session1.isOpen()).isTrue();
             assertThat(session2.isOpen()).isTrue();
 
-            UUID resolvedUser1 = noOpPlaceholderHandler.getUserIdForTicket(ticket1.ticket());
-            UUID resolvedUser2 = noOpPlaceholderHandler.getUserIdForTicket(ticket2.ticket());
-
-            assertThat(resolvedUser1).isEqualTo(user1Id);
-            assertThat(resolvedUser2).isEqualTo(user2Id);
-            assertThat(resolvedUser1).isNotEqualTo(resolvedUser2);
+            awaitBoundUser(ticket1.ticket(), user1Id);
+            awaitBoundUser(ticket2.ticket(), user2Id);
+            assertThat(noOpPlaceholderHandler.getUserIdForTicket(ticket1.ticket()))
+                    .isNotEqualTo(noOpPlaceholderHandler.getUserIdForTicket(ticket2.ticket()));
         } finally {
             session1.close();
             session2.close();
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "http://localhost:3000.evil.com",
+            "http://localhost:3000/",
+            "http://localhost:3001",
+            "https://localhost:3000",
+            "HTTP://LOCALHOST:3000"
+    })
+    void nearMissOriginFailsHandshakeAndLeavesTicketUnconsumed(String nearMiss) throws Exception {
+        UUID userId = registerAndGetId(UUID.randomUUID().toString().substring(0, 8));
+        IssuedTicket ticket = wsTicketService.issue(userId);
+
+        assertHandshakeFails(ticket.ticket(), nearMiss);
+
+        WebSocketSession session = connect(ticket.ticket(), "http://localhost:3000");
+        try {
+            assertThat(session.isOpen()).isTrue();
+            awaitBoundUser(ticket.ticket(), userId);
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void pathsUnderWsAreNotPublic() {
+        // Only the exact /ws endpoint bypasses JWT auth; anything below it must require a token.
+        ResponseEntity<String> res = restTemplate.getForEntity("/ws/anything", String.class);
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
 }

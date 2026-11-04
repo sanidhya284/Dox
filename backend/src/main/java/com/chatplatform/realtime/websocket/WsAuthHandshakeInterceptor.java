@@ -34,9 +34,29 @@ public class WsAuthHandshakeInterceptor implements HandshakeInterceptor {
 
     public WsAuthHandshakeInterceptor(
             WsTicketService wsTicketService,
-            @Value("${ws.allowed-origins:http://localhost:3000,http://localhost:5173}") List<String> allowedOrigins) {
+            @Value("${ws.allowed-origins:}") List<String> allowedOrigins) {
         this.wsTicketService = wsTicketService;
-        this.allowedOrigins = allowedOrigins;
+        this.allowedOrigins = validate(allowedOrigins);
+    }
+
+    /**
+     * Fails closed, like the JWT secret: no hardcoded default, no wildcard, no blank entry.
+     * Matching is exact (scheme, host, port), so a pattern would silently never match anyway.
+     */
+    private static List<String> validate(List<String> origins) {
+        if (origins == null || origins.isEmpty()) {
+            throw new IllegalStateException("ws.allowed-origins is not set. Set the WS_ALLOWED_ORIGINS environment variable "
+                    + "(comma-separated exact origins), or activate the 'dev' profile for local development.");
+        }
+        for (String origin : origins) {
+            if (origin == null || origin.isBlank()) {
+                throw new IllegalStateException("ws.allowed-origins contains a blank entry.");
+            }
+            if (origin.contains("*")) {
+                throw new IllegalStateException("ws.allowed-origins must list exact origins; wildcards are not allowed: " + origin);
+            }
+        }
+        return List.copyOf(origins);
     }
 
     @Override

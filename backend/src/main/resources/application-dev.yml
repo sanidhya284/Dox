@@ -12,3 +12,7 @@ logging:
 jwt:
   # LOCAL DEVELOPMENT ONLY. Never use in production.
   secret: "local-dev-secret-key-that-is-at-least-40-bytes-long-12345"
+
+ws:
+  # LOCAL DEVELOPMENT ONLY. Exact origins of the local frontend dev servers.
+  allowed-origins: http://localhost:3000,http://localhost:5173

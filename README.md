@@ -53,8 +53,10 @@ docker compose up -d
 
 ```bash
 cd backend
-./gradlew bootRun
+SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun
 ```
+
+Without the `dev` profile the app refuses to start unless `JWT_SECRET` and `WS_ALLOWED_ORIGINS` are set (see `docs/architecture.md`, Configuration).
 
 The backend starts on **http://localhost:8080**.
 
