@@ -19,6 +19,7 @@ import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.net.URI;
+import java.time.Duration;
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -29,6 +30,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -88,6 +90,24 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
                 .isLessThan(2000);
     }
 
+    /**
+     * Waits until the server-side handler has bound {@code ticket} to exactly {@code expectedUserId}.
+     *
+     * <p>connect() returns when the client has received the 101 response, but the server calls
+     * afterConnectionEstablished (which fills the handler's map) after writing that response, on its
+     * own thread. Reading the map immediately after connect() is therefore a race: CI once saw null
+     * here. The check stays exact (equals the expected id); only the timing is relaxed.
+     */
+    private void awaitBoundUser(String ticket, UUID expectedUserId) {
+        await("server-side session for ticket " + ticket + " to be bound to user " + expectedUserId)
+                .atMost(Duration.ofSeconds(5))
+                .pollDelay(Duration.ZERO)
+                .pollInterval(Duration.ofMillis(20))
+                .untilAsserted(() -> assertThat(noOpPlaceholderHandler.getUserIdForTicket(ticket))
+                        .as("user bound to ticket %s", ticket)
+                        .isEqualTo(expectedUserId));
+    }
+
     private String createExpiredTicket(UUID userId) {
         IssuedTicket ticket = wsTicketService.issue(userId);
         OffsetDateTime past = OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(5);
@@ -106,8 +126,7 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
         WebSocketSession session = connect(ticket.ticket(), "http://localhost:3000");
         try {
             assertThat(session.isOpen()).isTrue();
-            UUID resolved = noOpPlaceholderHandler.getUserIdForTicket(ticket.ticket());
-            assertThat(resolved).isEqualTo(userId);
+            awaitBoundUser(ticket.ticket(), userId);
         } finally {
             session.close();
         }
@@ -121,8 +140,7 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
         WebSocketSession session = connect(ticket.ticket(), "http://localhost:5173");
         try {
             assertThat(session.isOpen()).isTrue();
-            UUID resolved = noOpPlaceholderHandler.getUserIdForTicket(ticket.ticket());
-            assertThat(resolved).isEqualTo(userId);
+            awaitBoundUser(ticket.ticket(), userId);
         } finally {
             session.close();
         }
@@ -178,8 +196,7 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
         WebSocketSession session = connect(ticket.ticket(), "http://localhost:3000");
         try {
             assertThat(session.isOpen()).isTrue();
-            UUID resolved = noOpPlaceholderHandler.getUserIdForTicket(ticket.ticket());
-            assertThat(resolved).isEqualTo(userId);
+            awaitBoundUser(ticket.ticket(), userId);
         } finally {
             session.close();
         }
@@ -197,8 +214,7 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
         WebSocketSession session = connect(ticket.ticket(), "http://localhost:3000");
         try {
             assertThat(session.isOpen()).isTrue();
-            UUID resolved = noOpPlaceholderHandler.getUserIdForTicket(ticket.ticket());
-            assertThat(resolved).isEqualTo(userId);
+            awaitBoundUser(ticket.ticket(), userId);
         } finally {
             session.close();
         }
@@ -218,12 +234,10 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
             assertThat(session1.isOpen()).isTrue();
             assertThat(session2.isOpen()).isTrue();
 
-            UUID resolvedUser1 = noOpPlaceholderHandler.getUserIdForTicket(ticket1.ticket());
-            UUID resolvedUser2 = noOpPlaceholderHandler.getUserIdForTicket(ticket2.ticket());
-
-            assertThat(resolvedUser1).isEqualTo(user1Id);
-            assertThat(resolvedUser2).isEqualTo(user2Id);
-            assertThat(resolvedUser1).isNotEqualTo(resolvedUser2);
+            awaitBoundUser(ticket1.ticket(), user1Id);
+            awaitBoundUser(ticket2.ticket(), user2Id);
+            assertThat(noOpPlaceholderHandler.getUserIdForTicket(ticket1.ticket()))
+                    .isNotEqualTo(noOpPlaceholderHandler.getUserIdForTicket(ticket2.ticket()));
         } finally {
             session1.close();
             session2.close();
@@ -247,7 +261,7 @@ public class WsHandshakeAuthTest extends AbstractIntegrationTest {
         WebSocketSession session = connect(ticket.ticket(), "http://localhost:3000");
         try {
             assertThat(session.isOpen()).isTrue();
-            assertThat(noOpPlaceholderHandler.getUserIdForTicket(ticket.ticket())).isEqualTo(userId);
+            awaitBoundUser(ticket.ticket(), userId);
         } finally {
             session.close();
         }

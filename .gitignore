@@ -22,3 +22,6 @@ Thumbs.db
 
 # Agents files
 .agent/
+
+# Claude Code worktrees (local, per-session checkouts)
+.claude/worktrees/
