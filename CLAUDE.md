@@ -51,3 +51,11 @@ Modular monolith, packages under `com.chatplatform`: `shared`, `user`, `auth`, `
 
 ## Style
 Explicit SQL in repositories. Domain errors via `ApiException(ErrorCode.X)` handled in `GlobalExceptionHandler` (also covers unknown route 404, malformed JSON/UUID 400). Keep ADRs and `docs/architecture.md` in sync with behavior when behavior changes.
+
+## Documentation rule (standing; applies to every milestone)
+- **Docs are part of "done".** Any change to behavior, config, commands, endpoints, close codes, error codes, limitations or phase status updates the affected docs **in the same commit** as the code: `README.md`, `docs/architecture.md`, the relevant ADR, and `docs/HANDOFF.md`.
+- **README.md** must stay accurate for someone cloning the repo cold: what the project is, current phase status, how to run it (dev profile; `JWT_SECRET` / `WS_ALLOWED_ORIGINS` otherwise), how to run unit and integration tests (including the Docker 29 `api.version` workaround), the API and WebSocket surface, the guarantees actually covered by tests, known limitations, and links to the ADRs. No unmeasured performance or capacity claims.
+- **docs/HANDOFF.md:** tick off finished steps, record new decisions, and keep "open decisions" and "known limitations" current, so a fresh session never has to rediscover state.
+- **ADRs:** a new ADR for each significant design decision. Amend an existing ADR only when its decision changed, with a dated note; don't rewrite history. Implementation progress goes in HANDOFF, not in ADRs.
+- At the end of each step, the report includes a short **"docs touched"** list and says plainly if a doc still needs a human decision.
+- Keep docs short and factual. Don't duplicate content between files; link instead.
