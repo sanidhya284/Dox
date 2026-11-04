@@ -9,10 +9,10 @@ Written 2026-11-03 for Claude Code taking over from a Claude-chat architect + Ge
 | Phase 0 (skeleton, Flyway, CI) | Done |
 | Phase 1 (REST core: auth, conversations, ordered idempotent messaging, keyset paging) | Done and verified by tests that were seen failing first, then passing. Tag `phase-1-verified` = commit `9004cd1` (pushed). |
 | Phase 2a (WebSocket one-time tickets in PostgreSQL) | Done. 9 tests + a mutation proof (a plain SELECT instead of `DELETE ... RETURNING` fails 3 tests). ADR-0004 written. |
-| Phase 2b-i (handshake interceptor: Origin check + ticket consume) | Done, including the Section 3 hardening. Merged to `main` (PR #3, 2026-11-04). |
-| Refresh-token replay deadlock fix | PR #4 (`fix-refresh-deadlock`), CI green, open. Not yet on `main`. |
-| Phase 2b-ii (registry, lifetime, theft close; [ADR-0005](adr/0005-connection-registry-and-after-commit-socket-closing.md)) | Done on branch `phase-2b-ii` (steps a, b, c); PR into `main` open, not merged. Next: 2c. |
-| Last full local run (2026-11-04, branch `phase-2b-ii`, after step c) | Unit 20/20 (ChatPlatformApplicationTests 1, ChatWebSocketHandlerTest 5, ConnectionRegistryTest 5, WsAuthHandshakeInterceptorTest 4, JwtServiceTest 5). Integration 72/72 (GroupRollback 2, MessageConcurrency 3, MessageThroughput 1, Phase1Coverage 18, Phase1Review 14, SeqRollback 1, TokenTheft 1, WsConnectionRegistry 1, WsHandshakeAuth 16, WsSessionLifetime 2, WsTheftClose 4, WsTicket 9). This branch does not have the PR #4 deadlock fix yet. |
+| Phase 2b-i (handshake interceptor: Origin check + ticket consume) | Done, including the Section 3 hardening (2026-11-03, branch `phase-2-hardening`). |
+| Refresh replay deadlock | Fixed on `fix-refresh-deadlock` (Section 3a). Full run after fix: 10 unit, 66 integration, all green. |
+| Phase 2b-ii onward | Not started. Socket-lifetime decision 5.1 is made (A + B theft only). |
+| Last full local run (2026-11-03, after hardening) | 10 unit (1 + 5 + 4) all green; 65 integration (59 + 6 new, WsHandshakeAuthTest now 16), 64 green, 1 intermittent failure from a **pre-existing refresh-token deadlock** (Section 3a). |
 
 ## 1. First task: verify and tidy git (before any feature work)
 The repo state was left mid-cleanup. Don't assume; check:
@@ -51,8 +51,8 @@ Also confirm no code logs the ticket or the request query string. Note for Phase
 - Item 6: verified on the real jar. No profile refuses ("ws.allowed-origins is not set"), `WS_ALLOWED_ORIGINS='*'` refuses, and `dev` starts. Live: `/ws/anything` gives 401, and an upgrade from `localhost:3000.evil.com` gives 401.
 - No code logs the ticket or the query string. Item 7 stays as written (it goes away in 2b-ii).
 
-## 3a. Open bug found 2026-11-03: concurrent refresh replay deadlock
-`Phase1ReviewTest.concurrentRefreshWithSameTokenReturnsOneSuccessAndRevokesFamily` failed once with 1 success and 3 x 401 instead of 4: the fifth request got a 500. The log shows `PSQLException: deadlock detected ... while updating tuple in relation "refresh_tokens"` from `RefreshTokenRepository.revokeFamily` (via `TokenService.refreshTokens`). Two replays each revoke the family and lock its rows in different orders. The same test passed in the baseline run, so the failure is intermittent. Fix test-first: lock the family's rows in a consistent order (e.g. `SELECT ... ORDER BY id FOR UPDATE` before the update), or make `revokeFamily` a single statement that cannot interleave with another, and make the test reliably reproduce the race (more threads or repetitions).
+## 3a. Refresh-token replay deadlock: FIXED 2026-11-03 (PR #4, branch `fix-refresh-deadlock`, open)
+Cause: `revokeFamily` rewrote every row of the family. Concurrent replays of one token (and the requests queued on the contested row) locked several rows in different orders, so PostgreSQL aborted one and the request returned 500. Fix: `... WHERE family_id = ? AND revoked_at IS NULL`, which touches at most one row because rotation keeps one active token per family. `RefreshReplayDeadlockTest` (30 rounds x 8 concurrent refreshes after 5 rotations): before the fix, 132/150 rounds bad (5/5 runs failed); after it, 30/30 runs green (0/900 bad rounds). Mutation: ordered locking of all rows (`ORDER BY id FOR UPDATE`) without the condition still failed 53/60 rounds. No 40P01 retry. ADR-0003 amended.
 
 ## 4. Decisions already made (don't relitigate)
 - WebSocket handshake auth = one-time ticket in a **PostgreSQL table** (`ws_tickets`: SHA-256 hash PK, user_id, expires_at 30 s), consumed via `DELETE ... RETURNING`. Chosen over in-memory (breaks in Phase 4) and Redis (not in the stack until Phase 4). See ADR-0004. Issue endpoint: `POST /api/ws/ticket` (JWT required) returns `{ticket, expiresInSeconds}`.
@@ -75,6 +75,9 @@ Also confirm no code logs the ticket or the request query string. Note for Phase
 - **2d: heartbeats and connection cleanup, in-memory presence, typing indicators, delivered/read cursors** (monotonic updates; also fixes the known "unread count includes my own messages" limitation).
 - **2e: minimal React UI** and the refresh-token storage decision; then deploy a simple version behind a proxy with TLS to find proxy/CORS/timeout problems early.
 - After Phase 2: Phase 3 reliable delivery (client queues, retries with the same idempotency key, backoff with jitter, cursor-based sync, gap detection, bounded outbound queues), Phase 4 Redis multi-instance (pub/sub is not durable; recovery still comes from Postgres), Phase 5 observability and real benchmarks, Phase 6 outbox + notifications, Phase 7 Yjs, Phase 8 optional Kafka, Phase 9 deployment. A fully working Phase 0 to 5 with strong tests and measured results beats an unfinished system with every technology.
+
+## 6a. Backlog (not scheduled; don't implement without asking)
+- **Enforce "at most one active refresh token per family" in the schema (V7, test-first).** Add migration `V7` with a partial unique index, e.g. `CREATE UNIQUE INDEX uq_refresh_tokens_one_active_per_family ON refresh_tokens (family_id) WHERE revoked_at IS NULL`. The deadlock fix (Section 3a) relies on this invariant, which today holds only because rotation claims the old token and inserts the new one in one transaction. Test first: an integration test that inserts a second active token into a family directly (repository or SQL) and expects a unique-violation; show it fail before V7 exists. Check first that existing data cannot violate it (one active row per family) and that the index doesn't change the rotation path (the old row is revoked before the new one is inserted, in the same transaction). Never edit V1 to V6.
 
 ## 7. Known limitations (documented in `docs/architecture.md`; keep it current)
 - Logout does not close the user's open WebSockets (no session id in the access token). They still close within about 15 minutes (decision 5.1, from 2b-ii).

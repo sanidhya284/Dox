@@ -1,7 +1,7 @@
 # ADR-0003 — Authentication Strategy: Stateless JWT + Stored Refresh Tokens
 
 **Status:** Accepted
-**Date:** 2026-10-08 (amended 2026-10-17)
+**Date:** 2026-10-08 (amended 2026-10-17, 2026-11-03)
 **Phase:** 1 — REST Core
 
 ---
@@ -74,6 +74,24 @@ Attacker presents token1 → server sees it is revoked
 Server revokes ALL tokens with family_id = F1
 Both attacker and legitimate user are now logged out
 ```
+
+**Revocation touches only active rows (amended 2026-11-03).** Family revocation is `UPDATE refresh_tokens SET revoked_at = now WHERE family_id = ? AND revoked_at IS NULL`. Rotation keeps at most one active token per family, so this locks at most one row. The original statement rewrote every row in the family (`UPDATE refresh_tokens SET revoked_at = now WHERE family_id = ?`), and under concurrent replays of one token PostgreSQL sometimes aborted one transaction with a deadlock, so that request returned 500 instead of 401.
+
+Evidence, from a real failure on the old code (`Phase1ReviewTest.concurrentRefreshWithSameTokenReturnsOneSuccessAndRevokesFamily`, 2026-11-03):
+
+```
+org.postgresql.util.PSQLException: ERROR: deadlock detected
+  Detail: Process 67 waits for ShareLock on transaction 6176; blocked by process 66.
+          Process 66 waits for ShareLock on transaction 6178; blocked by process 67.
+  Where: while updating tuple (2,9) in relation "refresh_tokens"
+  ...at RefreshTokenRepository.revokeFamily <- TokenService.refreshTokens <- AuthService.refresh
+```
+
+The aborted statement is the old `revokeFamily` UPDATE (from the stack trace). PostgreSQL's DETAIL does not show the other process's statement; that is only in the server log, which was not captured. In `RefreshReplayDeadlockTest`'s failing runs, the aborted statement was `revokeFamily` in 46 cases and `revokeIfActive` (the single-row claim `UPDATE ... WHERE token_hash = ? AND revoked_at IS NULL ... RETURNING`) in 8.
+
+Measured: `RefreshReplayDeadlockTest` (30 rounds of 8 concurrent refreshes after 5 rotations) failed in 132 of 150 rounds on the old code and in 0 of 900 rounds (30 runs) with the fix. Locking all family rows in `id` order (`... WHERE id IN (SELECT id ... WHERE family_id = ? ORDER BY id FOR UPDATE)`) without the `revoked_at IS NULL` condition still failed 53 of 60 rounds; the condition alone passed 60 of 60.
+
+**Hypothesis (not verified):** the cycle forms because each losing request rewrites every row of the family, including rows already revoked, while other requests wait on (and queue for) those same rows, so two transactions end up each holding a row the other needs. The exact cycle was not traced; what is verified is only that the condition removes the deadlock under this test. Already-revoked rows keep their original `revoked_at`, so the rotation history stays readable. No retry on SQLSTATE 40P01 was added: the observed cause is removed, and a retry would hide a regression.
 
 Without `family_id`, a replayed revoked token would just return a 401. With `family_id`, it triggers a cascade revocation of the entire session lineage — signalling a possible theft event and protecting the user.
 
