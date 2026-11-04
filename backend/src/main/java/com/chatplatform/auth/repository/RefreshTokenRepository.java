@@ -65,11 +65,11 @@ public class RefreshTokenRepository {
      * cannot form a lock-ordering cycle. Rows that are already revoked fail the condition on the
      * snapshot and are skipped without waiting.
      *
-     * <p>The previous version rewrote every row of the family, so concurrent replays (and the
-     * requests queued on the contested row) locked several rows in different orders and deadlocked;
-     * PostgreSQL aborted one and the request returned 500. Locking all rows in {@code id} order
-     * was tried and did not remove the deadlock in RefreshReplayDeadlockTest; skipping revoked
-     * rows did. Already-revoked rows keep their original {@code revoked_at} (rotation history).
+     * <p>The previous version rewrote every row of the family; under concurrent replays PostgreSQL
+     * sometimes aborted one transaction with "deadlock detected" and the request returned 500.
+     * The exact lock cycle was not traced (see ADR-0003). Verified in RefreshReplayDeadlockTest:
+     * locking all rows in {@code id} order did not remove the deadlock; skipping revoked rows did.
+     * Already-revoked rows keep their original {@code revoked_at} (rotation history).
      */
     public void revokeFamily(UUID familyId) {
         jdbcClient.sql("""
