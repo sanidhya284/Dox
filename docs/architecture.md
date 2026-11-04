@@ -202,16 +202,17 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 - **Errors:** unknown routes return 404, malformed JSON or a malformed UUID returns 400, and unexpected errors return 500 without internals.
 - **WebSocket handshake:** the `Origin` header must exactly match an entry in `ws.allowed-origins` (no prefix, case or trailing-slash tolerance) and is checked before the ticket is consumed, so a rejected handshake leaves the ticket usable for a legitimate retry. Every rejection is `401`. Spring's own origin check runs afterwards on the same list as a second layer.
 - **WebSocket registry:** every accepted socket is registered under the user id from its ticket and removed on close; adding the first and removing the last socket of a user are atomic (`ConnectionRegistryTest`, `WsConnectionRegistryTest`, `WsHandshakeAuthTest`). A socket with no user id is closed with `1008` (`ChatWebSocketHandlerTest`).
+- **Theft close:** replaying a refresh token closes all of that user's sockets with `4002` and no one else's; a normal refresh or logout closes nothing; `closeAll` runs only after the revocation is visible to other connections; the replay response does not wait for closes (`WsTheftCloseTest`, with mutation checks for each).
 - **WebSocket lifetime:** each socket is closed with `4001` its configured lifetime after its own handshake, and then forgotten by the registry (`WsSessionLifetimeTest`, 1-second lifetime); zero, negative or missing lifetimes refuse startup (`ChatWebSocketHandlerTest`).
 - **Actuator:** only `/actuator/health` is public, and it shows no component details.
 - **Accounts:** usernames and emails are case-insensitive (`citext` column plus an explicit `CAST(... AS citext)` in queries, because a plain varchar parameter makes the comparison case-sensitive). Duplicates return `409 USERNAME_TAKEN` / `EMAIL_TAKEN`, including when two registrations race (the unique-constraint violation is translated to the same 409).
 - **History paging:** `limit` is clamped to 1..100 (default 50); the cursor is stable when new messages arrive.
 
-## WebSocket Socket Lifetime (decided 2026-11-03; A implemented in 2b-ii step b, B in progress)
+## WebSocket Socket Lifetime (decided 2026-11-03; implemented in Phase 2b-ii)
 
 A socket authenticates once, at the handshake, so it could otherwise outlive the 15-minute access token that minted its ticket. Decision: **A + B (theft only)**.
 - **A:** the server closes every WebSocket `ws.session.max-lifetime` (default 15 minutes) after its handshake, with close code `4001`; the client reconnects with a fresh ticket (which needs a valid access token). Access revocation therefore takes effect within one token lifetime. Implementation: `ChatWebSocketHandler` schedules the close on the realtime `wsTaskScheduler` at connect and cancels it when the socket closes earlier.
-- **B (theft only):** when a refresh-token replay is detected and the family is revoked, all of that user's sockets are closed immediately.
+- **B (theft only):** when a refresh-token replay is detected and the family is revoked, all of that user's sockets are closed with `4002`. Flow: `TokenService` publishes `RefreshTokenFamilyRevokedEvent(userId, familyId)` (package `auth.event`); `SessionRevocationListener` (realtime) handles it with `@TransactionalEventListener(AFTER_COMMIT)` and hands `ConnectionRegistry.closeAll` to the realtime scheduler, so the `401` response never waits on socket closes. Design: [ADR-0005](adr/0005-connection-registry-and-after-commit-socket-closing.md).
 - Logout does not close sockets in this version (see Known Limitations).
 
 ## Known Limitations

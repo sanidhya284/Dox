@@ -1,0 +1,247 @@
+package com.chatplatform.integration;
+
+import com.chatplatform.auth.dto.AuthResponse;
+import com.chatplatform.auth.dto.RefreshRequest;
+import com.chatplatform.auth.dto.RegisterRequest;
+import com.chatplatform.auth.dto.TokenPair;
+import com.chatplatform.realtime.service.WsTicketService;
+import com.chatplatform.realtime.websocket.ConnectionRegistry;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.boot.test.mock.mockito.SpyBean;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.event.EventListener;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.WebSocketHttpHeaders;
+import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.client.standard.StandardWebSocketClient;
+import org.springframework.web.socket.handler.TextWebSocketHandler;
+
+import javax.sql.DataSource;
+import java.net.URI;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.time.Duration;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+
+/**
+ * Decision 5.1 B: a refresh-token replay (family revocation) closes all of that user's sockets with
+ * 4002, after the revocation commits, off the request thread. Normal refresh and logout close nothing.
+ */
+@Timeout(value = 2, unit = TimeUnit.MINUTES)
+public class WsTheftCloseTest extends AbstractIntegrationTest {
+
+    /**
+     * Test-only: holds back the commit of any transaction that publishes a family revocation by
+     * 300 ms (beforeCommit runs after every in-transaction listener). It observes nothing; it only
+     * makes "runs before commit" deterministic for the plain-@EventListener mutation check.
+     */
+    @TestConfiguration
+    static class DelayCommitConfig {
+        @Bean
+        DelayCommitOnRevocation delayCommitOnRevocation() {
+            return new DelayCommitOnRevocation();
+        }
+    }
+
+    static class DelayCommitOnRevocation {
+        @EventListener
+        public void on(com.chatplatform.auth.event.RefreshTokenFamilyRevokedEvent event) {
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override
+                    public void beforeCommit(boolean readOnly) {
+                        try {
+                            Thread.sleep(300);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    @LocalServerPort
+    private int port;
+
+    @Autowired
+    private WsTicketService wsTicketService;
+
+    @Autowired
+    private DataSource dataSource;
+
+    @SpyBean
+    private ConnectionRegistry registry;
+
+    /** Client side: records how the server closed the socket. */
+    private static final class CloseRecorder extends TextWebSocketHandler {
+        final CompletableFuture<CloseStatus> closed = new CompletableFuture<>();
+
+        @Override
+        public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+            closed.complete(status);
+        }
+    }
+
+    private AuthResponse registerUser(String prefix) {
+        String s = UUID.randomUUID().toString().replace("-", "").substring(0, 10);
+        ResponseEntity<AuthResponse> res = restTemplate.postForEntity("/api/auth/register",
+                new RegisterRequest(prefix + s, prefix + s + "@example.com", "password123", "U " + s),
+                AuthResponse.class);
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        return res.getBody();
+    }
+
+    private CloseRecorder connect(UUID userId) throws Exception {
+        CloseRecorder recorder = new CloseRecorder();
+        WebSocketHttpHeaders headers = new WebSocketHttpHeaders();
+        headers.setOrigin("http://localhost:3000");
+        String ticket = wsTicketService.issue(userId).ticket();
+        new StandardWebSocketClient()
+                .execute(recorder, headers, URI.create("ws://localhost:" + port + "/ws?ticket=" + ticket))
+                .get(5, TimeUnit.SECONDS);
+        return recorder;
+    }
+
+    private void awaitRegistered(UUID userId, int count) {
+        await("user " + userId + " to have " + count + " registered socket(s)")
+                .atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertThat(registry.sessionIdsFor(userId)).hasSize(count));
+    }
+
+    private ResponseEntity<String> refresh(String refreshToken) {
+        return restTemplate.postForEntity("/api/auth/refresh", new RefreshRequest(refreshToken), String.class);
+    }
+
+    private void awaitClosedWith4002(CloseRecorder recorder, String what) {
+        await(what + " to be closed by the server with 4002")
+                .atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> {
+                    assertThat(recorder.closed).isDone();
+                    assertThat(recorder.closed.get().getCode()).isEqualTo(4002);
+                });
+    }
+
+    @Test
+    void replayClosesAllOfThatUsersSocketsWith4002AndNobodyElses() throws Exception {
+        AuthResponse alice = registerUser("thA_");
+        AuthResponse bob = registerUser("thB_");
+        UUID aliceId = alice.user().id();
+        UUID bobId = bob.user().id();
+        CloseRecorder alice1 = connect(aliceId);
+        CloseRecorder alice2 = connect(aliceId);
+        CloseRecorder bob1 = connect(bobId);
+        awaitRegistered(aliceId, 2);
+        awaitRegistered(bobId, 1);
+
+        // Legitimate rotation, then the old token is replayed (theft signal).
+        assertThat(refresh(alice.refreshToken()).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(refresh(alice.refreshToken()).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+
+        awaitClosedWith4002(alice1, "alice's first socket");
+        awaitClosedWith4002(alice2, "alice's second socket");
+        await("alice to be dropped from the registry")
+                .atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertThat(registry.hasEntry(aliceId)).isFalse());
+        await("bob's socket to stay open")
+                .during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(2))
+                .until(() -> !bob1.closed.isDone() && registry.sessionIdsFor(bobId).size() == 1);
+    }
+
+    @Test
+    void normalRefreshAndLogoutCloseNothing() throws Exception {
+        AuthResponse user = registerUser("thN_");
+        UUID userId = user.user().id();
+        CloseRecorder socket = connect(userId);
+        awaitRegistered(userId, 1);
+
+        ResponseEntity<TokenPair> rotated = restTemplate.postForEntity(
+                "/api/auth/refresh", new RefreshRequest(user.refreshToken()), TokenPair.class);
+        assertThat(rotated.getStatusCode()).isEqualTo(HttpStatus.OK);
+        ResponseEntity<Void> logout = restTemplate.postForEntity(
+                "/api/auth/logout", new RefreshRequest(rotated.getBody().refreshToken()), Void.class);
+        assertThat(logout.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+
+        // Known limitation (decision 5.1): logout does not close sockets.
+        await("the socket to stay open after a normal refresh and a logout")
+                .during(Duration.ofMillis(800)).atMost(Duration.ofSeconds(3))
+                .until(() -> !socket.closed.isDone() && registry.sessionIdsFor(userId).size() == 1);
+    }
+
+    /**
+     * Inside closeAll, a separate (autocommit) connection must already see the family revoked:
+     * the close is triggered only after the revocation committed.
+     */
+    @Test
+    void socketsAreClosedOnlyAfterTheRevocationCommitted() throws Exception {
+        AuthResponse user = registerUser("thC_");
+        UUID userId = user.user().id();
+        AtomicLong activeTokensSeenInCloseAll = new AtomicLong(-1);
+        doAnswer(invocation -> {
+            try (Connection c = dataSource.getConnection();
+                 PreparedStatement ps = c.prepareStatement(
+                         "SELECT count(*) FROM refresh_tokens WHERE user_id = ? AND revoked_at IS NULL")) {
+                ps.setObject(1, userId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    activeTokensSeenInCloseAll.set(rs.getLong(1));
+                }
+            }
+            return invocation.callRealMethod();
+        }).when(registry).closeAll(eq(userId), any(CloseStatus.class));
+
+        CloseRecorder socket = connect(userId);
+        awaitRegistered(userId, 1);
+        assertThat(refresh(user.refreshToken()).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(refresh(user.refreshToken()).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+
+        awaitClosedWith4002(socket, "the socket");
+        assertThat(activeTokensSeenInCloseAll.get())
+                .as("active refresh tokens visible from a separate connection when closeAll ran "
+                        + "(-1 = closeAll never called; > 0 = ran before the revocation committed)")
+                .isZero();
+    }
+
+    /** The public refresh endpoint must not wait for socket closes (a slow peer can stall a close). */
+    @Test
+    void replayResponseDoesNotWaitForSocketCloses() throws Exception {
+        AuthResponse user = registerUser("thS_");
+        UUID userId = user.user().id();
+        doAnswer(invocation -> {
+            Thread.sleep(2000); // simulate a stalled peer
+            return invocation.callRealMethod();
+        }).when(registry).closeAll(eq(userId), any(CloseStatus.class));
+
+        CloseRecorder socket = connect(userId);
+        awaitRegistered(userId, 1);
+        assertThat(refresh(user.refreshToken()).getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        long start = System.nanoTime();
+        ResponseEntity<String> replay = refresh(user.refreshToken());
+        long ms = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+
+        assertThat(replay.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(ms).as("replay response time with closeAll stalled for 2 s").isLessThan(1000);
+        await("the socket to be closed eventually")
+                .atMost(Duration.ofSeconds(8))
+                .untilAsserted(() -> assertThat(socket.closed).isDone());
+    }
+}

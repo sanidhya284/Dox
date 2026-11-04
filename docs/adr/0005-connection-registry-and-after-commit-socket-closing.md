@@ -24,7 +24,7 @@ Each socket is closed with code `4001` about 15 minutes after its handshake (`ws
 
 - **Module boundary:** auth knows nothing about realtime; realtime depends only on auth's event type, not on its services or repositories.
 - **Why after commit:** the revocation commits even though the request returns 401 (`noRollbackFor = ApiException.class`). Closing only after commit means sockets are never closed for a revocation that did not persist. The same rule (side effects after commit) will govern pushes in 2c.
-- **Why off the request thread:** closing a socket sends a close frame, which can wait on a slow peer; the public `/api/auth/refresh` must not wait on that.
+- **Why off the request thread:** in Tomcat 10.1.30, `session.close` writes the close frame synchronously, after first waiting for any in-progress send on that session. For close codes other than 1000 both waits are bounded by `ABNORMAL_SESSION_CLOSE_SEND_TIMEOUT` (default 50 ms per session; 1000 would use the 20 s blocking-send default). Closing N sockets in a row can therefore take N × 50 ms, depending on per-session settings, and the public `/api/auth/refresh` must not wait on peers. `WsTheftCloseTest` checks the 401 arrives in under 1 s while `closeAll` is stalled for 2 s.
 - **Not on logout:** the access token carries no session id, so the server cannot tell which sockets belong to the device that logged out (known limitation).
 
 Implementation progress is tracked in [HANDOFF.md](../HANDOFF.md), not here.

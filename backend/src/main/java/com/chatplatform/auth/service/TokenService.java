@@ -1,12 +1,14 @@
 package com.chatplatform.auth.service;
 
 import com.chatplatform.auth.dto.TokenPair;
+import com.chatplatform.auth.event.RefreshTokenFamilyRevokedEvent;
 import com.chatplatform.auth.repository.RefreshToken;
 import com.chatplatform.auth.repository.RefreshTokenRepository;
 import com.chatplatform.shared.exception.ApiException;
 import com.chatplatform.shared.exception.ErrorCode;
 import com.chatplatform.shared.security.JwtService;
 import com.chatplatform.shared.security.SecurityConstants;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,10 +25,13 @@ public class TokenService {
 
     private final JwtService jwtService;
     private final RefreshTokenRepository refreshTokenRepository;
+    private final ApplicationEventPublisher events;
 
-    public TokenService(JwtService jwtService, RefreshTokenRepository refreshTokenRepository) {
+    public TokenService(JwtService jwtService, RefreshTokenRepository refreshTokenRepository,
+                        ApplicationEventPublisher events) {
         this.jwtService = jwtService;
         this.refreshTokenRepository = refreshTokenRepository;
+        this.events = events;
     }
 
     @Transactional
@@ -48,6 +53,8 @@ public class TokenService {
         
         if (storedToken.revokedAt() != null) {
             refreshTokenRepository.revokeFamily(storedToken.familyId());
+            // Theft signal for other modules (realtime closes the user's sockets after commit).
+            events.publishEvent(new RefreshTokenFamilyRevokedEvent(storedToken.userId(), storedToken.familyId()));
             throw new ApiException(ErrorCode.TOKEN_INVALID, "Token was revoked");
         }
         

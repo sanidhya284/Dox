@@ -9,7 +9,7 @@ A real-time chat backend built as a learning project for backend engineering: a 
 | 0: skeleton, Flyway, CI | Done |
 | 1: REST core (auth, conversations, ordered idempotent messages, keyset paging) | Done |
 | 2a/2b-i: WebSocket one-time tickets, authenticated handshake | Done |
-| 2b-ii: connection registry, socket lifetime, closing sockets on token theft | In progress (registry and lifetime done) |
+| 2b-ii: connection registry, socket lifetime, closing sockets on token theft | Done (PR open) |
 | 2c to 2e: message frames and push, presence and read cursors, React UI | Not started |
 | 3 onward: reliable delivery, multi-instance, observability, ... | Not started |
 
@@ -65,10 +65,11 @@ Close codes sent by the server:
 | Code | Meaning | Client should |
 |---|---|---|
 | `4001` | Socket lifetime reached (`WS_SESSION_MAX_LIFETIME`, default 15 minutes after the handshake) | Get a fresh ticket and reconnect |
+| `4002` | Credentials revoked: a refresh token of this user was replayed (theft signal), so all their sockets are closed | Log in again |
 | `1008` | No authenticated user on the socket (should not happen) | Treat as a bug; get a new ticket |
 
 ## What is guaranteed (each covered by tests)
-Per-conversation ordering without gaps, idempotent sends (`client_msg_id`), atomic refresh-token rotation with theft detection, `404` for non-members, one-time WebSocket tickets, exact origin checks, and per-user socket tracking. The precise list, with test names: [architecture.md, Behaviour Guarantees](docs/architecture.md#behaviour-guarantees-each-covered-by-an-integration-or-unit-test).
+Per-conversation ordering without gaps, idempotent sends (`client_msg_id`), atomic refresh-token rotation with theft detection, `404` for non-members, one-time WebSocket tickets, exact origin checks, per-user socket tracking, socket lifetime, and closing a user's sockets after a refresh-token replay (only once the revocation has committed). The precise list, with test names: [architecture.md, Behaviour Guarantees](docs/architecture.md#behaviour-guarantees-each-covered-by-an-integration-or-unit-test).
 
 No performance or capacity numbers are claimed. Tests that run on a laptop are correctness checks, not benchmarks.
 
