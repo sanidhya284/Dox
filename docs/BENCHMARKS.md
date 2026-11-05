@@ -143,36 +143,139 @@ So the A prediction isn't blind about "400/s is too much". Everything else is a 
    - **Latency:** send→receive p99 grows with the rate, since each message is 200 sequential socket writes on a 2-thread push executor, but stays below 250 ms at 20/s.
    - **Least confident** about C at 20/s: the two push threads may queue.
 
-## 6. Results (step 4; empty)
+## 6. Results (step 4, measured 2026-11-05)
 
-Each cell is the median [min–max] of 3 runs, in ms from the intended send time. Outcome counts are listed per point.
+**Results are for this machine and this workload; they are not capacity claims.**
 
-### A: hot conversation (pool 10)
-| Rate/s | Outcomes | Achieved/s | ack p50 | ack p99 | ack max | recv p99 | Hikari pending s | Top wait events |
-|---|---|---|---|---|---|---|---|---|
-| | | | | | | | | |
+**Setup** (from the result files):
+- **Machine:** Intel i7-1068NG7 (8 logical CPUs), 16 GB RAM, macOS 26.3, on AC power. No thermal or performance warning was recorded.
+- **Database:** Docker Desktop VM with 8 CPUs and 7.75 GiB. The only running container was `chat-bench-pg`, with no limits.
+- **Postgres 16.15:** `shared_buffers` 128MB, `synchronous_commit` on, `fsync` on, `fdatasync`.
+- **App and code:** the app JVM ran with `-Xms1g -Xmx1g -XX:+UseG1GC`, at commit `4aa799f` with 0 dirty files.
+- **Timing:** warm-up 30 s, window 60 s, drain ≤ 15 s. The knee runs used a client ack timeout of 10 min.
 
-### A: hot conversation (pool 30)
-| Rate/s | Outcomes | Achieved/s | ack p50 | ack p99 | ack max | recv p99 | Hikari pending s | Top wait events |
-|---|---|---|---|---|---|---|---|---|
-| | | | | | | | | |
+### Every run, with counts
+- **Attempt 1: aborted, excluded.** Docker Desktop stopped during its second run, which then gave no result. Its one finished run (A-pool10 at 25/s, VALID) is kept apart in [`benchmarks/aborted-attempt-1/`](benchmarks/aborted-attempt-1/) and isn't used anywhere. The whole ladder was re-run from a fresh database.
+- **Attempt 2 (the results below):** 67 points and **68 runs** in 2.04 h.
+  - **Outcomes:** 63 VALID, 4 SATURATED, **1 INVALID**, 0 INVARIANT_VIOLATION.
+  - **Completeness:** every point has 3 non-INVALID runs, so no point is incomplete.
+- **INVALID: C at 5/s, pass 3** ([file](benchmarks/20261105-214158-C-r5-C-pool10-p3.json)).
+  - **Why:** schedule lag p99 was 25.1 ms, above the 10 ms threshold. It was retried once, and the retry was VALID ([file](benchmarks/20261105-214346-C-r5-C-pool10-p3-retry1.json)).
+  - **Classifier note:** that p99 rests on 300 samples, which is too few under our own percentile rule (≥ 1000), but the classifier uses the raw value anyway. The check is stricter than the reporting rule. It's recorded as found and not changed after the fact.
+- **Recorded VALID but over the limit: A-pool30 at 300/s, pass 3** ([file](benchmarks/20261105-212343-A-r300-A-pool30-p3.json)).
+  - **The evidence:** ack p50 was 3.56 s and rose through the window (2634 → 3588 → 4596 ms), while the server committed 285.7 msg/s against 300 offered.
+  - **Why it read VALID:** the growth was 1.74×, under the 2× rule. The backlog had already formed during warm-up, and the 2× rule doesn't catch a run that starts the window already backlogged.
+  - **How it's handled:** the outcome stays as the classifier recorded it, and it isn't relabelled after seeing the data. The analysis treats the run as over the limit.
+- **Sampler errors:** one, an `InterruptedException` at sampler shutdown in that same run. All 60 server samples were recorded.
+- **Correctness:** the invariants held in every run, including the saturated ones and the 5 s-timeout run.
 
-### B: control
-| Rate/s | Outcomes | Achieved/s | ack p50 | ack p99 | ack max | recv p99 | Hikari pending s | Top wait events |
-|---|---|---|---|---|---|---|---|---|
-| | | | | | | | | |
+### Reading the tables
+- **Latency:** ms from the intended send time. Each cell is the median [min–max] of the 3 runs.
+- **n acks/run:** sends acked in the window per run. Each p99 rests on at least 1000 samples, except where `n/a` is shown.
+- **Server created/s:** `chat.messages.sent{outcome=created}` over the window ÷ 60. At or near the offered rate, the server kept up; below it, a backlog grew.
+- **Hikari pending s:** one-second samples with pending > 0, per run.
+- **Lock share:** active `pg_stat_activity` samples, summed over the 3 runs, that waited on `Lock:tuple` or `Lock:transactionid`.
 
-### C: fan-out (200 sockets)
-| Rate/s | Outcomes | recv p50 | recv p99 | recv max | Pushes dropped | 4003 closes | Push queue max |
-|---|---|---|---|---|---|---|---|
-| | | | | | | | |
+### A: hot conversation (10 senders, 1 group), Hikari pool 10
 
-## 7. Bottleneck analysis (step 4)
-To be written from the evidence:
-- the knee of A against B;
-- wait events at the knee;
-- whether the pool-30 re-run moves the knee;
-- what would change the result.
+| Rate/s | Outcomes | n acks/run | ack p50 | ack p99 | ack max | recv p99 | Server created/s | Hikari pending s | Lock share | Runs |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 25 | 3 VALID | 1500 | 11.9 [10.9–12.1] | 16.4 [15.6–16.7] | 26.5 [23.6–27.8] | 17.9 [17.1–18.1] | 24.9 [24.9–24.9] | 0/0/0 | 0/13 (0%) | [p1](benchmarks/20261105-194708-A-r25-A-pool10-p1.json) [p2](benchmarks/20261105-195742-A-r25-A-pool10-p2.json) [p3](benchmarks/20261105-200816-A-r25-A-pool10-p3.json) |
+| 50 | 3 VALID | 3000 | 8.1 [7.3–8.1] | 13.6 [13.2–13.7] | 19.4 [19.0–29.1] | 14.9 [14.7–15.0] | 49.9 [49.9–49.9] | 0/0/0 | 0/10 (0%) | [p1](benchmarks/20261105-194853-A-r50-A-pool10-p1.json) [p2](benchmarks/20261105-195928-A-r50-A-pool10-p2.json) [p3](benchmarks/20261105-201002-A-r50-A-pool10-p3.json) |
+| 100 | 3 VALID | 6000 | 5.4 [5.0–5.5] | 8.4 [8.1–10.3] | 32.8 [15.3–184.7] | 9.6 [9.3–11.5] | 99.8 [99.8–99.8] | 0/0/0 | 7/26 (27%) | [p1](benchmarks/20261105-195039-A-r100-A-pool10-p1.json) [p2](benchmarks/20261105-200113-A-r100-A-pool10-p2.json) [p3](benchmarks/20261105-201148-A-r100-A-pool10-p3.json) |
+| 150 | 3 VALID | 9000 | 4.2 [4.2–4.3] | 8.1 [8.1–8.7] | 38.0 [23.6–41.7] | 9.1 [9.0–10.0] | 149.8 [149.8–149.8] | 0/0/0 | 1/35 (3%) | [p1](benchmarks/20261105-195225-A-r150-A-pool10-p1.json) [p2](benchmarks/20261105-200259-A-r150-A-pool10-p2.json) [p3](benchmarks/20261105-201333-A-r150-A-pool10-p3.json) |
+| 200 | 3 VALID | 12000 | 3.8 [3.7–3.8] | 16.5 [11.2–31.3] | 90.7 [40.8–158.2] | 17.9 [12.3–31.8] | 199.7 [199.7–199.7] | 0/0/0 | 9/69 (13%) | [p1](benchmarks/20261105-195410-A-r200-A-pool10-p1.json) [p2](benchmarks/20261105-200445-A-r200-A-pool10-p2.json) [p3](benchmarks/20261105-201519-A-r200-A-pool10-p3.json) |
+| 300 | 2 VALID, 1 SATURATED | 18000 | 4.9 [4.5–3536.9] | 355.6 [266.5–11771.9] | 567.3 [487.2–12419.1] | 356.4 [267.5–11771.9] | 299.6 [269.1–299.8] | 2/1/10 | 844/940 (90%) | [p1](benchmarks/20261105-195556-A-r300-A-pool10-p1.json) [p2](benchmarks/20261105-200631-A-r300-A-pool10-p2.json) [p3](benchmarks/20261105-201712-A-r300-A-pool10-p3.json) |
+
+### A: hot conversation, Hikari pool 30
+
+| Rate/s | Outcomes | n acks/run | ack p50 | ack p99 | ack max | recv p99 | Server created/s | Hikari pending s | Lock share | Runs |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 25 | 3 VALID | 1500 | 10.7 [10.6–11.3] | 16.3 [15.8–16.5] | 21.7 [20.3–40.5] | 17.7 [17.6–18.0] | 24.9 [24.9–24.9] | 0/0/0 | 0/14 (0%) | [p1](benchmarks/20261105-205316-A-r25-A-pool30-p1.json) [p2](benchmarks/20261105-210401-A-r25-A-pool30-p2.json) [p3](benchmarks/20261105-211449-A-r25-A-pool30-p3.json) |
+| 50 | 3 VALID | 3000 | 7.5 [7.5–7.8] | 13.5 [13.5–13.7] | 60.8 [26.9–92.2] | 14.9 [14.8–15.1] | 49.9 [49.9–49.9] | 0/0/0 | 1/9 (11%) | [p1](benchmarks/20261105-205501-A-r50-A-pool30-p1.json) [p2](benchmarks/20261105-210546-A-r50-A-pool30-p2.json) [p3](benchmarks/20261105-211635-A-r50-A-pool30-p3.json) |
+| 100 | 3 VALID | 6000 | 5.1 [5.1–5.2] | 8.8 [7.9–9.1] | 33.8 [18.9–70.7] | 9.9 [9.0–10.4] | 99.8 [99.8–99.9] | 0/0/0 | 0/28 (0%) | [p1](benchmarks/20261105-205647-A-r100-A-pool30-p1.json) [p2](benchmarks/20261105-210732-A-r100-A-pool30-p2.json) [p3](benchmarks/20261105-211821-A-r100-A-pool30-p3.json) |
+| 150 | 3 VALID | 9000 | 4.3 [4.3–4.5] | 9.7 [7.8–10.3] | 37.1 [16.4–39.7] | 10.9 [8.9–11.5] | 149.8 [149.8–149.8] | 0/0/0 | 2/35 (6%) | [p1](benchmarks/20261105-205833-A-r150-A-pool30-p1.json) [p2](benchmarks/20261105-210918-A-r150-A-pool30-p2.json) [p3](benchmarks/20261105-212006-A-r150-A-pool30-p3.json) |
+| 200 | 3 VALID | 12000 | 4.1 [3.8–4.5] | 100.0 [46.1–307.5] | 203.7 [129.2–417.0] | 101.2 [46.9–308.7] | 199.7 [199.1–199.8] | 0/0/0 | 86/151 (57%) | [p1](benchmarks/20261105-210019-A-r200-A-pool30-p1.json) [p2](benchmarks/20261105-211104-A-r200-A-pool30-p2.json) [p3](benchmarks/20261105-212152-A-r200-A-pool30-p3.json) |
+| 300 | 2 SATURATED, 1 VALID | 18000 | 5820.4 [3563.5–9617.4] | 9592.8 [5533.7–13631.5] | 9920.5 [5832.7–13991.9] | 9592.8 [5533.7–13631.5] | 276.1 [254.5–285.7] | 0/0/0 | 1555/1665 (93%) | [p1](benchmarks/20261105-210215-A-r300-A-pool30-p1.json) [p2](benchmarks/20261105-211303-A-r300-A-pool30-p2.json) [p3](benchmarks/20261105-212343-A-r300-A-pool30-p3.json) |
+
+### B: control (same 10 senders, 10 groups), Hikari pool 10
+
+| Rate/s | Outcomes | n acks/run | ack p50 | ack p99 | ack max | recv p99 | Server created/s | Hikari pending s | Lock share | Runs |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 25 | 3 VALID | 1500 | 11.1 [10.7–11.8] | 16.2 [15.9–16.4] | 41.1 [20.8–82.0] | 17.9 [17.4–17.9] | 24.9 [24.9–24.9] | 0/0/0 | 0/8 (0%) | [p1](benchmarks/20261105-202116-B-r25-B-pool10-p1.json) [p2](benchmarks/20261105-203152-B-r25-B-pool10-p2.json) [p3](benchmarks/20261105-204229-B-r25-B-pool10-p3.json) |
+| 50 | 3 VALID | 3000 | 8.1 [8.0–8.2] | 13.7 [13.6–13.9] | 36.3 [29.0–47.6] | 15.2 [14.9–15.3] | 49.9 [49.9–49.9] | 0/0/0 | 0/19 (0%) | [p1](benchmarks/20261105-202302-B-r50-B-pool10-p1.json) [p2](benchmarks/20261105-203338-B-r50-B-pool10-p2.json) [p3](benchmarks/20261105-204415-B-r50-B-pool10-p3.json) |
+| 100 | 3 VALID | 6000 | 5.4 [5.3–5.4] | 8.9 [8.8–9.2] | 36.2 [31.9–47.8] | 10.5 [10.1–10.5] | 99.8 [99.8–99.9] | 0/0/0 | 0/28 (0%) | [p1](benchmarks/20261105-202448-B-r100-B-pool10-p1.json) [p2](benchmarks/20261105-203525-B-r100-B-pool10-p2.json) [p3](benchmarks/20261105-204601-B-r100-B-pool10-p3.json) |
+| 150 | 3 VALID | 9000 | 4.5 [4.4–4.5] | 10.3 [9.6–10.3] | 42.9 [42.0–149.4] | 11.5 [11.0–11.7] | 149.8 [149.8–149.8] | 0/0/0 | 6/58 (10%) | [p1](benchmarks/20261105-202634-B-r150-B-pool10-p1.json) [p2](benchmarks/20261105-203711-B-r150-B-pool10-p2.json) [p3](benchmarks/20261105-204747-B-r150-B-pool10-p3.json) |
+| 200 | 3 VALID | 12000 | 4.1 [4.0–4.1] | 14.7 [14.3–14.9] | 53.2 [47.0–63.5] | 16.2 [15.7–16.3] | 199.7 [199.7–199.7] | 0/0/0 | 3/63 (5%) | [p1](benchmarks/20261105-202820-B-r200-B-pool10-p1.json) [p2](benchmarks/20261105-203857-B-r200-B-pool10-p2.json) [p3](benchmarks/20261105-204933-B-r200-B-pool10-p3.json) |
+| 300 | 3 VALID | 18000 | 4.9 [4.8–5.0] | 31.2 [28.5–32.1] | 76.5 [67.8–85.1] | 32.4 [30.1–33.4] | 299.6 [299.6–299.6] | 0/0/0 | 109/194 (56%) | [p1](benchmarks/20261105-203006-B-r300-B-pool10-p1.json) [p2](benchmarks/20261105-204043-B-r300-B-pool10-p2.json) [p3](benchmarks/20261105-205119-B-r300-B-pool10-p3.json) |
+
+### C: fan-out (1 sender, 200 receive-only sockets, so 200 pushes per message)
+
+| Rate/s | Outcomes | n acks/run | n receives/run | ack p50 | recv p50 | recv p99 | recv max | Pushes dropped | 4003 closes | Push queue max | Runs |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2 | 3 VALID | 120 | 24000 | 13.7 [13.2–14.6] | 17.3 [16.4–18.6] | 27.1 [24.6–31.7] | 38.4 [29.1–39.0] | 0 | 0 | 0 | [p1](benchmarks/20261105-212543-C-r2-C-pool10-p1.json) [p2](benchmarks/20261105-213257-C-r2-C-pool10-p2.json) [p3](benchmarks/20261105-214010-C-r2-C-pool10-p3.json) |
+| 5 | 3 VALID, 1 INVALID | 300 | 60000 | 13.5 [13.2–14.1] | 16.7 [16.5–17.6] | 21.4 [21.2–23.0] | 25.6 [25.1–27.9] | 0 | 0 | 0 | [p1](benchmarks/20261105-212732-C-r5-C-pool10-p1.json) [p2](benchmarks/20261105-213446-C-r5-C-pool10-p2.json) [p3](benchmarks/20261105-214158-C-r5-C-pool10-p3.json) [p3-retry1](benchmarks/20261105-214346-C-r5-C-pool10-p3-retry1.json) |
+| 10 | 3 VALID | 600 | 120000 | 12.7 [12.3–12.8] | 15.8 [15.5–15.9] | 20.8 [20.6–21.1] | 25.2 [24.4–34.3] | 0 | 0 | 1 | [p1](benchmarks/20261105-212920-C-r10-C-pool10-p1.json) [p2](benchmarks/20261105-213634-C-r10-C-pool10-p2.json) [p3](benchmarks/20261105-214535-C-r10-C-pool10-p3.json) |
+| 20 | 3 VALID | 1200 | 240000 | 12.2 [10.9–12.3] | 15.3 [13.8–15.4] | 21.7 [20.9–22.8] | 32.7 [25.2–54.0] | 0 | 0 | 1 | [p1](benchmarks/20261105-213109-C-r20-C-pool10-p1.json) [p2](benchmarks/20261105-213822-C-r20-C-pool10-p2.json) [p3](benchmarks/20261105-214723-C-r20-C-pool10-p3.json) |
+
+### The 5 s ack-timeout run (A, pool 10, 300/s, the production default; [file](benchmarks/20261105-201916-A-r300-A-ack5s-p1.json))
+No A-pool10 rate was mostly SATURATED, so the runner used the top rate, 300/s. **Outcome: SATURATED.**
+
+| | This run (5 s timeout) | Same point, 10 min timeout (3 runs) |
+|---|---|---|
+| Client resends | **17,733** | 0 |
+| Server-side duplicates in the window | **2,980** (49.7/s) | 0 |
+| Server created/s | 266.6 | 299.6 [269.1–299.8] |
+| Sends unacked after drain | 403 | 0 |
+| Sends refused by the full client outbox | 379 | 0 |
+| ack p50 / p99 / max | 178.1 / 44,433 / 45,974 ms | 4.9 / 355.6 / 567.3 ms (median run) |
+
+- **Resends compete for the bottleneck.** The server processed about 316 sends/s in the window (266.6 created + 49.7 duplicates). So about 16% of the work spent on the hot row went to messages that were already stored.
+- **Correctness held.** 252 rows were committed without an ack reaching the client; a real client resends them and gets the original ack back. Every acked id was persisted, and seq was contiguous 1..26470.
+- **The p50 isn't comparable.** Latency only counts sends that got an ack, and this run shed load at the client (outbox full; unacked at close), so its p50 looks better than the backlogged 10-min run. The p99 and max show the effect.
+
+## 7. Bottleneck analysis
+
+**Conclusion (this machine, this workload):** sends to **one** conversation stop keeping up somewhere **between 200 and 300 msg/s**. The same total load spread over 10 conversations keeps up at 300/s. The evidence points to the **conversation row lock** (`SELECT ... FOR UPDATE`, held until commit), not to CPU, the connection pool or the push path.
+
+### Evidence for
+1. **A versus B: only the number of hot rows differs.**
+   - **Up to 150/s:** they're indistinguishable (p50 and p99 within about 1 ms).
+   - **At 300/s:** B was 3/3 VALID; it kept up (299.6 msg/s committed), with p99 28.5–32.1 ms. A fell behind in 1 of 3 runs at pool 10 and in all 3 at pool 30, committing 254.5–285.7 msg/s, with latency growing into seconds for the whole window.
+   - **Why it isn't CPU:** B does the same CPU, network and push work at the same rate. The app process averaged ≤ 4.7% of the machine's 8 logical CPUs in every run.
+2. **Wait events.**
+   - **At 300/s,** 90% (pool 10) and 93% (pool 30) of active-connection samples in A were waiting on a row lock, mostly `Lock:tuple`. In Postgres, the first waiter on a row waits on the holder's transaction id (`Lock:transactionid`), and further waiters queue on the tuple lock (`Lock:tuple`). A majority of `Lock:tuple` therefore means queues of several transactions on one row.
+   - **At 150/s,** the same share was 3%.
+3. **The pool isn't the limit.** At pool 30, Hikari pending was 0 in every A run, yet A at 300/s still fell behind in all 3 runs.
+4. **B shows the same mechanism, at a tenth of the per-row rate.** At 300/s, 56% of B's active samples were lock waits too, mostly `Lock:transactionid`, i.e. single waiters. Each of B's 10 groups gets 30/s from 10 senders. The rows were contended, but the queues stayed short.
+5. **A consistency check (derived, not measured directly).**
+   - **The inputs:** in the backlogged A runs, about 10 transactions are in flight (one per sender socket; Hikari active max 10–11), and the server completed 254–286/s.
+   - **The arithmetic:** Little's law gives 10 / 286 ≈ 35 ms to 10 / 254 ≈ 39 ms per send inside the server. The measured server-side ack timer mean in those runs was 35.0–39.3 ms.
+   - **The implication:** about 3.5–3.9 ms per lock hold (1 / 286 to 1 / 254 s), with the hold including the commit's WAL fsync (`IO:WALSync` appears in the samples).
+
+### Caveats (what the evidence doesn't show)
+- **The pool-30 rerun was a weak test.**
+  - **Why:** concurrency is capped by the 10 sender sockets, since each socket's frames are handled one at a time; Hikari active never exceeded 11. Pool 30 removed the pending waits but couldn't add concurrency.
+  - **What it shows:** that connection waits aren't the limit. It doesn't show what more concurrent senders would do.
+  - **Pool 30 looked worse** (3/3 behind at 300/s; p99 100 ms vs 16.5 ms at 200/s). But 300/s sits on the edge, where runs are bimodal (pool 10: two runs at 299.8 and 299.6 msg/s, one at 269.1). Three runs can't separate that from run-to-run variation, so **no claim is made that a larger pool hurts**.
+- **Throughput fell once a backlog formed.** Backlogged runs committed 254–286/s, while the two healthy pool-10 runs sustained 299.6–299.8/s. A plausible reading is a lock convoy (more waiters, more hand-off cost per grant), but it wasn't tested.
+- **Latency fell as the rate rose** below the knee: ack p50 was 11.9 ms at 25/s and 3.8 ms at 200/s, in both A and B, and the server-side ack mean shows the same trend. It's unexplained. A guess is wake-up latency on a mostly idle machine (CPU power states, the VM's vCPUs); it wasn't tested.
+- **B's ladder stopped at 300/s,** so B's own ceiling is unknown; it's only known to be above 300/s.
+
+### What would change the conclusion
+- **B at higher rates (for example 400–600/s):** if B saturated at about the same total rate as A, the limit would be general (fsync, CPU or the VM), not the hot row.
+- **A with more sender sockets at the same total rate (for example 30) and pool 30:** if A then kept up at 300/s, the limit would be per-socket serial handling, not the row.
+- **A shorter lock hold:** as an experiment on the bench database only, `synchronous_commit=off`, or a faster disk. If that didn't move A's ceiling, the fsync inside the hold wouldn't be the main cost.
+- **Linux with Postgres outside a VM** would likely move the number a lot. The mechanism (one row, serial commits) should stay.
+
+### How the predictions held up (section 5, committed before measuring)
+| # | Prediction | Result |
+|---|---|---|
+| 1 | A's knee at 150 or 200/s (surprised outside 100–300); flat ack p50 of 10–25 ms below it | **Wrong on the rate, at the edge of the range.** Everything through 200/s was VALID with flat p50; only the p99 tail started to rise at 200/s. At 300/s, 1 of 3 pool-10 runs fell behind, so no ladder rate was *mostly* SATURATED at pool 10. **The p50 was also wrong:** 3.8–11.9 ms, and falling as the rate rose. |
+| 2 | B: no knee up to 300/s; p50 within 2× of its 25/s value; mostly `ClientRead` / `IO:WALSync`; pending 0 | **Held** for the knee, the p50 (4.9 vs 11.1 ms) and pending (0). **Wrong** on the wait events at 300/s: 56% were lock waits, because each B row still has 10 senders. |
+| 3 | Pool 30: the knee moves at most one step; pending drops; lock waits rise; latency no better | **Held:** the knee didn't move up, pending fell to 0, lock share went from 90% to 93%, and latency was no better. The test was weaker than intended (concurrency capped at 10–11). |
+| 4 | 5 s timeout: many resends and duplicates; higher p50 | **Held** for resends (17,733) and duplicates (2,980). **Not comparable** for p50 (survivor bias, see above); p99 and max were much higher. |
+| 5 | C: all VALID to 20/s, no drops or 4003, recv p99 < 250 ms, p99 growing with rate; push threads may queue at 20/s | **Held:** 12 VALID plus 1 harness INVALID that was retried VALID, 0 drops, 0 `4003`, p99 ≤ 31.7 ms. **Wrong:** the p99 didn't grow with the rate (27.1 ms at 2/s, 21.7 ms at 20/s), and the push queue never held more than 1 task. |
 
 ## 8. Later scenarios (not in this phase)
 - connection ramp;

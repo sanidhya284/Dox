@@ -14,7 +14,7 @@ A real-time chat backend built as a learning project for backend engineering: a 
 | 2d-lite: heartbeats and idle close, delivered/read cursors ([ADR-0007](docs/adr/0007-heartbeats-and-read-cursors.md)) | Done (PR open) |
 | 2e: React UI (presence and typing deferred) | Not started |
 | 3: reliable delivery and recovery (catch-up APIs, reference client, convergence under faults) | Done (PR open) |
-| 5-lite: metrics, load harness, one measured bottleneck ([ADR-0009](docs/adr/0009-observability-and-measurement.md)) | In progress (metrics done; load harness and method ready, no measurements yet) |
+| 5-lite: metrics, load harness, one measured bottleneck ([ADR-0009](docs/adr/0009-observability-and-measurement.md)) | Done (PR open): metrics, load harness, measured on one laptop (below) |
 | 4, 6 onward: multi-instance, outbox, ... | Not started |
 
 Details and the next steps: [docs/HANDOFF.md](docs/HANDOFF.md).
@@ -56,7 +56,7 @@ Results are in `backend/build/test-results/{test,integrationTest}/*.xml`.
 echo "api.version=1.44" > ~/.docker-java.properties
 ```
 
-**Load harness** (on demand, never in CI): `./gradlew loadTest` against a separately started app (`bench` profile) and a dedicated benchmark database (`deploy/bench/bench-db.sh`). Method, scenarios and run outcomes: [docs/BENCHMARKS.md](docs/BENCHMARKS.md). No numbers are published yet.
+**Load harness** (on demand, never in CI): `./gradlew loadTest` against a separately started app (`bench` profile) and a dedicated benchmark database (`deploy/bench/bench-db.sh`). Method, scenarios, every run and the analysis: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## API and WebSocket
 The REST endpoints are `/api/auth/*` (register, login, refresh, logout), `/api/conversations/*` (direct and group conversations, sending and paging messages; a message body is at most 4,000 characters, longer bodies get `400 VALIDATION_ERROR`), `GET /api/conversations/{id}/messages?after={seq}&limit={n}` (catch up: messages after a seq, oldest first, exact `hasMore`; `?before=` pages backwards), `GET /api/conversations/heads` (`[{conversationId, lastSeq}]` for your conversations: a cheap "am I behind?" check), `POST /api/conversations/{id}/cursor` (`{"kind":"read"|"delivered","seq":42}`: moves your cursor forward, never back; read implies delivered), `POST /api/ws/ticket` and `/actuator/health`. A conversation's `unreadCount` counts messages after your read cursor that *others* sent; `GET /api/conversations/{id}` also returns every participant's `lastReadSeq` / `lastDeliveredSeq`, and the list returns `myLastReadSeq`. Both also return `lastSeq`, the conversation's newest seq. Full table: [architecture.md, API Surface](docs/architecture.md#api-surface).
@@ -99,7 +99,31 @@ Pushes are an optimisation; PostgreSQL is the truth. A correct client (full algo
 ## What is guaranteed (each covered by tests)
 Per-conversation ordering without gaps, idempotent sends (`client_msg_id`), a 4,000-character body limit, atomic refresh-token rotation with theft detection, `404` for non-members, one-time WebSocket tickets, exact origin checks, per-user socket tracking, acks only after commit, pushes only after commit and exactly once per message per socket, socket lifetime, and closing a user's sockets after a refresh-token replay (only once the revocation has committed). The precise list, with test names: [architecture.md, Behaviour Guarantees](docs/architecture.md#behaviour-guarantees-each-covered-by-an-integration-or-unit-test).
 
-Under seeded faults, reference clients converge to exactly the stored history (one instance, bounded workload; [ADR-0008](docs/adr/0008-client-sync-protocol.md)). No performance or capacity numbers are claimed. Tests that run on a laptop are correctness checks, not benchmarks.
+Under seeded faults, reference clients converge to exactly the stored history (one instance, bounded workload; [ADR-0008](docs/adr/0008-client-sync-protocol.md)). Tests that run on a laptop are correctness checks, not benchmarks. The load measurements are below.
+
+## Measured (Phase 5-lite)
+**Results are for this machine and this workload; they are not capacity claims.**
+
+**Setup:**
+- One laptop: Intel i7-1068NG7 with 8 logical CPUs, macOS.
+- Postgres 16 runs in Docker Desktop's VM.
+- The load generator runs on the same machine.
+- Each point is 3 runs of a 60 s window, measured open-loop from the intended send time.
+
+Every run, including the INVALID and aborted ones: [BENCHMARKS.md section 6](docs/BENCHMARKS.md#6-results-step-4-measured-2026-11-05).
+
+**Hot conversation** (10 senders, one group, Hikari pool 10):
+- **200 msg/s:** all 3 runs kept up. Ack p50 was 3.7–3.8 ms and p99 11.2–31.3 ms ([1](docs/benchmarks/20261105-195410-A-r200-A-pool10-p1.json), [2](docs/benchmarks/20261105-200445-A-r200-A-pool10-p2.json), [3](docs/benchmarks/20261105-201519-A-r200-A-pool10-p3.json)).
+- **300 msg/s:** one of 3 runs fell behind. The server committed 269.1 msg/s and ack p50 reached 3,537 ms ([run](docs/benchmarks/20261105-201712-A-r300-A-pool10-p3.json)).
+- **300 msg/s with Hikari pool 30:** all 3 runs fell behind, at 254.5–285.7 msg/s committed ([1](docs/benchmarks/20261105-210215-A-r300-A-pool30-p1.json), [2](docs/benchmarks/20261105-211303-A-r300-A-pool30-p2.json), [3](docs/benchmarks/20261105-212343-A-r300-A-pool30-p3.json)).
+
+**The same load over 10 groups, 300 msg/s:** all 3 runs kept up, at 299.6 msg/s committed, with ack p99 28.5–32.1 ms ([1](docs/benchmarks/20261105-203006-B-r300-B-pool10-p1.json), [2](docs/benchmarks/20261105-204043-B-r300-B-pool10-p2.json), [3](docs/benchmarks/20261105-205119-B-r300-B-pool10-p3.json)).
+
+**Fan-out to 200 sockets, 20 msg/s** (4,000 pushes/s): send→receive p99 was 20.9–22.8 ms, with 0 dropped pushes and 0 `4003` closes ([1](docs/benchmarks/20261105-213109-C-r20-C-pool10-p1.json), [2](docs/benchmarks/20261105-213822-C-r20-C-pool10-p2.json), [3](docs/benchmarks/20261105-214723-C-r20-C-pool10-p3.json)).
+
+**Client retries past the knee:** with the client's default 5 s ack timeout at 300 msg/s, there were 17,733 resends, and 2,980 server-side duplicates competed for the same row ([run](docs/benchmarks/20261105-201916-A-r300-A-ack5s-p1.json)).
+
+**Bottleneck:** the per-conversation row lock (`SELECT ... FOR UPDATE` until commit). In the hot conversation at 300 msg/s, 90–93% of active database samples were row-lock waits. The 10-group control kept up at the same rate, and a larger pool didn't help. Evidence, caveats and what would change this: [BENCHMARKS.md section 7](docs/BENCHMARKS.md#7-bottleneck-analysis).
 
 ## Known limitations
 The main ones:
