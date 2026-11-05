@@ -137,6 +137,9 @@ public final class LoadMain {
         sampler.scrape(); // fail fast if the app is not up or the metrics password is wrong
         Map<String, Object> environment = Environment.capture(sampler, jdbc, dbUser, dbPassword, port, mapper);
 
+        // A previous (overloaded) run may still be draining its backlog: start only on a quiet server.
+        double quiescedAfter = awaitQuietServer(sampler, jdbc, dbUser, dbPassword);
+
         // ── setup (outside the window): users (BCrypt), conversations, sockets ──
         long setupStart = System.nanoTime();
         List<ReferenceClient> senders = new ArrayList<>();
@@ -231,7 +234,8 @@ public final class LoadMain {
         result.put("outcome", verdict.outcome().name());
         result.put("reasons", verdict.reasons());
         result.put("params", Map.of("targetRate", rate, "warmup", warmup.toString(), "window", window.toString(),
-                "drain", drain.toString(), "lagThresholdMs", lagMs));
+                "drain", drain.toString(), "lagThresholdMs", lagMs, "clientAckTimeout", ackTimeout().toString(),
+                "quiescedAfterSeconds", quiescedAfter));
         result.put("shape", shape);
         result.put("setupSeconds", round(setupSeconds));
         result.put("sends", Map.of("planned", total, "windowFirstSends", windowFirstSends.get(),
@@ -358,7 +362,7 @@ public final class LoadMain {
         long seed = 1;
         for (User su : senderUsers) {
             ReferenceClient c = new ReferenceClient(su.username(), port, rest(), mapper, su.id(), su.username(),
-                    PASSWORD, seed++, ReferenceClient.Config.defaults(), Set.of());
+                    PASSWORD, seed++, clientConfig(), Set.of());
             c.setObserver(observer());
             senders.add(c.start());
         }
@@ -376,6 +380,48 @@ public final class LoadMain {
         h.setBearerAuth(u.accessToken());
         ResponseEntity<String> r = rest.exchange("/api/ws/ticket", HttpMethod.POST, new HttpEntity<>(h), String.class);
         return mapper.readTree(r.getBody()).path("ticket").asText();
+    }
+
+    /** Client ack timeout: default 5 s (production default); knee runs set it far above the window. */
+    private Duration ackTimeout() {
+        return Duration.parse(arg("ackTimeout", ReferenceClient.Config.defaults().ackTimeout().toString()));
+    }
+
+    private ReferenceClient.Config clientConfig() {
+        ReferenceClient.Config d = ReferenceClient.Config.defaults();
+        return new ReferenceClient.Config(ackTimeout(), d.antiEntropyInterval(), d.backoffBase(), d.backoffCap(),
+                d.tick(), d.outboxCapacity());
+    }
+
+    /**
+     * Waits (up to 180 s) for 3 consecutive one-second samples with no Hikari active or pending
+     * connection and no active query on the bench database. Returns the seconds waited.
+     */
+    private static double awaitQuietServer(ServerSampler sampler, String jdbc, String user, String password)
+            throws Exception {
+        long start = System.nanoTime();
+        long deadline = start + Duration.ofSeconds(180).toNanos();
+        int quiet = 0;
+        try (Connection c = DriverManager.getConnection(jdbc, user, password);
+             PreparedStatement ps = c.prepareStatement("SELECT count(*) FROM pg_stat_activity WHERE datname = "
+                     + "current_database() AND pid <> pg_backend_pid() AND state <> 'idle'")) {
+            while (quiet < 3) {
+                if (System.nanoTime() > deadline) {
+                    throw new IllegalStateException("server not quiet after 180 s");
+                }
+                PrometheusText p = sampler.scrape();
+                long busy;
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    busy = rs.getLong(1);
+                }
+                boolean idle = p.sum("hikaricp_connections_active") == 0 && p.sum("hikaricp_connections_pending") == 0
+                        && busy == 0;
+                quiet = idle ? quiet + 1 : 0;
+                Thread.sleep(1000);
+            }
+        }
+        return round((System.nanoTime() - start) / 1e9);
     }
 
     // ═════════════════════════════ observation ═════════════════════════════

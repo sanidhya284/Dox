@@ -31,6 +31,9 @@
    - `groups` (B; default 10);
    - `fanUsers` and `socketsPerUser` (C; defaults 20 and 10);
    - `lagMs` (default 10);
+   - `ackTimeout` (the client's ack timeout; default PT5S; knee runs use PT10M so client retries can't amplify the overload).
+
+   The whole step-4 ladder runs unattended with `caffeinate -dims python3 deploy/bench/run_ladder.py` (`--dry-run` prints the plan and a time estimate). Each run first waits for a quiet server (no Hikari activity, no active query), so one overloaded run's backlog can't leak into the next.
    - `out`, `base`, `jdbc`.
 
    Exit code 3 means an invariant was violated, which is a **bug**, not a result.
@@ -109,7 +112,38 @@ When server and harness signals appear together, the run is SATURATED, with the 
 - **Retry amplification beyond the knee.** The client's 5 s ack timeout resends unacked messages with the same clientMsgId. The server deduplicates them, but each resend still takes the row lock. Past saturation, latency is therefore inflated by the client's own retries, which is one reason SATURATED points are shown as the knee, not as capacity.
 - **Clients keep polling `heads`** every 30 s (anti-entropy), a small background load in every scenario.
 
-## 5. Results (step 4; empty)
+## 5. Predictions (written and committed BEFORE any step-4 measurement)
+
+**What I already knew** when writing these:
+- **From the smoke runs (harness checks, not results):** A at 400/s saturated hard, with Hikari pending and mostly `Lock:tuple` / `Lock:transactionid` wait events.
+- **From the idle server:** the server-side ack time was about 10 ms.
+
+So the A prediction isn't blind about "400/s is too much". Everything else is a guess from the design.
+
+**Run plan:**
+- **Ladder:** A and B at 25, 50, 100, 150, 200 and 300/s, at pool 10, and A again at pool 30. C at 2, 5, 10 and 20 messages/s across 200 sockets, i.e. up to 4000 pushes/s.
+- **Repeats:** 3 interleaved passes per block.
+- **Client ack timeout:** 10 min for every knee run, plus one A run with the default 5 s.
+
+1. **A (hot conversation, pool 10):**
+   - **Knee:** the first rate whose runs are mostly SATURATED will be **150 or 200/s**; I'd be surprised outside 100–300.
+   - **Below the knee:** ack p50 stays roughly flat (10–25 ms).
+   - **Why:** each send holds the conversation row lock from `SELECT ... FOR UPDATE` until commit, including the WAL fsync inside Docker's VM. Sends to one conversation are therefore serial, so the ceiling is about 1 / (lock hold time).
+2. **B (control, same total rates):**
+   - **No knee in the ladder:** every point VALID up to 300/s, ack p50 within about 2× of B's own 25/s value.
+   - **Wait events:** mostly `ClientRead` and `IO:WALSync`, few `Lock:*`.
+   - **Hikari pending:** essentially 0.
+   - **If B saturates at the same rate as A**, the row-lock hypothesis is wrong: the limit would be the server or the database in general.
+3. **A at pool 30:**
+   - **The knee doesn't move by more than one ladder step.** Extra connections only queue on the same row lock.
+   - **Hikari pending drops,** but `Lock:tuple` / `Lock:transactionid` waits rise by about the same amount, and latency at and above the knee is no better (possibly worse).
+4. **The 5 s ack-timeout run**, at A's first saturated rate: many resends and server-side duplicates, and a higher ack p50 than the 10-min-timeout runs at the same rate. Retries add load exactly when the row is the bottleneck.
+5. **C (fan-out, 200 sockets):**
+   - **Outcome:** all runs VALID up to 20 messages/s, with no dropped pushes and no 4003 closes.
+   - **Latency:** send→receive p99 grows with the rate, since each message is 200 sequential socket writes on a 2-thread push executor, but stays below 250 ms at 20/s.
+   - **Least confident** about C at 20/s: the two push threads may queue.
+
+## 6. Results (step 4; empty)
 
 Each cell is the median [min–max] of 3 runs, in ms from the intended send time. Outcome counts are listed per point.
 
@@ -133,14 +167,14 @@ Each cell is the median [min–max] of 3 runs, in ms from the intended send time
 |---|---|---|---|---|---|---|---|
 | | | | | | | | |
 
-## 6. Bottleneck analysis (step 4)
+## 7. Bottleneck analysis (step 4)
 To be written from the evidence:
 - the knee of A against B;
 - wait events at the knee;
 - whether the pool-30 re-run moves the knee;
 - what would change the result.
 
-## 7. Later scenarios (not in this phase)
+## 8. Later scenarios (not in this phase)
 - connection ramp;
 - reconnect storm;
 - `heads` polling cost at many conversations;
