@@ -23,7 +23,8 @@ Written 2026-11-03 for Claude Code taking over from a Claude-chat architect + Ge
   - the demo seeder;
   - the `prod` profile and `ProfileGuard`.
   **2 cookie refresh token: done** (ADR-0010): the refresh token is only in an HttpOnly/Secure/SameSite=Strict cookie `chat_rt` with Path=/api/auth; refresh and logout need an allowed Origin; ConvergenceTest and a tiny load-harness smoke (A 20/s, C 2/s, both VALID) were re-run after the change.
-  The next steps are 3 UI, 4 compose + Caddy + smoke + e2e (**then STOP and report**, so the user can do the hand checklist), and 5 the deploy pipeline. |
+  **3 UI: done** (`frontend/`: Vite + React + TS; the sync client is a TypeScript port of the ReferenceClient; Vitest 36 tests with negative forms; ESLint bans HTML rendering).
+  The next steps are 4 compose + Caddy + smoke + e2e (**then STOP and report**, so the user can do the hand checklist), and 5 the deploy pipeline. |
 | Last full local run | See the latest commit message on `phase-2b-ii`; counts are read from the XML there. |
 
 ## 1. First task: verify and tidy git (before any feature work)

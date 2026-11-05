@@ -12,16 +12,16 @@ A real-time chat backend built as a learning project for backend engineering: a 
 | 2b-ii: connection registry, socket lifetime, closing sockets on token theft | Done |
 | 2c: WebSocket send, ack, push ([ADR-0006](docs/adr/0006-websocket-frame-protocol-v1.md)) | Done (PR open) |
 | 2d-lite: heartbeats and idle close, delivered/read cursors ([ADR-0007](docs/adr/0007-heartbeats-and-read-cursors.md)) | Done (PR open) |
-| 2e: React UI (presence and typing deferred) | Not started |
+| 2e: React UI (presence and typing deferred) | Minimal UI done in Phase 6 (`frontend/`) |
 | 3: reliable delivery and recovery (catch-up APIs, reference client, convergence under faults) | Done (PR open) |
 | 5-lite: metrics, load harness, one measured bottleneck ([ADR-0009](docs/adr/0009-observability-and-measurement.md)) | Done (PR open): metrics, load harness, measured on one laptop (below) |
-| 6: browser UI + auto-deploy (single instance; [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md)) | In progress: steps 1 (pre-deploy hardening) and 2 (refresh token in an HttpOnly cookie) done |
+| 6: browser UI + auto-deploy (single instance; [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md)) | In progress: steps 1 (pre-deploy hardening), 2 (refresh token in an HttpOnly cookie) and 3 (browser UI) done |
 | 4, 7 onward: multi-instance, outbox, ... | Not started |
 
 Details and the next steps: [docs/HANDOFF.md](docs/HANDOFF.md).
 
 ## Stack
-Java 21, Spring Boot 3.3, Gradle 8.10, PostgreSQL 16, Flyway, Spring JDBC (`JdbcClient`, explicit SQL), HikariCP, Spring Security with JWT (HS256) and BCrypt, Testcontainers, JUnit 5, GitHub Actions. `frontend/` and `load-tests/` are placeholders.
+Java 21, Spring Boot 3.3, Gradle 8.10, PostgreSQL 16, Flyway, Spring JDBC (`JdbcClient`, explicit SQL), HikariCP, Spring Security with JWT (HS256) and BCrypt, Testcontainers, JUnit 5, GitHub Actions. UI: Vite + React 18 + TypeScript in `frontend/`, tested with Vitest. `load-tests/` is a placeholder (the load harness lives in `backend/src/test/java/.../load`).
 
 ## Run locally
 Prerequisites: Java 21 and Docker.
@@ -54,6 +54,26 @@ Optional: `WS_MAX_SOCKETS_PER_USER` (default `10`) caps open sockets per user; t
 Metrics: `/actuator/prometheus` needs HTTP Basic as user `metrics` with `METRICS_PASSWORD` (at least 16 characters; without it scraping is disabled). The `dev` profile sets a dev-only password. Basic sends the password on every request, so use TLS in production. `/actuator/health` stays public. Application meters are named `chat.*` (sends, acks, sockets, closes, tickets, cursors, heads, dropped pushes); see [architecture.md, Metrics](docs/architecture.md#metrics-adr-0009).
 
 All configuration: [architecture.md, Configuration](docs/architecture.md#configuration).
+
+### The browser UI (development)
+Prerequisites: Node 22 (npm 10). With the backend running as above (`dev` profile on :8080):
+
+```bash
+cd frontend && npm ci && npm run dev        # http://localhost:5173
+```
+
+Vite proxies `/api` and `/ws` to `localhost:8080`, so the UI and the API share one origin, as they do behind Caddy in production: no CORS. The `dev` profile keeps registration open and lets the refresh cookie work over plain `http://localhost`.
+
+Frontend checks: `npm run lint` (bans `dangerouslySetInnerHTML`), `npm run typecheck`, `npm test` (Vitest).
+
+The UI covers:
+- register and login;
+- the conversation list with unread counts;
+- the message pane and composer;
+- read cursors;
+- live push with reconnect.
+
+It doesn't create conversations yet (use the seeded "Demo room", or create groups through the API), and it shows senders as "You" or a short user id.
 
 ## Tests
 ```bash
@@ -107,6 +127,8 @@ Pushes are an optimisation; PostgreSQL is the truth. A correct client (full algo
 4. Deduplicate by message id, order by `seq`; if a push skips ahead of your contiguous seq, fetch the gap.
 5. Every ~30 s (jittered) compare `heads` with your contiguous seq and fetch if behind: this is the only way to notice that the *last* push was lost.
 6. On a 401, refresh the access token once (shared by concurrent requests, and in a browser across tabs) and retry. Keep the access token in memory; the refresh token is the `chat_rt` cookie.
+
+**Which client is tested how:** the browser UI's sync code (`frontend/src/sync/client.ts`) is a TypeScript port of the Java reference client. It's unit-tested with a fake server, a fake socket and fake timers (dedupe, subscribe-first, gap fetch, anti-entropy, same-id resend, close codes, single-flight refresh; each with a negative form). **The convergence-under-faults guarantee below is tested on the Java reference client only, not on the TypeScript client.**
 
 `ConvergenceTest` checks this end to end: 8 clients under seeded faults (dropped connections, pushes and acks, duplicated and delayed sends, failed commits) all end with exactly the database's history.
 
