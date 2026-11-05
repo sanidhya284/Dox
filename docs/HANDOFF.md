@@ -76,6 +76,7 @@ Cause: `revokeFamily` rewrote every row of the family. Concurrent replays of one
   Size note: the WebSocket max text-frame size must fit a maximal message (4,000 UTF-16 chars is up to 12,000 bytes in UTF-8) plus the envelope.
   Design: Define a small versioned frame envelope (proposal: `{ "v":1, "type":"...", ...}`) so Phase 3 can add sync cursors without breaking clients. Client sends a message frame reusing the existing `MessageService.sendMessage` (do not duplicate its transaction logic). The **ack is sent only after the PostgreSQL commit**. Recipient push must happen **after commit** (e.g. `TransactionSynchronization.afterCommit`), never inside the transaction, so a rollback can't leak a phantom message. Duplicate sends with the same `clientMsgId` return the same message and don't re-push. Non-members get no delivery and nothing persisted. Tests: ack-after-commit (inject a failure before commit: no ack, no push), duplicate send, authorization, slow/closed recipient doesn't fail the sender.
 - **2d: heartbeats and connection cleanup, in-memory presence, typing indicators, delivered/read cursors** (monotonic updates; also fixes the known "unread count includes my own messages" limitation).
+- **2e UI rule (recorded 2026-11-05):** render message bodies as plain text (React text nodes), never as HTML: no `dangerouslySetInnerHTML`, no Markdown-to-HTML without sanitising. Bodies are stored and pushed verbatim, so the client is the XSS boundary.
 - **2e: minimal React UI** and the refresh-token storage decision; then deploy a simple version behind a proxy with TLS to find proxy/CORS/timeout problems early.
 - **Phase 4 note (multi-instance), recorded 2026-11-04:** `RefreshTokenFamilyRevokedEvent` is an in-process Spring event, so it only closes sockets held by the instance that handled the replay. With several instances it must be fanned out over Redis pub/sub, with each instance closing its own sockets; the 15-minute socket lifetime (4001) remains the backstop if a message is lost. The same applies to `ConnectionRegistry` and to 2c pushes.
 - **Phase 3 note (from 2c):** pushes may arrive out of `seq` order and may be dropped (full push queue, `4003` slow consumer). Phase 3 adds client-side gap detection by `seq` and resync from history; no server change is needed for correctness.
@@ -87,7 +88,8 @@ Cause: `revokeFamily` rewrote every row of the family. Concurrent replays of one
 
 ## 7. Known limitations (documented in `docs/architecture.md`; keep it current)
 - WebSocket pushes are best effort (out of `seq` order possible, dropped when the push queue is full, slow sockets closed with `4003`); clients recover from history.
-- No per-socket send rate limit.
+- A duplicate send returns the same ack but is not re-pushed, so a dropped push (full queue, `4003`, closed socket) is only repaired by history sync (Phase 3 gap detection by `seq`).
+- Per-socket send rate limiting is not implemented.
 - `@TransactionalEventListener` ignores events published outside a transaction (no push / no theft close).
 - Logout does not close the user's open WebSockets (no session id in the access token). They still close within about 15 minutes (decision 5.1, from 2b-ii).
 - Strict theft detection logs out a legitimately double-submitting client.
