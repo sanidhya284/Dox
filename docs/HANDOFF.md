@@ -14,7 +14,7 @@ Written 2026-11-03 for Claude Code taking over from a Claude-chat architect + Ge
 | Phase 2b-ii (registry, lifetime 4001, theft close 4002; [ADR-0005](adr/0005-connection-registry-and-after-commit-socket-closing.md)) | Done. Merged (PR #5). Follow-ups on branch `phase-2b-ii` after the merge: deterministic thread check in `WsTheftCloseTest`, message body limit, ADR-0004 duplicate merged; these need a new PR. |
 | Phase 2c (send, ack, push; [ADR-0006](adr/0006-websocket-frame-protocol-v1.md)) | Done. Merged (PR #6). The follow-up commit `9994d11` (forged-sender test, limitations) missed the merge and rides on `phase-2d`. |
 | Phase 2d-lite (heartbeats, cursors; [ADR-0007](adr/0007-heartbeats-and-read-cursors.md)) | Done. Merged (PR #7). Presence and typing deferred. |
-| Phase 3 (reliable delivery and recovery; plan with the user's amendments in `~/.claude/plans/majestic-seeking-wreath.md`) | In progress on branch `phase-3`. Step 1 catch-up APIs (`?after=`, `heads`, `lastSeq`): done. Step 2 backoff + outbox: next. Steps 3-5 pending. |
+| Phase 3 (reliable delivery and recovery; plan with the user's amendments in `~/.claude/plans/majestic-seeking-wreath.md`) | In progress on branch `phase-3`. Step 1 catch-up APIs (`?after=`, `heads`, `lastSeq`): done. Step 2 reference-client building blocks in test sources (`client/Backoff` full jitter, `client/Outbox` bounded with stable clientMsgId and ack timeouts, `client/ErrorClass`): done. Step 3 client sync: next. Steps 4-5 pending. |
 | Last full local run | See the latest commit message on `phase-2b-ii`; counts are read from the XML there. |
 
 ## 1. First task: verify and tidy git (before any feature work)
