@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
+import org.springframework.web.socket.WebSocketMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorator;
 
@@ -102,8 +103,25 @@ public class ConnectionRegistry {
         return sessionsByUser.containsKey(userId);
     }
 
-    /** Sends to one session (e.g. an ack to the socket that sent). False if it is not registered. */
-    public boolean sendTo(UUID userId, String sessionId, TextMessage message) {
+    /** Closes one session with {@code status} (through the raw session) and unregisters it. */
+    public void closeSession(UUID userId, String sessionId, CloseStatus status) {
+        Map<String, ConcurrentWebSocketSessionDecorator> sessions = sessionsByUser.get(userId);
+        ConcurrentWebSocketSessionDecorator target = (sessions == null) ? null : sessions.get(sessionId);
+        unregister(userId, sessionId);
+        if (target != null) {
+            try {
+                target.getDelegate().close(status);
+            } catch (Exception e) {
+                log.debug("Closing WebSocket session {} failed: {}", sessionId, e.toString());
+            }
+        }
+    }
+
+    /**
+     * Sends to one session (an ack, an error frame, a heartbeat ping). False if it is not registered
+     * or the send failed (a failed send closes the session with 4003).
+     */
+    public boolean sendTo(UUID userId, String sessionId, WebSocketMessage<?> message) {
         Map<String, ConcurrentWebSocketSessionDecorator> sessions = sessionsByUser.get(userId);
         ConcurrentWebSocketSessionDecorator target = (sessions == null) ? null : sessions.get(sessionId);
         if (target == null) {
@@ -127,7 +145,7 @@ public class ConnectionRegistry {
         }
     }
 
-    private boolean send(UUID userId, ConcurrentWebSocketSessionDecorator target, TextMessage message) {
+    private boolean send(UUID userId, ConcurrentWebSocketSessionDecorator target, WebSocketMessage<?> message) {
         try {
             target.sendMessage(message);
             return true;

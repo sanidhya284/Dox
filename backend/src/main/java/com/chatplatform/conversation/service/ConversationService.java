@@ -1,6 +1,10 @@
 package com.chatplatform.conversation.service;
 
 import com.chatplatform.conversation.dto.ConversationResponse;
+import com.chatplatform.conversation.dto.ParticipantCursor;
+import com.chatplatform.conversation.dto.CursorResult;
+import com.chatplatform.conversation.event.CursorAdvancedEvent;
+import org.springframework.context.ApplicationEventPublisher;
 import com.chatplatform.conversation.dto.CreateDirectRequest;
 import com.chatplatform.conversation.dto.CreateGroupRequest;
 import com.chatplatform.conversation.repository.Conversation;
@@ -14,6 +18,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -21,14 +26,17 @@ public class ConversationService {
 
     private final ConversationRepository conversationRepository;
     private final ParticipantRepository participantRepository;
+    private final ApplicationEventPublisher events;
     private final UserService userService;
 
     public ConversationService(ConversationRepository conversationRepository,
                                ParticipantRepository participantRepository,
-                               UserService userService) {
+                               UserService userService,
+                               ApplicationEventPublisher events) {
         this.conversationRepository = conversationRepository;
         this.participantRepository = participantRepository;
         this.userService = userService;
+        this.events = events;
     }
 
     @Transactional
@@ -85,25 +93,31 @@ public class ConversationService {
         ConversationParticipant me = participantRepository.find(conversationId, currentUserId)
                 .orElseThrow(() -> new ApiException(ErrorCode.CONVERSATION_NOT_FOUND));
 
-        long unreadCount = Math.max(0, conv.lastSeq() - me.lastReadSeq());
+        long unreadCount = participantRepository.unreadCount(conversationId, currentUserId);
+        List<ParticipantCursor> cursors = participantRepository.findActive(conversationId).stream()
+                .map(p -> new ParticipantCursor(p.userId(), p.lastDeliveredSeq(), p.lastReadSeq()))
+                .toList();
 
         return new ConversationResponse(
                 conv.id(), conv.type(), conv.title(), participants,
-                unreadCount, conv.lastMessageAt(), conv.createdAt());
+                unreadCount, conv.lastMessageAt(), conv.createdAt(),
+                me.lastReadSeq(), cursors);
     }
 
     @Transactional(readOnly = true)
     public List<ConversationResponse> getUserConversations(UUID userId) {
         List<Conversation> conversations = conversationRepository.findByUserId(userId);
+        Map<UUID, Long> unread = participantRepository.unreadCountsForUser(userId); // one grouped query
         return conversations.stream().map(conv -> {
             long lastReadSeq = participantRepository.find(conv.id(), userId)
                     .map(ConversationParticipant::lastReadSeq)
                     .orElse(0L);
-            long unreadCount = Math.max(0, conv.lastSeq() - lastReadSeq);
+            long unreadCount = unread.getOrDefault(conv.id(), 0L);
             List<UUID> participants = participantRepository.findParticipantIdsByConversation(conv.id());
             return new ConversationResponse(
                     conv.id(), conv.type(), conv.title(), participants,
-                    unreadCount, conv.lastMessageAt(), conv.createdAt());
+                    unreadCount, conv.lastMessageAt(), conv.createdAt(),
+                    lastReadSeq, null);
         }).toList();
     }
     
@@ -120,6 +134,51 @@ public class ConversationService {
      */
     public List<UUID> activeParticipantIds(UUID conversationId) {
         return participantRepository.findParticipantIdsByConversation(conversationId);
+    }
+
+    /**
+     * Moves the user's delivered or read cursor forward (ADR-0007). Order of checks:
+     * 1. membership (non-member, left participant and unknown conversation give the same 404),
+     * 2. kind and seq (negative, or beyond the conversation's last_seq: VALIDATION_ERROR),
+     * 3. the guarded update (a stale cursor writes nothing).
+     */
+    @Transactional
+    public CursorResult advanceCursor(UUID conversationId, UUID userId, String kind, long seq) {
+        return advanceCursor(conversationId, userId, kind, seq, null);
+    }
+
+    /**
+     * Same as {@link #advanceCursor(UUID, UUID, String, long)}; {@code originSessionId} is the WebSocket
+     * session the update came from (null for REST). If a cursor advanced, publishes
+     * {@link CursorAdvancedEvent} (delivered after commit by realtime).
+     */
+    @Transactional
+    public CursorResult advanceCursor(UUID conversationId, UUID userId, String kind, long seq, String originSessionId) {
+        requireParticipant(conversationId, userId);
+        boolean read = "read".equals(kind);
+        if (!read && !"delivered".equals(kind)) {
+            throw new ApiException(ErrorCode.VALIDATION_ERROR, "kind must be \"delivered\" or \"read\"");
+        }
+        if (seq < 0) {
+            throw new ApiException(ErrorCode.VALIDATION_ERROR, "seq must not be negative");
+        }
+        long lastSeq = conversationRepository.findById(conversationId)
+                .orElseThrow(() -> new ApiException(ErrorCode.CONVERSATION_NOT_FOUND))
+                .lastSeq();
+        if (seq > lastSeq) {
+            throw new ApiException(ErrorCode.VALIDATION_ERROR, "seq is beyond the conversation's latest message");
+        }
+        int updated = read
+                ? participantRepository.advanceRead(conversationId, userId, seq)
+                : participantRepository.advanceDelivered(conversationId, userId, seq);
+        ConversationParticipant me = participantRepository.find(conversationId, userId)
+                .orElseThrow(() -> new ApiException(ErrorCode.CONVERSATION_NOT_FOUND));
+        boolean advanced = updated == 1;
+        if (advanced) {
+            events.publishEvent(new CursorAdvancedEvent(conversationId, userId,
+                    me.lastDeliveredSeq(), me.lastReadSeq(), originSessionId));
+        }
+        return new CursorResult(advanced, me.lastDeliveredSeq(), me.lastReadSeq());
     }
 
     public void requireConversationExists(UUID conversationId) {

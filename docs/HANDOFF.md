@@ -12,7 +12,8 @@ Written 2026-11-03 for Claude Code taking over from a Claude-chat architect + Ge
 | Phase 2b-i (handshake interceptor: Origin check + ticket consume) | Done, including the Section 3 hardening. Merged (PR #3). |
 | Refresh replay deadlock | Fixed (Section 3a). Merged (PR #4). |
 | Phase 2b-ii (registry, lifetime 4001, theft close 4002; [ADR-0005](adr/0005-connection-registry-and-after-commit-socket-closing.md)) | Done. Merged (PR #5). Follow-ups on branch `phase-2b-ii` after the merge: deterministic thread check in `WsTheftCloseTest`, message body limit, ADR-0004 duplicate merged; these need a new PR. |
-| Phase 2c (send, ack, push; [ADR-0006](adr/0006-websocket-frame-protocol-v1.md)) | In progress on branch `phase-2c` (based on `phase-2b-ii` @ `851d5cd`, which has no PR yet). Done on branch `phase-2c` (steps a, b, c); PR into `main` open, not merged. Next: 2d. Plan (with the user's amendments): `~/.claude/plans/majestic-seeking-wreath.md`. |
+| Phase 2c (send, ack, push; [ADR-0006](adr/0006-websocket-frame-protocol-v1.md)) | Done. Merged (PR #6). The follow-up commit `9994d11` (forged-sender test, limitations) missed the merge and rides on `phase-2d`. |
+| Phase 2d-lite (heartbeats, cursors; [ADR-0007](adr/0007-heartbeats-and-read-cursors.md)) | Done on branch `phase-2d` (steps a, b, c); PR into `main` open, not merged. Presence and typing: deferred. Next: 2e (React UI). |
 | Last full local run | See the latest commit message on `phase-2b-ii`; counts are read from the XML there. |
 
 ## 1. First task: verify and tidy git (before any feature work)
@@ -76,6 +77,7 @@ Cause: `revokeFamily` rewrote every row of the family. Concurrent replays of one
   Size note: the WebSocket max text-frame size must fit a maximal message (4,000 UTF-16 chars is up to 12,000 bytes in UTF-8) plus the envelope.
   Design: Define a small versioned frame envelope (proposal: `{ "v":1, "type":"...", ...}`) so Phase 3 can add sync cursors without breaking clients. Client sends a message frame reusing the existing `MessageService.sendMessage` (do not duplicate its transaction logic). The **ack is sent only after the PostgreSQL commit**. Recipient push must happen **after commit** (e.g. `TransactionSynchronization.afterCommit`), never inside the transaction, so a rollback can't leak a phantom message. Duplicate sends with the same `clientMsgId` return the same message and don't re-push. Non-members get no delivery and nothing persisted. Tests: ack-after-commit (inject a failure before commit: no ack, no push), duplicate send, authorization, slow/closed recipient doesn't fail the sender.
 - **2d: heartbeats and connection cleanup, in-memory presence, typing indicators, delivered/read cursors** (monotonic updates; also fixes the known "unread count includes my own messages" limitation).
+- **2e UI rule (recorded 2026-11-05):** render message bodies as plain text (React text nodes), never as HTML: no `dangerouslySetInnerHTML`, no Markdown-to-HTML without sanitising. Bodies are stored and pushed verbatim, so the client is the XSS boundary.
 - **2e: minimal React UI** and the refresh-token storage decision; then deploy a simple version behind a proxy with TLS to find proxy/CORS/timeout problems early.
 - **Phase 4 note (multi-instance), recorded 2026-11-04:** `RefreshTokenFamilyRevokedEvent` is an in-process Spring event, so it only closes sockets held by the instance that handled the replay. With several instances it must be fanned out over Redis pub/sub, with each instance closing its own sockets; the 15-minute socket lifetime (4001) remains the backstop if a message is lost. The same applies to `ConnectionRegistry` and to 2c pushes.
 - **Phase 3 note (from 2c):** pushes may arrive out of `seq` order and may be dropped (full push queue, `4003` slow consumer). Phase 3 adds client-side gap detection by `seq` and resync from history; no server change is needed for correctness.
@@ -87,11 +89,12 @@ Cause: `revokeFamily` rewrote every row of the family. Concurrent replays of one
 
 ## 7. Known limitations (documented in `docs/architecture.md`; keep it current)
 - WebSocket pushes are best effort (out of `seq` order possible, dropped when the push queue is full, slow sockets closed with `4003`); clients recover from history.
-- No per-socket send rate limit.
+- A duplicate send returns the same ack but is not re-pushed, so a dropped push (full queue, `4003`, closed socket) is only repaired by history sync (Phase 3 gap detection by `seq`).
+- Per-socket send rate limiting is not implemented.
 - `@TransactionalEventListener` ignores events published outside a transaction (no push / no theft close).
 - Logout does not close the user's open WebSockets (no session id in the access token). They still close within about 15 minutes (decision 5.1, from 2b-ii).
 - Strict theft detection logs out a legitimately double-submitting client.
-- Unread counts include the sender's own messages until read cursors exist (Phase 2d).
+- Read receipts are visible to all participants (no privacy toggle); "delivered" is client-reported. Cursor pushes fan out to all participants: clients should debounce (highest seq, about once per second); no server-side cursor rate limit; large groups may need coalescing.
 - The 401 from the security filter has an empty body, not the standard error JSON.
 - No per-user rate limit on ticket issuance.
 - The 5,000-message test (100 workers x 50, exactly the contiguous seq range 1..5000, about 17 s on the author's laptop) is a correctness check, not a benchmark; no throughput claim until Phase 5.

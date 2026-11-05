@@ -221,4 +221,27 @@ public class WsSendAckTest extends AbstractIntegrationTest {
         assertThat(c.next(500, TimeUnit.MILLISECONDS)).as("no further frame (no late ack)").isNull();
         assertThat(rowsInConversation(conv)).isZero();
     }
+
+    /**
+     * The sender is always the user authenticated at the handshake. A frame that names another
+     * user (here B, who is a member, so a forged id would otherwise be accepted) is stored under A.
+     */
+    @Test
+    void forgedSenderIdInTheFrameIsIgnored() throws Exception {
+        AuthResponse a = register("fgA_");
+        AuthResponse b = register("fgB_");
+        UUID conv = createDm(a, b);
+        WsTestClient c = connect(a);
+        UUID cmid = UUID.randomUUID();
+        ObjectNode f = (ObjectNode) mapper.readTree(sendFrame(conv, cmid, "who sent this?"));
+        f.put("senderId", b.user().id().toString()).put("userId", b.user().id().toString());
+
+        c.send(mapper.writeValueAsString(f));
+        JsonNode ack = nextFrame(c);
+
+        assertThat(ack.get("type").asText()).isEqualTo("ack");
+        UUID storedSender = jdbcClient.sql("SELECT sender_id FROM messages WHERE id = :id")
+                .param("id", UUID.fromString(ack.get("messageId").asText())).query(UUID.class).single();
+        assertThat(storedSender).as("stored under the handshake user, not the forged id").isEqualTo(a.user().id());
+    }
 }

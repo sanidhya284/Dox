@@ -37,7 +37,8 @@ class ChatWebSocketHandlerTest {
     ChatWebSocketHandlerTest() {
         doReturn(lifetimeClose).when(scheduler).schedule(any(Runnable.class), any(Instant.class));
         handler = new ChatWebSocketHandler(registry, scheduler, LIFETIME, codec,
-                mock(com.chatplatform.message.service.MessageService.class));
+                mock(com.chatplatform.message.service.MessageService.class), mock(HeartbeatMonitor.class),
+                mock(com.chatplatform.conversation.service.ConversationService.class));
     }
 
     private static WebSocketSession sessionWithAttributes(String id, Map<String, Object> attributes) {
@@ -106,7 +107,8 @@ class ChatWebSocketHandlerTest {
     void lifetimeMustBeSetAndPositive() {
         for (Duration bad : new Duration[]{null, Duration.ZERO, Duration.ofSeconds(-1)}) {
             assertThatThrownBy(() -> new ChatWebSocketHandler(registry, scheduler, bad, codec,
-                    mock(com.chatplatform.message.service.MessageService.class)))
+                    mock(com.chatplatform.message.service.MessageService.class), mock(HeartbeatMonitor.class),
+                    mock(com.chatplatform.conversation.service.ConversationService.class)))
                     .as("lifetime %s", bad)
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("ws.session.max-lifetime");

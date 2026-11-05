@@ -137,4 +137,34 @@ class FrameCodecTest {
         assertThat(msg.get("type").asText()).isEqualTo("message");
         assertThat(msg.get("message").get("body").asText()).isEqualTo("hi");
     }
+
+    @Test
+    void validCursorIsParsed() {
+        Parsed p = parse("{\"v\":1,\"type\":\"cursor\",\"conversationId\":\"" + CONV + "\",\"kind\":\"read\",\"seq\":42}");
+        assertThat(p).isEqualTo(new Frames.CursorCommand(UUID.fromString(CONV), "read", 42));
+    }
+
+    @Test
+    void malformedCursorFieldsAreRejectedWithNullClientMsgId() {
+        for (String json : new String[]{
+                "{\"v\":1,\"type\":\"cursor\",\"conversationId\":\"" + CONV + "\",\"kind\":\"read\",\"seq\":\"42\"}",
+                "{\"v\":1,\"type\":\"cursor\",\"conversationId\":\"" + CONV + "\",\"kind\":\"read\",\"seq\":4.5}",
+                "{\"v\":1,\"type\":\"cursor\",\"kind\":\"read\",\"seq\":1}",
+                "{\"v\":1,\"type\":\"cursor\",\"conversationId\":\"" + CONV + "\",\"kind\":7,\"seq\":1}"}) {
+            Parsed p = parse(json);
+            assertThat(p).as(json).isInstanceOf(Rejected.class);
+            assertThat(((Rejected) p).clientMsgId()).isNull();
+            assertThat(((Rejected) p).code()).isEqualTo("VALIDATION_ERROR");
+        }
+    }
+
+    @Test
+    void cursorFrameCarriesBothCursors() throws Exception {
+        UUID user = UUID.randomUUID();
+        JsonNode f = mapper.readTree(codec.cursor(UUID.fromString(CONV), user, 12, 10));
+        assertThat(f.get("type").asText()).isEqualTo("cursor");
+        assertThat(f.get("userId").asText()).isEqualTo(user.toString());
+        assertThat(f.get("lastDeliveredSeq").asLong()).isEqualTo(12);
+        assertThat(f.get("lastReadSeq").asLong()).isEqualTo(10);
+    }
 }

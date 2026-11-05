@@ -1,5 +1,6 @@
 package com.chatplatform.realtime.websocket;
 
+import com.chatplatform.conversation.event.CursorAdvancedEvent;
 import com.chatplatform.conversation.service.ConversationService;
 import com.chatplatform.message.dto.MessageResponse;
 import com.chatplatform.message.event.MessageCreatedEvent;
@@ -58,6 +59,32 @@ public class MessagePushListener {
             long total = droppedPushes.incrementAndGet();
             log.warn("Push queue full: dropped push of message {} (conversation {}); {} dropped so far. "
                     + "Clients recover from history.", message.id(), message.conversationId(), total);
+        }
+    }
+
+    /**
+     * A participant's cursor advanced (ADR-0007): push a {@code cursor} frame after commit to every
+     * open socket of every active participant except the origin socket (the user's other tabs get it,
+     * so their unread badges clear). Same bounded executor and drop policy as message pushes.
+     */
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    public void onCursorAdvanced(CursorAdvancedEvent event) {
+        try {
+            pushExecutor.execute(() -> pushCursor(event));
+        } catch (RejectedExecutionException e) {
+            long total = droppedPushes.incrementAndGet();
+            log.warn("Push queue full: dropped cursor push for user {} in conversation {}; {} dropped so far.",
+                    event.userId(), event.conversationId(), total);
+        }
+    }
+
+    private void pushCursor(CursorAdvancedEvent event) {
+        try {
+            List<UUID> recipients = conversationService.activeParticipantIds(event.conversationId());
+            String frame = codec.cursor(event.conversationId(), event.userId(), event.lastDeliveredSeq(), event.lastReadSeq());
+            registry.sendToUsers(recipients, new TextMessage(frame), event.originSessionId());
+        } catch (RuntimeException e) {
+            log.error("Cursor push for user {} failed", event.userId(), e);
         }
     }
 

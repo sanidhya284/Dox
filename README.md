@@ -11,7 +11,8 @@ A real-time chat backend built as a learning project for backend engineering: a 
 | 2a/2b-i: WebSocket one-time tickets, authenticated handshake | Done |
 | 2b-ii: connection registry, socket lifetime, closing sockets on token theft | Done |
 | 2c: WebSocket send, ack, push ([ADR-0006](docs/adr/0006-websocket-frame-protocol-v1.md)) | Done (PR open) |
-| 2d, 2e: presence and read cursors, React UI | Not started |
+| 2d-lite: heartbeats and idle close, delivered/read cursors ([ADR-0007](docs/adr/0007-heartbeats-and-read-cursors.md)) | Done (PR open) |
+| 2e: React UI (presence and typing deferred) | Not started |
 | 3 onward: reliable delivery, multi-instance, observability, ... | Not started |
 
 Details and the next steps: [docs/HANDOFF.md](docs/HANDOFF.md).
@@ -33,7 +34,7 @@ The `dev` profile supplies a development-only JWT secret and the local frontend 
 - `JWT_SECRET`: at least 32 bytes.
 - `WS_ALLOWED_ORIGINS`: comma-separated exact origins allowed to open WebSockets, e.g. `https://app.example.com`. A blank entry or `*` is refused.
 
-Optional: `WS_SESSION_MAX_LIFETIME` (ISO-8601 duration, default `PT15M`) is how long a WebSocket may stay open; zero or negative values refuse startup. `WS_MAX_TEXT_FRAME_BYTES` (default `32768`) is the largest text frame accepted. Push tuning: `WS_SEND_TIME_LIMIT_MS` (default `5000`) and `WS_SEND_BUFFER_BYTES` (default `524288`) bound how long and how much a single socket may lag before it is closed with `4003`; `WS_PUSH_THREADS` (default `2`) and `WS_PUSH_QUEUE_CAPACITY` (default `10000`) size the push executor.
+Optional: `WS_SESSION_MAX_LIFETIME` (ISO-8601 duration, default `PT15M`) is how long a WebSocket may stay open; zero or negative values refuse startup. `WS_MAX_TEXT_FRAME_BYTES` (default `32768`) is the largest text frame accepted. Heartbeats: `WS_HEARTBEAT_INTERVAL` (default `PT25S`) and `WS_HEARTBEAT_TIMEOUT` (default `PT60S`, must be at least twice the interval). Push tuning: `WS_SEND_TIME_LIMIT_MS` (default `5000`) and `WS_SEND_BUFFER_BYTES` (default `524288`) bound how long and how much a single socket may lag before it is closed with `4003`; `WS_PUSH_THREADS` (default `2`) and `WS_PUSH_QUEUE_CAPACITY` (default `10000`) size the push executor.
 
 All configuration: [architecture.md, Configuration](docs/architecture.md#configuration).
 
@@ -52,16 +53,16 @@ echo "api.version=1.44" > ~/.docker-java.properties
 ```
 
 ## API and WebSocket
-The REST endpoints are `/api/auth/*` (register, login, refresh, logout), `/api/conversations/*` (direct and group conversations, sending and paging messages; a message body is at most 4,000 characters, longer bodies get `400 VALIDATION_ERROR`), `POST /api/ws/ticket` and `/actuator/health`. Full table: [architecture.md, API Surface](docs/architecture.md#api-surface).
+The REST endpoints are `/api/auth/*` (register, login, refresh, logout), `/api/conversations/*` (direct and group conversations, sending and paging messages; a message body is at most 4,000 characters, longer bodies get `400 VALIDATION_ERROR`), `POST /api/conversations/{id}/cursor` (`{"kind":"read"|"delivered","seq":42}`: moves your cursor forward, never back; read implies delivered), `POST /api/ws/ticket` and `/actuator/health`. A conversation's `unreadCount` counts messages after your read cursor that *others* sent; `GET /api/conversations/{id}` also returns every participant's `lastReadSeq` / `lastDeliveredSeq`, and the list returns `myLastReadSeq`. Full table: [architecture.md, API Surface](docs/architecture.md#api-surface).
 
 Connecting a WebSocket:
 1. `POST /api/ws/ticket` with `Authorization: Bearer <access token>` returns `{"ticket": "...", "expiresInSeconds": 30}`.
 2. Within 30 seconds, open `ws://localhost:8080/ws?ticket=<ticket>` from an allowed `Origin`. A ticket works once.
 3. A rejected handshake (bad, used or expired ticket, or an origin not on the list) gets HTTP `401`. A rejection for the origin leaves the ticket usable.
 
-The server tracks each open socket per user. Frames follow protocol v1 ([ADR-0006](docs/adr/0006-websocket-frame-protocol-v1.md)): JSON text frames `{"v":1,"type":"..."}`. A client sends `{"v":1,"type":"send","conversationId":"...","clientMsgId":"...","body":"..."}`; invalid content gets an `error` frame (`{"v":1,"type":"error","clientMsgId":...,"code":"VALIDATION_ERROR","message":"..."}`) and the socket stays open. A valid send is stored exactly like a REST send, and only after it has committed does the sender get `{"v":1,"type":"ack","clientMsgId":"...","messageId":"...","conversationId":"...","seq":42,"createdAt":"..."}`; resending the same `clientMsgId` returns the same ack without storing a second message.
+The server pings every socket every `WS_HEARTBEAT_INTERVAL` with a WebSocket ping (browsers answer with a pong automatically; other clients must answer pings) and closes sockets that stay silent past `WS_HEARTBEAT_TIMEOUT`. The server tracks each open socket per user. Frames follow protocol v1 ([ADR-0006](docs/adr/0006-websocket-frame-protocol-v1.md)): JSON text frames `{"v":1,"type":"..."}`. A client sends `{"v":1,"type":"send","conversationId":"...","clientMsgId":"...","body":"..."}`; invalid content gets an `error` frame (`{"v":1,"type":"error","clientMsgId":...,"code":"VALIDATION_ERROR","message":"..."}`) and the socket stays open. A valid send is stored exactly like a REST send, and only after it has committed does the sender get `{"v":1,"type":"ack","clientMsgId":"...","messageId":"...","conversationId":"...","seq":42,"createdAt":"..."}`; resending the same `clientMsgId` returns the same ack without storing a second message.
 
-Every new message (sent over WebSocket or REST) is then pushed, after commit, to every other open socket of the conversation's current participants, including the sender's other tabs: `{"v":1,"type":"message","message":{"id":"...","conversationId":"...","seq":42,"senderId":"...","clientMsgId":"...","body":"...","createdAt":"..."}}`. Pushes are an optimisation, not a guarantee: they may arrive out of `seq` order, may be dropped under load, and a socket that cannot keep up is closed with `4003`. **The history endpoint is the source of truth**: order by `seq`, and after a reconnect page `GET /api/conversations/{id}/messages` for anything missed.
+Every new message (sent over WebSocket or REST) is then pushed, after commit, to every other open socket of the conversation's current participants, including the sender's other tabs: `{"v":1,"type":"message","message":{"id":"...","conversationId":"...","seq":42,"senderId":"...","clientMsgId":"...","body":"...","createdAt":"..."}}`. Pushes are an optimisation, not a guarantee: they may arrive out of `seq` order, may be dropped under load, and a socket that cannot keep up is closed with `4003`. Cursors over WebSocket: send `{"v":1,"type":"cursor","conversationId":"...","kind":"read","seq":42}` (no reply on success; errors come as an `error` frame with `clientMsgId: null`). When someone's cursor actually moves forward, every other socket of the participants gets `{"v":1,"type":"cursor","conversationId":"...","userId":"...","lastDeliveredSeq":42,"lastReadSeq":42}`. Clients should debounce cursor frames (send only the highest seq, at most about once per second). **The history endpoint is the source of truth**: order by `seq`, and after a reconnect page `GET /api/conversations/{id}/messages` for anything missed.
 
 Close codes sent by the server:
 
@@ -70,6 +71,7 @@ Close codes sent by the server:
 | `4001` | Socket lifetime reached (`WS_SESSION_MAX_LIFETIME`, default 15 minutes after the handshake) | Get a fresh ticket and reconnect |
 | `4002` | Credentials revoked: a refresh token of this user was replayed (theft signal), so all their sockets are closed | Log in again |
 | `4003` | Slow consumer: the socket fell behind the send-time or buffer limit | Reconnect and recover missed messages from history |
+| `4006` | Idle timeout: no pong or frame within `WS_HEARTBEAT_TIMEOUT` | Reconnect; recover from history |
 | `4004` | Unsupported protocol version (`v` is not 1) | Fix the client |
 | `4005` | Unknown frame `type` | Fix the client |
 | `1007` | Frame is not valid protocol JSON (envelope, or a `clientMsgId` that is not a UUID) | Fix the client |
@@ -89,7 +91,7 @@ The main ones:
 - Pushes may arrive out of `seq` order and may be dropped when the push queue is full; clients recover from history.
 - No per-socket send rate limit yet.
 - The 401 from the security filter has an empty body.
-- Unread counts include your own messages.
+- Read receipts are visible to every participant (no privacy toggle); "delivered" is reported by the client.
 
 Full list: [architecture.md, Known Limitations](docs/architecture.md#known-limitations).
 

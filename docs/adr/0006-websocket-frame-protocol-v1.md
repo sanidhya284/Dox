@@ -1,6 +1,7 @@
 # ADR-0006 — WebSocket Frame Protocol v1: Send, Ack, Push
 
 **Status:** Accepted  **Date:** 2026-11-04  **Phase:** 2c
+**Amended:** 2026-11-05. Protocol v1 gains the additive `cursor` frame type (both directions) and close code `4006 idle timeout`; see [ADR-0007](0007-heartbeats-and-read-cursors.md). The decisions below are unchanged.
 
 ## Context
 After 2b-ii the `/ws` socket is authenticated and tracked ([ADR-0005](0005-connection-registry-and-after-commit-socket-closing.md)) but carries no messages. Phase 2c adds sending and real-time delivery. PostgreSQL stays the source of truth: an ack must mean "durably committed", and a missed push must never mean a missed message, because clients can always page `GET /api/conversations/{id}/messages`.
