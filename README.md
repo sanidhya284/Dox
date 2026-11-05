@@ -117,3 +117,4 @@ Full list: [architecture.md, Known Limitations](docs/architecture.md#known-limit
 - [ADR-0007: Heartbeats and read cursors](docs/adr/0007-heartbeats-and-read-cursors.md)
 - [ADR-0008: Client sync protocol](docs/adr/0008-client-sync-protocol.md)
 - [Architecture overview](docs/architecture.md)
+- [Interview notes](docs/INTERVIEW_NOTES.md): per milestone, the problem, the bug we actually found, the test that proves the fix, the tradeoff, and likely follow-up questions

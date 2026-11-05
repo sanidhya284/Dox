@@ -129,6 +129,49 @@ public class HistoryForwardPagingTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void badAfterValuesGetA400OrAnEmptyPage() throws Exception {
+        AuthResponse a = register("fbA_");
+        AuthResponse b = register("fbB_");
+        UUID conv = dmWith(a, b, 2);
+        String base = "/api/conversations/" + conv + "/messages?after=";
+
+        ResponseEntity<String> negative = get(a, base + "-1");
+        assertThat(negative.getStatusCode()).as("negative").isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(mapper.readTree(negative.getBody()).get("code").asText()).isEqualTo("VALIDATION_ERROR");
+
+        ResponseEntity<String> nonNumeric = get(a, base + "abc");
+        assertThat(nonNumeric.getStatusCode()).as("non-numeric").isEqualTo(HttpStatus.BAD_REQUEST);
+
+        ResponseEntity<String> overflow = get(a, base + "99999999999999999999");
+        assertThat(overflow.getStatusCode()).as("does not fit in a long").isEqualTo(HttpStatus.BAD_REQUEST);
+        // Both conversion failures go through GlobalExceptionHandler.handleTypeMismatch.
+        assertThat(mapper.readTree(nonNumeric.getBody()).get("code").asText()).isEqualTo("VALIDATION_ERROR");
+        assertThat(mapper.readTree(overflow.getBody()).get("code").asText()).isEqualTo("VALIDATION_ERROR");
+
+        JsonNode huge = page(a, conv, "after=" + Long.MAX_VALUE);
+        assertThat(seqs(huge)).as("valid but beyond every seq: empty page").isEmpty();
+        assertThat(huge.get("hasMore").asBoolean()).isFalse();
+    }
+
+    @Test
+    void afterLimitIsClampedTo1And100LikeBefore() throws Exception {
+        AuthResponse a = register("fcA_");
+        AuthResponse b = register("fcB_");
+        UUID conv = dmWith(a, b, 105);
+
+        JsonNode zero = page(a, conv, "after=0&limit=0");
+        assertThat(seqs(zero)).as("limit 0 -> 1").containsExactly(1L);
+        assertThat(zero.get("hasMore").asBoolean()).isTrue();
+
+        JsonNode big = page(a, conv, "after=0&limit=100000");
+        assertThat(seqs(big)).as("limit 100000 -> 100").hasSize(100).startsWith(1L).endsWith(100L);
+        assertThat(big.get("hasMore").asBoolean()).isTrue();
+
+        JsonNode backward = page(a, conv, "limit=100000");
+        assertThat(seqs(backward)).as("same clamp as before-paging").hasSize(100);
+    }
+
+    @Test
     void conversationResponsesCarryLastSeq() throws Exception {
         AuthResponse a = register("flA_");
         AuthResponse b = register("flB_");
