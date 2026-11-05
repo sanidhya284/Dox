@@ -42,11 +42,19 @@ Phases 1–3 established correctness (ADRs 0002–0008), but nothing had been me
 - **Environment capture** goes into each result file: hardware, OS, JVM flags, Docker limits, Postgres settings, Hikari pool, effective config, git commit, other running containers, power state.
 - **Run classes:**
   - **VALID.**
-  - **SATURATED:** the server limit was reached (latency growth, Hikari pending, outbox growth, ack timeouts). Reported, because it shows the knee.
+  - **SATURATED:** the server limit was reached (latency growth, Hikari pending, outbox growth, ack timeouts). Reported, because it shows the limit. *Amended 2026-11-05 after step 4:* also when the server stores < 95% of the sent rate, or ack p99 > 1000 ms. With too few lag samples for a p99, lag isn't judged. Stored runs were relabelled from their recorded fields, keeping `labelAtRun` ([BENCHMARKS.md](../BENCHMARKS.md), "Relabelling").
   - **INVALID:** a harness fault (schedule lag, achieved rate below target with an idle server, harness GC share).
 
   **In every class the correctness invariants must hold** (DB rows = distinct acked ids; seq contiguous); a violation is a bug, not a result.
 - **The row lock stays a hypothesis.** It's tested against `pg_stat_activity` wait events, Hikari active/pending samples, and a re-run with a larger pool.
+
+## Decision 5: keep per-conversation serialization; document the limit (2026-11-05, after step 4)
+- **The measurement.** It points to the conversation row lock: one conversation held through 200/s and was unstable at 300/s on one laptop, while 10 conversations kept up at 300/s ([BENCHMARKS.md section 7](../BENCHMARKS.md#7-bottleneck-analysis)).
+- **The decision:** **document it, don't change it** in Phase 5-lite. Serial sends per conversation are the price of allocating a contiguous `seq` inside the committing transaction (ADR-0002). Phase 3's gap detection, anti-entropy and `?after=` paging depend on that contiguity (ADR-0008).
+- **The alternatives,** and what each costs gap detection, are listed in [architecture.md, Per-conversation serialization](../architecture.md#per-conversation-serialization-a-tradeoff-for-gap-free-ordering):
+  - only "make the hold cheaper" and "batch per conversation" keep `seq` contiguous;
+  - `synchronous_commit=off` for sends is rejected, because it can lose acked messages and reuse `seq` numbers.
+- **Revisit when:** a real workload has single conversations near this limit, or after the optional P5-2 run shows how much of the hold is the commit flush.
 
 ## Consequences
 - Results describe **this machine and this workload only; they are not capacity claims.**

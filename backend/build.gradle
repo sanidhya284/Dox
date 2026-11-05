@@ -130,3 +130,13 @@ tasks.register('loadTest', JavaExec) {
     args = (project.findProperty('load.args') ?: '').toString().tokenize(' ')
     jvmArgs = ['-Xms512m', '-Xmx512m', '-XX:+UseG1GC']
 }
+
+// Re-derive run outcomes from stored summaries with the current classifier (no re-run):
+//   python3 deploy/bench/relabel.py   (calls this task, then writes the labels back)
+tasks.register('benchRelabel', JavaExec) {
+    description = 'Prints re-derived outcomes for stored run summaries (see docs/BENCHMARKS.md).'
+    group = 'benchmark'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.chatplatform.load.Relabel'
+    args = [(project.findProperty('relabel.dir') ?: '../docs/benchmarks').toString()]
+}

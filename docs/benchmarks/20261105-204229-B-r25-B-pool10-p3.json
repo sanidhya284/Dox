@@ -5,6 +5,11 @@
  "startedAt": "2026-11-05T20:42:29.090783",
  "outcome": "VALID",
  "reasons": [],
+ "notes": [],
+ "labelAtRun": {
+  "outcome": "VALID",
+  "reasons": []
+ },
  "params": {
   "clientAckTimeout": "PT10M",
   "window": "PT1M",

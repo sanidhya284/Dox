@@ -5,6 +5,11 @@
  "startedAt": "2026-11-05T21:18:21.078171",
  "outcome": "VALID",
  "reasons": [],
+ "notes": [],
+ "labelAtRun": {
+  "outcome": "VALID",
+  "reasons": []
+ },
  "params": {
   "lagThresholdMs": 10.0,
   "clientAckTimeout": "PT10M",

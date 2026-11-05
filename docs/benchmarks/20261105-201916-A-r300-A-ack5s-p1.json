@@ -7,8 +7,19 @@
  "reasons": [
   "17733 ack timeouts",
   "403 sends unacked after drain",
+  "server stored 266.6/s < 95% of 293.7/s sent",
+  "ack p99 44433.4 ms > 1000.0 ms",
   "also: schedule lag p99 13344.8 ms > 10.0 ms"
  ],
+ "notes": [],
+ "labelAtRun": {
+  "outcome": "SATURATED",
+  "reasons": [
+   "17733 ack timeouts",
+   "403 sends unacked after drain",
+   "also: schedule lag p99 13344.8 ms > 10.0 ms"
+  ]
+ },
  "params": {
   "drain": "PT15S",
   "targetRate": 300.0,

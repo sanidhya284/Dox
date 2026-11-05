@@ -211,3 +211,37 @@ Short, honest notes per milestone: the problem, what actually went wrong (or cou
 - *Why subscribe before fetching?* Fetching first loses anything committed between the fetch and the subscribe. `ReferenceClientTest` shows it.
 - *Why is anti-entropy needed if you have gap detection?* Gap detection fires only when a *later* push arrives, so a lost last message is invisible without it.
 - *Why must a retry reuse the same `clientMsgId`?* The server's idempotency then makes the retry harmless. A new id per retry created a second row in the test.
+
+---
+
+## Phase 5-lite — metrics, load harness, one measured bottleneck
+
+**Problem.** Measure one instance honestly and find its first real bottleneck, without capacity claims.
+
+**Result (one laptop; results are for this machine and this workload, not capacity claims).**
+- **One conversation (scenario A, 10 senders, 1 group) held through 200/s and was unstable at 300/s.** At 300/s it was SATURATED in 1 of 3 runs at Hikari pool 10, and in 3 of 3 at pool 30.
+- **At 300/s, 90–93% of the active database connections were waiting on a row lock,** mostly `Lock:tuple`: queues of transactions on one row.
+- **The p50 latency fell as the rate rose (unexplained),** from 11.9 ms at 25/s to 3.8 ms at 200/s.
+- Details: [BENCHMARKS.md](BENCHMARKS.md).
+
+**The control (A versus B).**
+- **B has the same senders, sockets, total rate and pushes per message, but 10 groups.** Only the number of hot rows differs. B kept up at 300/s in 3 of 3 runs.
+- **So the limit is the row, not the server in general:** CPU, the network and the push work are the same in both.
+- **Pool 30 didn't help in these runs,** and its p99 was higher; the cause wasn't investigated. Concurrency is capped by the 10 sender sockets anyway (each socket's frames are handled one at a time), so a bigger pool can only remove connection waits, not add parallelism.
+- **The mechanism:** each send holds the conversation row from `SELECT ... FOR UPDATE` until commit, so sends to one conversation are serial. How much of the hold is the commit flush is a hypothesis; an optional run with `synchronous_commit=off` on the bench DB would test it.
+
+**Bugs we found in our own tooling** (each was caught because the harness checks itself).
+- **A late pacer.** One long `parkNanos` per send oversleeps on macOS (timer coalescing), giving a 7.4 ms p50 schedule lag at 5/s. The classifier marked the run INVALID. **Fix:** park in ≤ 1 ms slices; idle lag p99 is now about 1 ms.
+- **A racy invariant check.** It compared the database with a still-growing set of acked ids, so under overload acks landed between the query and the comparison, and it reported a false INVARIANT_VIOLATION. **Fix:** close the clients first (freeze the set), wait until the row count is stable, then check.
+- **A mislabelled run.** A run with a 3.6 s p50 was labelled VALID: its backlog formed during warm-up, so the "p50 doubled within the window" rule never fired. A second run was labelled INVALID by judging the lag *max*, because 300 samples can't support a p99.
+  - **Fix, test-first with mutations:** SATURATED when the server stores < 95% of the sent rate, or ack p99 > 1000 ms (derived from the data, between the worst run that kept up, 356 ms, and the best one that didn't, 5534 ms). Too few lag samples gives the note "lag unsupported".
+  - **Relabel:** all summaries relabelled from their recorded fields, no re-run, with the original label kept as `labelAtRun`.
+
+**Tradeoff.**
+- **Gap-free per-conversation `seq` costs serial sends per conversation** (ADR-0009 Decision 5).
+- **The measurement has known confounders:** the generator shares the laptop, Postgres runs in Docker Desktop's VM, and 3 runs per point.
+
+**Follow-ups.**
+- *So it handles 300 messages a second?* No. On one laptop, one conversation was reliable at 200/s and unstable at 300/s. Spread over 10 conversations, it kept up at 300/s, and I didn't push further, so I don't know that limit. A laptop with the generator on the same machine and Postgres in a VM is not a capacity measurement.
+- *How would you make a hot conversation faster?* First measure how much of the lock hold is the commit flush. If it's most of it, batch sends per conversation (one transaction, N contiguous `seq`): that keeps gap detection intact, at the cost of batch latency and complexity. Allocating `seq` outside the transaction (a sequence) removes the wait but creates holes and out-of-order commits, which breaks the client's gap detection. `synchronous_commit=off` can lose acked messages, so it's rejected.
+- *Why didn't a bigger connection pool help?* The bottleneck is a lock on one row, and every extra connection just waits in the same lock queue. Also, only 10 senders existed, so there was no extra concurrency to serve. Pool 30 even had a higher p99; I didn't investigate why, and 3 runs at an unstable rate can't separate that from noise.

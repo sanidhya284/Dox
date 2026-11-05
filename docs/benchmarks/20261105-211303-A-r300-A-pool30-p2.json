@@ -5,8 +5,17 @@
  "startedAt": "2026-11-05T21:13:03.593649",
  "outcome": "SATURATED",
  "reasons": [
-  "ack p50 grew 5357.6 -> 12304.4 ms through the window"
+  "ack p50 grew 5357.6 -> 12304.4 ms through the window",
+  "server stored 254.5/s < 95% of 300.0/s sent",
+  "ack p99 13631.5 ms > 1000.0 ms"
  ],
+ "notes": [],
+ "labelAtRun": {
+  "outcome": "SATURATED",
+  "reasons": [
+   "ack p50 grew 5357.6 -> 12304.4 ms through the window"
+  ]
+ },
  "params": {
   "quiescedAfterSeconds": 3.36,
   "lagThresholdMs": 10.0,

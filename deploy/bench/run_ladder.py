@@ -113,7 +113,8 @@ def compact(raw):
                                         "appEffectiveConfig"]}
     return {
         "scenario": raw["scenario"], "label": raw["label"], "runTag": raw["runTag"], "startedAt": raw["startedAt"],
-        "outcome": raw["outcome"], "reasons": raw["reasons"], "params": raw["params"], "shape": raw["shape"],
+        "outcome": raw["outcome"], "reasons": raw["reasons"], "notes": raw.get("notes", []),
+        "params": raw["params"], "shape": raw["shape"],
         "setupSeconds": raw["setupSeconds"], "sends": raw["sends"], "latencyMs": raw["latencyMs"],
         "harnessGcShare": raw["harnessGcShare"], "server": raw["server"],
         "serverCounterDeltas": raw["serverCounterDeltas"], "receiverCloseCodes": raw["receiverCloseCodes"],

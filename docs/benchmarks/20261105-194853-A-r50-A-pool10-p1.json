@@ -5,6 +5,11 @@
  "startedAt": "2026-11-05T19:48:53.685274",
  "outcome": "VALID",
  "reasons": [],
+ "notes": [],
+ "labelAtRun": {
+  "outcome": "VALID",
+  "reasons": []
+ },
  "params": {
   "quiescedAfterSeconds": 3.32,
   "drain": "PT15S",

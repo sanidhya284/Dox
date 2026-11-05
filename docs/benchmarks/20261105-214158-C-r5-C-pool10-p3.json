@@ -3,10 +3,17 @@
  "label": "C-pool10-p3",
  "runTag": "b642ae65",
  "startedAt": "2026-11-05T21:41:58.658371",
- "outcome": "INVALID",
- "reasons": [
-  "schedule lag p99 25.1 ms > 10.0 ms"
+ "outcome": "VALID",
+ "reasons": [],
+ "notes": [
+  "lag unsupported (n=300 < 1000)"
  ],
+ "labelAtRun": {
+  "outcome": "INVALID",
+  "reasons": [
+   "schedule lag p99 25.1 ms > 10.0 ms"
+  ]
+ },
  "params": {
   "quiescedAfterSeconds": 3.32,
   "drain": "PT15S",

@@ -252,6 +252,27 @@ A socket authenticates once, at the handshake, so it could otherwise outlive the
 - **B (theft only):** when a refresh-token replay is detected and the family is revoked, all of that user's sockets are closed with `4002`. Flow: `TokenService` publishes `RefreshTokenFamilyRevokedEvent(userId, familyId)` (package `auth.event`); `SessionRevocationListener` (realtime) handles it with `@TransactionalEventListener(AFTER_COMMIT)` and hands `ConnectionRegistry.closeAll` to the realtime scheduler, so the `401` response never waits on socket closes. Design: [ADR-0005](adr/0005-connection-registry-and-after-commit-socket-closing.md).
 - Logout does not close sockets in this version (see Known Limitations).
 
+## Per-conversation serialization: a tradeoff for gap-free ordering
+*(Phase 5-lite, P5-3: documented only, no code. Decision: [ADR-0009 Decision 5](adr/0009-observability-and-measurement.md#decision-5-keep-per-conversation-serialization-document-the-limit-2026-11-05-after-step-4).)*
+
+**What we have.** Each send allocates its `seq` inside the transaction that inserts the message, while holding the conversation row lock (`SELECT ... FOR UPDATE` → `last_seq + 1`) until commit. Because of that, every committed `seq` is contiguous: no holes and no out-of-order visibility. Phase 3's client protocol relies on exactly this:
+- **Gap detection:** a push with `seq > contiguousSeq + 1` triggers a fetch.
+- **Anti-entropy:** `heads.lastSeq` versus `contiguousSeq`.
+- **Paging:** `?after=` history paging (ADR-0008).
+
+**The price.** Sends to one conversation are serial. On one laptop, one conversation held through 200/s and was unstable at 300/s ([BENCHMARKS.md section 7](BENCHMARKS.md#7-bottleneck-analysis)). Different conversations don't contend with each other.
+
+**Options for relaxing it, and what each costs gap detection:**
+
+| Option | What it buys | Cost to Phase 3 gap detection, and other costs |
+|---|---|---|
+| **Keep it (current)** | Gap-free, durable, simple | None. One conversation's throughput is bounded by the serial lock hold. |
+| **Make the hold cheaper** (faster disk; Postgres group commit) | Same semantics | **None.** Group commit mainly helps many conversations, not one row, because the lock is held until that transaction's flush. |
+| **`synchronous_commit=off` for sends** | Shorter hold (whether it's much shorter is the open P5-2 hypothesis) | **Breaks the core guarantee and gap detection.** A crash can lose *acked* messages and roll back `last_seq`, so the same `seq` is reused for a different message. Clients see a conflict, not a gap, and nothing detects it. **Rejected.** |
+| **Batch sends per conversation** (one app-side writer commits N queued sends in one transaction, with contiguous `seq`) | One lock and one flush per batch | **None** (still contiguous). Costs: batch-window latency; one bad message mustn't fail the batch; in Phase 4 multi-instance, a single writer per conversation needs routing, otherwise the row lock still arbitrates. |
+| **Allocate `seq` outside the transaction** (a Postgres `SEQUENCE`, or reserved blocks of numbers) | No wait on the conversation row | **Breaks it.** Rolled-back or unused numbers leave permanent holes, and commits become visible out of `seq` order. A client can't tell a hole from a slow commit, so it would need a per-conversation "committed through" watermark or tombstones. The guarantee that duplicates never burn a number (ADR-0002) is also lost. |
+| **No per-conversation `seq`** (order by a global id or time) | No hot row at all | **Removes it.** Clients would resync by time windows with an overlap for late commits and dedupe by id; `heads` / `lastSeq` / `?after=` change meaning. It's a redesign of ADR-0008. |
+
 ## Known Limitations
 
 - **Metrics use HTTP Basic:** the password travels with every scrape, so production needs TLS in front (Phase 9).
@@ -270,7 +291,12 @@ A socket authenticates once, at the handshake, so it could otherwise outlive the
 - **Read receipts are visible to every participant;** there is no per-user privacy toggle. **"Delivered" is client-reported** (the client says it received the message), not observed by the server.
 - **Cursor fan-out (from 2d-lite step c):** a cursor change is pushed to all participants; clients should debounce cursor frames (send only the highest seq, at most about once per second). Large groups may need server-side coalescing later; there is no server-side cursor rate limit yet.
 - The 5,000-message test is a correctness check on one developer laptop, not a benchmark. Load measurements (one laptop, not capacity claims) are in [BENCHMARKS.md](BENCHMARKS.md).
-- **A hot conversation is bounded by its row lock:** every send to one conversation holds the conversation row from `SELECT ... FOR UPDATE` until commit, including the WAL fsync, so sends to one conversation are serial. Measured on one laptop, one conversation stopped keeping up between 200 and 300 msg/s, while the same load over 10 conversations kept up ([BENCHMARKS.md section 7](BENCHMARKS.md#7-bottleneck-analysis)). Retries after a client ack timeout add duplicate sends that take the same lock. No fix in Phase 5-lite.
+- **A hot conversation is bounded by its row lock:** every send to one conversation holds the conversation row from `SELECT ... FOR UPDATE` until commit, so sends to one conversation are serial. Measured on one laptop ([BENCHMARKS.md section 7](BENCHMARKS.md#7-bottleneck-analysis)):
+  - **One conversation held through 200/s and was unstable at 300/s:** 1 of 3 runs SATURATED at Hikari pool 10, 3 of 3 at pool 30. Pool 30 didn't help in these runs, and its p99 was higher; the cause wasn't investigated.
+  - **The same load over 10 conversations kept up at 300/s.**
+  - **Hypothesis, not measured:** the share of the lock hold spent on the commit flush.
+  - **Retries:** sends retried after a client ack timeout take the same lock.
+  - **No fix in Phase 5-lite.** The tradeoff and the options are in [Per-conversation serialization](#per-conversation-serialization-a-tradeoff-for-gap-free-ordering).
 
 ## What Is Not Yet Implemented
 

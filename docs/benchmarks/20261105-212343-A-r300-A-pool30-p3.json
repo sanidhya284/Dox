@@ -3,8 +3,15 @@
  "label": "A-pool30-p3",
  "runTag": "3b0c88ff",
  "startedAt": "2026-11-05T21:23:43.681063",
- "outcome": "VALID",
- "reasons": [],
+ "outcome": "SATURATED",
+ "reasons": [
+  "ack p99 5533.7 ms > 1000.0 ms"
+ ],
+ "notes": [],
+ "labelAtRun": {
+  "outcome": "VALID",
+  "reasons": []
+ },
  "params": {
   "targetRate": 300.0,
   "warmup": "PT30S",

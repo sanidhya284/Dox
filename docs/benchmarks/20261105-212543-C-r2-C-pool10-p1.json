@@ -5,6 +5,13 @@
  "startedAt": "2026-11-05T21:25:43.662208",
  "outcome": "VALID",
  "reasons": [],
+ "notes": [
+  "lag unsupported (n=120 < 1000)"
+ ],
+ "labelAtRun": {
+  "outcome": "VALID",
+  "reasons": []
+ },
  "params": {
   "drain": "PT15S",
   "quiescedAfterSeconds": 3.37,

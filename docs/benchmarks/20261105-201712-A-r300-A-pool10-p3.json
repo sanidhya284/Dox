@@ -7,8 +7,19 @@
  "reasons": [
   "Hikari pending > 0 in 10 samples",
   "ack p50 grew 1945.6 -> 6496.3 ms through the window",
+  "server stored 269.1/s < 95% of 300.0/s sent",
+  "ack p99 11771.9 ms > 1000.0 ms",
   "also: schedule lag p99 11.6 ms > 10.0 ms"
  ],
+ "notes": [],
+ "labelAtRun": {
+  "outcome": "SATURATED",
+  "reasons": [
+   "Hikari pending > 0 in 10 samples",
+   "ack p50 grew 1945.6 -> 6496.3 ms through the window",
+   "also: schedule lag p99 11.6 ms > 10.0 ms"
+  ]
+ },
  "params": {
   "quiescedAfterSeconds": 3.34,
   "drain": "PT15S",

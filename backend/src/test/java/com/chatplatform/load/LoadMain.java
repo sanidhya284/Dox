@@ -217,11 +217,14 @@ public final class LoadMain {
         // ── classify ──
         Map<String, Object> serverSummary = ServerSampler.summarize(inWindow);
         double achieved = windowFirstSends.get() / (windowNanos / 1e9);
-        double lagP99 = lag.percentileMs(99).orElse(lag.maxMs());
-        Observations obs = new Observations(rate, achieved, lagP99, gcWindowMillis / (double) window.toMillis(),
+        Map<String, Object> deltas = counterDeltas(before, after);
+        double storedRate = deltas.get("messagesCreated") instanceof Double created
+                ? created / (windowNanos / 1e9) : Double.NaN;
+        Observations obs = new Observations(rate, achieved, storedRate,
+                lag.percentileMs(99).orElse(Double.NaN), lag.count(), gcWindowMillis / (double) window.toMillis(),
                 (int) (long) (Long) serverSummary.get("hikariPendingSamples"), resends.get(), outboxRemaining,
                 ackThirds[0].percentileMs(50).orElse(Double.NaN), ackThirds[2].percentileMs(50).orElse(Double.NaN),
-                ok[0], ok[1]);
+                ack.percentileMs(99).orElse(Double.NaN), ok[0], ok[1]);
         double lagMs = Double.parseDouble(arg("lagMs", "10"));
         Verdict verdict = new RunClassifier(lagMs).classify(obs);
 
@@ -233,6 +236,7 @@ public final class LoadMain {
         result.put("startedAt", LocalDateTime.now().toString());
         result.put("outcome", verdict.outcome().name());
         result.put("reasons", verdict.reasons());
+        result.put("notes", verdict.notes());
         result.put("params", Map.of("targetRate", rate, "warmup", warmup.toString(), "window", window.toString(),
                 "drain", drain.toString(), "lagThresholdMs", lagMs, "clientAckTimeout", ackTimeout().toString(),
                 "quiescedAfterSeconds", quiescedAfter));
@@ -253,7 +257,7 @@ public final class LoadMain {
         result.put("latencyMs", latency);
         result.put("harnessGcShare", round(gcWindowMillis / (double) window.toMillis()));
         result.put("server", serverSummary);
-        result.put("serverCounterDeltas", counterDeltas(before, after));
+        result.put("serverCounterDeltas", deltas);
         result.put("receiverCloseCodes", receiverCloses);
         result.put("invariants", invariants);
         result.put("samplerErrors", sampler.errors());

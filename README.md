@@ -109,21 +109,22 @@ Under seeded faults, reference clients converge to exactly the stored history (o
 - Postgres 16 runs in Docker Desktop's VM.
 - The load generator runs on the same machine.
 - Each point is 3 runs of a 60 s window, measured open-loop from the intended send time.
+- Outcome labels come from the current classifier, applied to the recorded fields; 2 of 68 changed after the run, and the run-time label is kept in each file.
 
-Every run, including the INVALID and aborted ones: [BENCHMARKS.md section 6](docs/BENCHMARKS.md#6-results-step-4-measured-2026-11-05).
+Every run, including the relabelled and aborted ones: [BENCHMARKS.md section 6](docs/BENCHMARKS.md#6-results-step-4-measured-2026-11-05).
 
-**Hot conversation** (10 senders, one group, Hikari pool 10):
-- **200 msg/s:** all 3 runs kept up. Ack p50 was 3.7–3.8 ms and p99 11.2–31.3 ms ([1](docs/benchmarks/20261105-195410-A-r200-A-pool10-p1.json), [2](docs/benchmarks/20261105-200445-A-r200-A-pool10-p2.json), [3](docs/benchmarks/20261105-201519-A-r200-A-pool10-p3.json)).
-- **300 msg/s:** one of 3 runs fell behind. The server committed 269.1 msg/s and ack p50 reached 3,537 ms ([run](docs/benchmarks/20261105-201712-A-r300-A-pool10-p3.json)).
-- **300 msg/s with Hikari pool 30:** all 3 runs fell behind, at 254.5–285.7 msg/s committed ([1](docs/benchmarks/20261105-210215-A-r300-A-pool30-p1.json), [2](docs/benchmarks/20261105-211303-A-r300-A-pool30-p2.json), [3](docs/benchmarks/20261105-212343-A-r300-A-pool30-p3.json)).
+**Hot conversation** (10 senders, one group): **held through 200/s, unstable at 300/s.**
+- **200 msg/s, pool 10:** all 3 runs kept up. Ack p50 was 3.7–3.8 ms and p99 11.2–31.3 ms ([1](docs/benchmarks/20261105-195410-A-r200-A-pool10-p1.json), [2](docs/benchmarks/20261105-200445-A-r200-A-pool10-p2.json), [3](docs/benchmarks/20261105-201519-A-r200-A-pool10-p3.json)).
+- **300 msg/s, pool 10:** 1 of 3 runs was SATURATED. The server stored 269.1 msg/s and ack p50 reached 3,537 ms ([run](docs/benchmarks/20261105-201712-A-r300-A-pool10-p3.json)).
+- **300 msg/s, pool 30:** 3 of 3 runs were SATURATED, at 254.5–285.7 msg/s stored. Pool 30 didn't help in these runs, and its p99 was higher; the cause wasn't investigated ([1](docs/benchmarks/20261105-210215-A-r300-A-pool30-p1.json), [2](docs/benchmarks/20261105-211303-A-r300-A-pool30-p2.json), [3](docs/benchmarks/20261105-212343-A-r300-A-pool30-p3.json)).
 
-**The same load over 10 groups, 300 msg/s:** all 3 runs kept up, at 299.6 msg/s committed, with ack p99 28.5–32.1 ms ([1](docs/benchmarks/20261105-203006-B-r300-B-pool10-p1.json), [2](docs/benchmarks/20261105-204043-B-r300-B-pool10-p2.json), [3](docs/benchmarks/20261105-205119-B-r300-B-pool10-p3.json)).
+**The same load over 10 groups, 300 msg/s:** all 3 runs kept up, at 299.6 msg/s stored, with ack p99 28.5–32.1 ms ([1](docs/benchmarks/20261105-203006-B-r300-B-pool10-p1.json), [2](docs/benchmarks/20261105-204043-B-r300-B-pool10-p2.json), [3](docs/benchmarks/20261105-205119-B-r300-B-pool10-p3.json)).
 
 **Fan-out to 200 sockets, 20 msg/s** (4,000 pushes/s): send→receive p99 was 20.9–22.8 ms, with 0 dropped pushes and 0 `4003` closes ([1](docs/benchmarks/20261105-213109-C-r20-C-pool10-p1.json), [2](docs/benchmarks/20261105-213822-C-r20-C-pool10-p2.json), [3](docs/benchmarks/20261105-214723-C-r20-C-pool10-p3.json)).
 
-**Client retries past the knee:** with the client's default 5 s ack timeout at 300 msg/s, there were 17,733 resends, and 2,980 server-side duplicates competed for the same row ([run](docs/benchmarks/20261105-201916-A-r300-A-ack5s-p1.json)).
+**Client retries past the limit:** with the client's default 5 s ack timeout at 300 msg/s, there were 17,733 resends, and 2,980 server-side duplicates competed for the same row ([run](docs/benchmarks/20261105-201916-A-r300-A-ack5s-p1.json)).
 
-**Bottleneck:** the per-conversation row lock (`SELECT ... FOR UPDATE` until commit). In the hot conversation at 300 msg/s, 90–93% of active database samples were row-lock waits. The 10-group control kept up at the same rate, and a larger pool didn't help. Evidence, caveats and what would change this: [BENCHMARKS.md section 7](docs/BENCHMARKS.md#7-bottleneck-analysis).
+**Bottleneck:** the per-conversation row lock (`SELECT ... FOR UPDATE` until commit). In the hot conversation at 300 msg/s, 90–93% of active database samples were row-lock waits, and the 10-group control kept up at the same rate. How much of each lock hold is the commit flush is a hypothesis that wasn't tested. A's p50 falling as the rate rose is unexplained. Evidence, caveats and what would change this: [BENCHMARKS.md section 7](docs/BENCHMARKS.md#7-bottleneck-analysis).
 
 ## Known limitations
 The main ones:

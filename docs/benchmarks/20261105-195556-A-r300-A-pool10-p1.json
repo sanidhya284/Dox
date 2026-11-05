@@ -5,6 +5,11 @@
  "startedAt": "2026-11-05T19:55:56.778407",
  "outcome": "VALID",
  "reasons": [],
+ "notes": [],
+ "labelAtRun": {
+  "outcome": "VALID",
+  "reasons": []
+ },
  "params": {
   "targetRate": 300.0,
   "warmup": "PT30S",
