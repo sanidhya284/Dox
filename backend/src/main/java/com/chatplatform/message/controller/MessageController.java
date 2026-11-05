@@ -42,7 +42,8 @@ public class MessageController {
             @PathVariable UUID conversationId,
             @AuthenticationPrincipal UUID currentUserId,
             @RequestParam(required = false) Long before,
+            @RequestParam(required = false) Long after,
             @RequestParam(defaultValue = "50") int limit) {
-        return messageService.getMessages(conversationId, currentUserId, before, limit);
+        return messageService.getMessages(conversationId, currentUserId, before, after, limit);
     }
 }

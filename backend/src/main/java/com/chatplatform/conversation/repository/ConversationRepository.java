@@ -1,5 +1,6 @@
 package com.chatplatform.conversation.repository;
 
+import com.chatplatform.conversation.dto.ConversationHead;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -104,6 +105,22 @@ public class ConversationRepository {
                 """)
                 .param("userId", userId)
                 .query(MAPPER)
+                .list();
+    }
+
+    /**
+     * One row per conversation the user is active in: its id and last_seq. A single join used by
+     * client anti-entropy polling (ADR-0008); much cheaper than the full conversation list.
+     */
+    public List<ConversationHead> findHeadsForUser(UUID userId) {
+        return jdbcClient.sql("""
+                SELECT c.id, c.last_seq
+                  FROM conversation_participants p
+                  JOIN conversations c ON c.id = p.conversation_id
+                 WHERE p.user_id = :userId AND p.left_at IS NULL
+                """)
+                .param("userId", userId)
+                .query((rs, n) -> new ConversationHead(rs.getObject("id", UUID.class), rs.getLong("last_seq")))
                 .list();
     }
 }

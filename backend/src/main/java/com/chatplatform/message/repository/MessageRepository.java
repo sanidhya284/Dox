@@ -54,6 +54,24 @@ public class MessageRepository {
                 .optional();
     }
     
+    /**
+     * Forward (catch-up) page: messages with seq > afterSeq, ascending. Served by the
+     * (conversation_id, seq) unique index in index order (no sort).
+     */
+    public List<Message> findMessagesAfter(UUID conversationId, long afterSeq, int limit) {
+        return jdbcClient.sql("""
+                SELECT * FROM messages
+                WHERE conversation_id = :conversationId AND seq > :afterSeq
+                ORDER BY seq ASC
+                LIMIT :limit
+                """)
+                .param("conversationId", conversationId)
+                .param("afterSeq", afterSeq)
+                .param("limit", limit)
+                .query(MAPPER)
+                .list();
+    }
+
     public List<Message> findMessages(UUID conversationId, long beforeSeq, int limit) {
         return jdbcClient.sql("""
                 SELECT * FROM messages

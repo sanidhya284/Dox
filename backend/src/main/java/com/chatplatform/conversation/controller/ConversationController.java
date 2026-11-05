@@ -1,5 +1,6 @@
 package com.chatplatform.conversation.controller;
 
+import com.chatplatform.conversation.dto.ConversationHead;
 import com.chatplatform.conversation.dto.ConversationResponse;
 import com.chatplatform.conversation.dto.CreateDirectRequest;
 import com.chatplatform.conversation.dto.CreateGroupRequest;
@@ -51,6 +52,12 @@ public class ConversationController {
     public List<ConversationResponse> getUserConversations(
             @AuthenticationPrincipal UUID currentUserId) {
         return conversationService.getUserConversations(currentUserId);
+    }
+
+    /** [{conversationId, lastSeq}] for my active conversations: cheap catch-up check (ADR-0008). */
+    @GetMapping("/heads")
+    public List<ConversationHead> heads(@AuthenticationPrincipal UUID currentUserId) {
+        return conversationService.heads(currentUserId);
     }
 
     @GetMapping("/{id}")
