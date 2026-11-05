@@ -13,7 +13,7 @@ A final-year CS student building this for backend internships and placements. Th
 **PostgreSQL is the source of truth. WebSockets are a delivery optimization, not the persistence or recovery mechanism.** An acknowledged message is durably committed. A lost push never means a lost message; clients recover from the database.
 
 ## Stack and layout
-Java 21, Spring Boot 3.3.4, Gradle 8.10.2, PostgreSQL 16, Flyway (V1 to V6), Spring JDBC `JdbcClient` with explicit SQL, HikariCP, Spring Security + JWT (HS256) + BCrypt(12), Testcontainers 1.20.1 (real Postgres), JUnit 5, GitHub Actions. Git root is `chatplatform/`; code is in `backend/`, docs in `docs/` (ADRs 0001 to 0007 + `architecture.md`), CI in `.github/workflows/ci.yml`. The GitHub repo is `sanidhya284/Dox` (the old `chatplatform` URL redirects).
+Java 21, Spring Boot 3.3.4, Gradle 8.10.2, PostgreSQL 16, Flyway (V1 to V6), Spring JDBC `JdbcClient` with explicit SQL, HikariCP, Spring Security + JWT (HS256) + BCrypt(12), Testcontainers 1.20.1 (real Postgres), JUnit 5, GitHub Actions. Git root is `chatplatform/`; code is in `backend/`, docs in `docs/` (ADRs 0001 to 0008 + `architecture.md`), CI in `.github/workflows/ci.yml`. The GitHub repo is `sanidhya284/Dox` (the old `chatplatform` URL redirects).
 
 Modular monolith, packages under `com.chatplatform`: `shared`, `user`, `auth`, `conversation`, `message`, `realtime` (tickets + websocket), `health`. A domain's service must not call another domain's repository; go through that domain's service.
 

@@ -244,6 +244,7 @@ A socket authenticates once, at the handshake, so it could otherwise outlive the
 
 ## Known Limitations
 
+- **Reliable delivery is a client responsibility (ADR-0008):** the reference client lives in test sources (not a published SDK); convergence is shown on one instance with a bounded workload; seeds reproduce faults, not thread schedules; anti-entropy polling cost (`heads` every ~30 s per client) is unmeasured (Phase 5); there is no server-sent resync hint; a client offline longer than the refresh-token lifetime must log in again.
 - **WebSocket pushes are best effort:** they may arrive out of `seq` order (after-commit handoffs can interleave), are dropped when the push queue is full, and a slow socket is closed with `4003`. Clients order by `seq` and recover from history; gap detection and resync are Phase 3.
 - **A dropped push is only repaired by history sync:** a duplicate send returns the same ack but is deliberately not pushed again, so if the original push was dropped (full push queue, `4003` slow consumer, closed socket) the other participants only see the message by paging history. Automatic gap detection and resync by `seq` are Phase 3.
 - **No per-socket send rate limit:** per-socket (and per-user) send rate limiting is not implemented; a client can send frames as fast as the server processes them.

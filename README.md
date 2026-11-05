@@ -13,7 +13,7 @@ A real-time chat backend built as a learning project for backend engineering: a 
 | 2c: WebSocket send, ack, push ([ADR-0006](docs/adr/0006-websocket-frame-protocol-v1.md)) | Done (PR open) |
 | 2d-lite: heartbeats and idle close, delivered/read cursors ([ADR-0007](docs/adr/0007-heartbeats-and-read-cursors.md)) | Done (PR open) |
 | 2e: React UI (presence and typing deferred) | Not started |
-| 3: reliable delivery and recovery (catch-up APIs, reference client, convergence under faults) | In progress (catch-up APIs done) |
+| 3: reliable delivery and recovery (catch-up APIs, reference client, convergence under faults) | Done (PR open) |
 | 4 onward: multi-instance, observability, ... | Not started |
 
 Details and the next steps: [docs/HANDOFF.md](docs/HANDOFF.md).
@@ -80,10 +80,21 @@ Close codes sent by the server:
 | `1003` | Binary frame (not part of the protocol) | Fix the client |
 | `1008` | No authenticated user on the socket (should not happen) | Treat as a bug; get a new ticket |
 
+## Writing a client
+Pushes are an optimisation; PostgreSQL is the truth. A correct client (full algorithm and reasoning: [ADR-0008](docs/adr/0008-client-sync-protocol.md); a working reference implementation is in `backend/src/test/java/com/chatplatform/client/ReferenceClient.java`):
+1. Give each send a `clientMsgId` once and keep it for every retry; resend if no ack arrives within a timeout and after every reconnect. Treat the ack as your own copy of the message.
+2. Reconnect with a fresh ticket and exponential backoff with full jitter. On `4002` log in again; on `1007`/`4004`/`4005` stop (it is a client bug); otherwise reconnect.
+3. **Subscribe first, then fetch:** open the socket, then page `GET .../messages?after=<your contiguous seq>` where `GET /api/conversations/heads` says you are behind.
+4. Deduplicate by message id, order by `seq`; if a push skips ahead of your contiguous seq, fetch the gap.
+5. Every ~30 s (jittered) compare `heads` with your contiguous seq and fetch if behind: this is the only way to notice that the *last* push was lost.
+6. On a 401, refresh the access token once (shared by concurrent requests) and retry.
+
+`ConvergenceTest` checks this end to end: 8 clients under seeded faults (dropped connections, pushes and acks, duplicated and delayed sends, failed commits) all end with exactly the database's history.
+
 ## What is guaranteed (each covered by tests)
 Per-conversation ordering without gaps, idempotent sends (`client_msg_id`), a 4,000-character body limit, atomic refresh-token rotation with theft detection, `404` for non-members, one-time WebSocket tickets, exact origin checks, per-user socket tracking, acks only after commit, pushes only after commit and exactly once per message per socket, socket lifetime, and closing a user's sockets after a refresh-token replay (only once the revocation has committed). The precise list, with test names: [architecture.md, Behaviour Guarantees](docs/architecture.md#behaviour-guarantees-each-covered-by-an-integration-or-unit-test).
 
-No performance or capacity numbers are claimed. Tests that run on a laptop are correctness checks, not benchmarks.
+Under seeded faults, reference clients converge to exactly the stored history (one instance, bounded workload; [ADR-0008](docs/adr/0008-client-sync-protocol.md)). No performance or capacity numbers are claimed. Tests that run on a laptop are correctness checks, not benchmarks.
 
 ## Known limitations
 The main ones:
@@ -102,4 +113,7 @@ Full list: [architecture.md, Known Limitations](docs/architecture.md#known-limit
 - [ADR-0003: Authentication (JWT + rotating refresh tokens)](docs/adr/0003-authentication-strategy.md)
 - [ADR-0004: WebSocket tickets in PostgreSQL](docs/adr/0004-websocket-authentication-tickets.md)
 - [ADR-0005: Connection registry and after-commit socket closing](docs/adr/0005-connection-registry-and-after-commit-socket-closing.md)
+- [ADR-0006: WebSocket frame protocol v1](docs/adr/0006-websocket-frame-protocol-v1.md)
+- [ADR-0007: Heartbeats and read cursors](docs/adr/0007-heartbeats-and-read-cursors.md)
+- [ADR-0008: Client sync protocol](docs/adr/0008-client-sync-protocol.md)
 - [Architecture overview](docs/architecture.md)
