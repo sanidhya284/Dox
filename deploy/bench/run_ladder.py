@@ -162,6 +162,8 @@ def main():
     print("RUN PLAN\n" + plan_text(), flush=True)
     if "--dry-run" in sys.argv:
         return
+    if subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
+        raise SystemExit("Docker is not reachable: start Docker Desktop first")
     os.makedirs(RAW, exist_ok=True)
     os.makedirs(DOCS, exist_ok=True)
     if subprocess.run(["./gradlew", "-q", "bootJar", "testClasses"], cwd=BACKEND).returncode != 0:
@@ -178,8 +180,13 @@ def main():
                 for rate in rates:
                     n += 1
                     r = run_point(scenario, rate, f"{block}-p{p}", KNEE_ACK_TIMEOUT, n, index)
-                    if r["outcome"] in ("INVARIANT_VIOLATION", "NO_RESULT"):
-                        raise SystemExit(f"stopping: {r['outcome']} in {block} r{rate} (a bug, not a result)")
+                    if r["outcome"] == "INVARIANT_VIOLATION":
+                        raise SystemExit(f"stopping: INVARIANT_VIOLATION in {block} r{rate} (a bug, not a result)")
+                    if r["outcome"] == "NO_RESULT":
+                        docker_ok = subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL,
+                                                   stderr=subprocess.DEVNULL).returncode == 0
+                        raise SystemExit(f"stopping: no result in {block} r{rate} (harness or environment failure; "
+                                         f"Docker reachable: {docker_ok}); see its run log")
             if block == "A-pool10":
                 sat = [rt for rt in rates if sum(1 for x in index if x.get("block") == block and x["rate"] == rt
                                                  and x["outcome"] == "SATURATED") >= 2]
