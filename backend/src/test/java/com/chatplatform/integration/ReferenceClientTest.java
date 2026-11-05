@@ -149,6 +149,44 @@ public class ReferenceClientTest extends AbstractIntegrationTest {
         assertThat(converged(ca, conv)).isTrue();
     }
 
+    /** Phase 5-lite load-harness hook: sendAsync + observer see the write, the ack and the other side's push. */
+    @Test
+    void observerSeesFrameSentAckAndPushInTimeOrder() {
+        User a = register("roA_");
+        User b = register("roB_");
+        UUID conv = dm(a, b);
+        ReferenceClient ca = client(a, Set.of(Bug.NO_ANTI_ENTROPY));
+        ReferenceClient cb = client(b, Set.of(Bug.NO_ANTI_ENTROPY));
+        java.util.concurrent.ConcurrentHashMap<String, Long> seen = new java.util.concurrent.ConcurrentHashMap<>();
+        ca.setObserver(new ReferenceClient.Observer() {
+            @Override
+            public void onFrameSent(UUID clientMsgId, String body, int previousAttempts, long nanos) {
+                seen.put("sent:" + body + ":" + previousAttempts, nanos);
+            }
+
+            @Override
+            public void onAck(Msg msg, long receivedNanos) {
+                seen.put("ack:" + msg.body() + ":" + msg.seq(), receivedNanos);
+            }
+        });
+        cb.setObserver(new ReferenceClient.Observer() {
+            @Override
+            public void onPush(Msg msg, long receivedNanos) {
+                seen.put("push:" + msg.body(), receivedNanos);
+            }
+        });
+
+        long before = System.nanoTime();
+        ca.sendAsync(conv, "observed");
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> seen.size() == 3);
+        assertThat(seen.keySet()).containsExactlyInAnyOrder("sent:observed:0", "ack:observed:1", "push:observed");
+        assertThat(seen.get("sent:observed:0")).isGreaterThan(before);
+        assertThat(seen.get("ack:observed:1")).isGreaterThan(seen.get("sent:observed:0"));
+        assertThat(seen.get("push:observed")).isGreaterThan(seen.get("sent:observed:0"));
+        assertThat(ca.history(conv)).extracting(Msg::body).containsExactly("observed"); // behaviour unchanged
+    }
+
     // ── dedupe ──
 
     private ReferenceClient duplicatePushScenario(Set<Bug> bugs) throws Exception {

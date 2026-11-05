@@ -184,6 +184,7 @@ All environment-specific configuration comes from environment variables.
 | `WS_SEND_BUFFER_BYTES` | `524288` (`ws.send.buffer-bytes`) | Per-socket send buffer limit; exceeding it closes the socket with `4003`. |
 | `WS_PUSH_THREADS` | `2` (`ws.push.threads`) | Push executor threads. |
 | `WS_PUSH_QUEUE_CAPACITY` | `10000` (`ws.push.queue-capacity`) | Push queue size; when full, pushes are dropped, logged and counted. |
+| `BENCH_HIKARI_POOL` | 10 (`bench` profile only) | Hikari pool size for load runs ([BENCHMARKS.md](BENCHMARKS.md)). |
 | `METRICS_PASSWORD` | none (`metrics.password`) | Password of the `metrics` user for `/actuator/prometheus` and `/actuator/metrics` (HTTP Basic). Missing or shorter than 16 characters: scraping disabled (fail closed). |
 | `WS_HEARTBEAT_INTERVAL` | `PT25S` (`ws.heartbeat.interval`) | How often the server pings every socket. |
 | `WS_HEARTBEAT_TIMEOUT` | `PT60S` (`ws.heartbeat.timeout`) | A socket with no pong or frame for this long is closed with `4006`. Startup requires it to be at least twice the interval. |
@@ -254,6 +255,7 @@ A socket authenticates once, at the handshake, so it could otherwise outlive the
 ## Known Limitations
 
 - **Metrics use HTTP Basic:** the password travels with every scrape, so production needs TLS in front (Phase 9).
+- **Measurements are single-laptop:** the load harness runs on the same machine as the app, and Postgres runs in Docker Desktop's VM. Results describe that setup only ([BENCHMARKS.md](BENCHMARKS.md)). The `bench` profile also exposes `/actuator/env` (values shown to the metrics user only); never use that profile outside local measurement.
 - **`heads` is unpaginated:** `GET /api/conversations/heads` returns all of a user's active conversations in one response (no pagination); users with very many conversations will need pagination or a "changed since" variant later. The anti-entropy polling cost (one `heads` call per client every ~30 s) is unmeasured until Phase 5.
 - **Reliable delivery is a client responsibility (ADR-0008):** the reference client lives in test sources (not a published SDK); convergence is shown on one instance with a bounded workload; seeds reproduce faults, not thread schedules; anti-entropy polling cost (`heads` every ~30 s per client) is unmeasured (Phase 5); there is no server-sent resync hint; a client offline longer than the refresh-token lifetime must log in again.
 - **WebSocket pushes are best effort:** they may arrive out of `seq` order (after-commit handoffs can interleave), are dropped when the push queue is full, and a slow socket is closed with `4003`. Clients order by `seq` and recover from history; gap detection and resync are Phase 3.

@@ -1,0 +1,35 @@
+# Dedicated BENCHMARK PostgreSQL (Phase 5-lite, docs/BENCHMARKS.md). Never the dev database.
+#
+# Own compose project (chatbench), container name, host port (55432) and volume, so the dev database
+# (deploy/docker-compose.yml: port 5432, volume postgres_data) is never touched. Use the wrapper,
+# which hard-codes the project and this file:
+#
+#   deploy/bench/bench-db.sh up      # start (keeps data)
+#   deploy/bench/bench-db.sh reset   # throw away the BENCH data only, start empty
+#   deploy/bench/bench-db.sh down    # stop (keeps data)
+#
+# Data is on a normal Docker volume, not tmpfs: a commit's fsync happens while the conversation row
+# lock is held, so removing it would distort exactly the hypothesis being measured.
+# Caveat recorded in every result: on macOS, Docker Desktop runs this in a Linux VM, which is not
+# representative of a Linux server.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: chat-bench-pg
+    ports:
+      - "55432:5432"
+    environment:
+      POSTGRES_DB: chat_bench
+      POSTGRES_USER: chat_bench
+      POSTGRES_PASSWORD: chat_bench
+    volumes:
+      - chat_bench_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chat_bench -d chat_bench"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  chat_bench_data:

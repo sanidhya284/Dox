@@ -14,7 +14,7 @@ A real-time chat backend built as a learning project for backend engineering: a 
 | 2d-lite: heartbeats and idle close, delivered/read cursors ([ADR-0007](docs/adr/0007-heartbeats-and-read-cursors.md)) | Done (PR open) |
 | 2e: React UI (presence and typing deferred) | Not started |
 | 3: reliable delivery and recovery (catch-up APIs, reference client, convergence under faults) | Done (PR open) |
-| 5-lite: metrics, load harness, one measured bottleneck ([ADR-0009](docs/adr/0009-observability-and-measurement.md)) | In progress (secured metrics endpoint and application metrics done) |
+| 5-lite: metrics, load harness, one measured bottleneck ([ADR-0009](docs/adr/0009-observability-and-measurement.md)) | In progress (metrics done; load harness and method ready, no measurements yet) |
 | 4, 6 onward: multi-instance, outbox, ... | Not started |
 
 Details and the next steps: [docs/HANDOFF.md](docs/HANDOFF.md).
@@ -55,6 +55,8 @@ Results are in `backend/build/test-results/{test,integrationTest}/*.xml`.
 ```bash
 echo "api.version=1.44" > ~/.docker-java.properties
 ```
+
+**Load harness** (on demand, never in CI): `./gradlew loadTest` against a separately started app (`bench` profile) and a dedicated benchmark database (`deploy/bench/bench-db.sh`). Method, scenarios and run outcomes: [docs/BENCHMARKS.md](docs/BENCHMARKS.md). No numbers are published yet.
 
 ## API and WebSocket
 The REST endpoints are `/api/auth/*` (register, login, refresh, logout), `/api/conversations/*` (direct and group conversations, sending and paging messages; a message body is at most 4,000 characters, longer bodies get `400 VALIDATION_ERROR`), `GET /api/conversations/{id}/messages?after={seq}&limit={n}` (catch up: messages after a seq, oldest first, exact `hasMore`; `?before=` pages backwards), `GET /api/conversations/heads` (`[{conversationId, lastSeq}]` for your conversations: a cheap "am I behind?" check), `POST /api/conversations/{id}/cursor` (`{"kind":"read"|"delivered","seq":42}`: moves your cursor forward, never back; read implies delivered), `POST /api/ws/ticket` and `/actuator/health`. A conversation's `unreadCount` counts messages after your read cursor that *others* sent; `GET /api/conversations/{id}` also returns every participant's `lastReadSeq` / `lastDeliveredSeq`, and the list returns `myLastReadSeq`. Both also return `lastSeq`, the conversation's newest seq. Full table: [architecture.md, API Surface](docs/architecture.md#api-surface).

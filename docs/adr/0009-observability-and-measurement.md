@@ -26,6 +26,7 @@ Phases 1–3 established correctness (ADRs 0002–0008), but nothing had been me
 - `/actuator/health` is unchanged: public, status only.
 - **Rejected:** a separate management port on `127.0.0.1`. It would move `/actuator/health` off the main port and change existing behaviour.
 - **Basic sends the password with every request:** production needs TLS in front (Phase 9).
+- **Addition, 2026-11-05 (step 3):** under the `bench` profile only, `/actuator/env` is also exposed, behind the same chain, with values shown only to the metrics user. The harness needs it to record the app's effective configuration in every result file, and secrets are masked in the file. No other profile exposes `env`.
 
 ## Decision 3: a Java load harness reusing the reference client (not k6)
 - **Why:** the harness reuses `ReferenceClient` (ADR-0008), so the real ticket flow, the stable-id outbox and the ack semantics are exercised as clients really behave.
