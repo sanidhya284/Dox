@@ -19,19 +19,24 @@ import org.springframework.web.bind.annotation.RestController;
 public class AuthController {
 
     private final AuthService authService;
+    private final com.chatplatform.shared.ratelimit.RateLimits rateLimits;
 
-    public AuthController(AuthService authService) {
+    public AuthController(AuthService authService, com.chatplatform.shared.ratelimit.RateLimits rateLimits) {
         this.authService = authService;
+        this.rateLimits = rateLimits;
     }
 
     @PostMapping("/register")
     @ResponseStatus(HttpStatus.CREATED)
-    public AuthResponse register(@Valid @RequestBody RegisterRequest request) {
+    public AuthResponse register(@Valid @RequestBody RegisterRequest request,
+                                 jakarta.servlet.http.HttpServletRequest http) {
+        rateLimits.checkRegister(http.getRemoteAddr()); // before the invite check and BCrypt
         return authService.register(request);
     }
 
     @PostMapping("/login")
-    public TokenPair login(@Valid @RequestBody LoginRequest request) {
+    public TokenPair login(@Valid @RequestBody LoginRequest request, jakarta.servlet.http.HttpServletRequest http) {
+        rateLimits.checkLogin(http.getRemoteAddr(), request.username()); // before BCrypt
         return authService.login(request);
     }
 

@@ -62,7 +62,7 @@ public final class ReferenceClient implements AutoCloseable {
 
     public enum Bug { NO_DEDUPE, FETCH_BEFORE_SUBSCRIBE, NO_GAP_DETECTION, NEW_ID_ON_RETRY, LOOP_ON_PROTOCOL_ERROR, NO_ANTI_ENTROPY }
 
-    public enum State { RUNNING, LOGGED_OUT, CLIENT_BUG, SERVER_BUG, STOPPED }
+    public enum State { RUNNING, LOGGED_OUT, CLIENT_BUG, SERVER_BUG, TOO_MANY_SOCKETS, STOPPED }
 
     public record Msg(UUID id, UUID conversationId, long seq, UUID senderId, UUID clientMsgId, String body) {
     }
@@ -633,6 +633,7 @@ public final class ReferenceClient implements AutoCloseable {
                 }
             }
             case 1008 -> state.set(State.SERVER_BUG);
+            case 4007 -> state.set(State.TOO_MANY_SOCKETS);                  // ADR-0006 2a: never auto-reconnect
             default -> scheduleReconnect();                                  // 4001, 4003, 4006, 1001, 1006, ...
         }
     }

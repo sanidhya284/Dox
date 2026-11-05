@@ -89,7 +89,11 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         setTomcatBlockingSendTimeout(session);
-        registry.register(userId, session);
+        if (!registry.register(userId, session)) {
+            log.info("User {} reached ws.max-sockets-per-user; closing session {} with 4007", userId, session.getId());
+            session.close(WsCloseStatuses.TOO_MANY_SOCKETS);
+            return;
+        }
         heartbeat.track(userId, session.getId());
         ScheduledFuture<?> lifetimeClose = scheduler.schedule(
                 () -> closeAtEndOfLifetime(session), Instant.now().plus(maxLifetime));

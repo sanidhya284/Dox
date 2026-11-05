@@ -20,7 +20,11 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final TokenService tokenService;
 
-    public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder, TokenService tokenService) {
+    private final RegistrationPolicy registrationPolicy;
+
+    public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder, TokenService tokenService,
+                       RegistrationPolicy registrationPolicy) {
+        this.registrationPolicy = registrationPolicy;
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.tokenService = tokenService;
@@ -28,6 +32,8 @@ public class AuthService {
 
     @Transactional
     public AuthResponse register(RegisterRequest request) {
+        // First: without the invite code, nobody learns whether a username or email exists (ADR-0011).
+        registrationPolicy.check(request.inviteCode());
         if (userRepository.existsByUsername(request.username())) {
             throw new ApiException(ErrorCode.USERNAME_TAKEN);
         }

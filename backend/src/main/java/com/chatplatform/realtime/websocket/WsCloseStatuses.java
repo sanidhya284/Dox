@@ -17,6 +17,9 @@ public final class WsCloseStatuses {
     /** No pong or frame within ws.heartbeat.timeout: the connection is presumed dead; reconnect. */
     public static final CloseStatus IDLE_TIMEOUT = new CloseStatus(4006, "idle timeout");
 
+    /** The user already has ws.max-sockets-per-user open sockets: this new one is refused. Don't auto-reconnect. */
+    public static final CloseStatus TOO_MANY_SOCKETS = new CloseStatus(4007, "too many sockets");
+
     /** The frame's "v" is not a protocol version this server speaks. */
     public static final CloseStatus UNSUPPORTED_PROTOCOL_VERSION = new CloseStatus(4004, "unsupported protocol version");
 

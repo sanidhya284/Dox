@@ -189,7 +189,11 @@ All environment-specific configuration comes from environment variables.
 | `WS_HEARTBEAT_INTERVAL` | `PT25S` (`ws.heartbeat.interval`) | How often the server pings every socket. |
 | `WS_HEARTBEAT_TIMEOUT` | `PT60S` (`ws.heartbeat.timeout`) | A socket with no pong or frame for this long is closed with `4006`. Startup requires it to be at least twice the interval. |
 | `WS_SESSION_MAX_LIFETIME` | `PT15M` (`ws.session.max-lifetime`) | How long a WebSocket may stay open after its handshake; then the server closes it with `4001`. ISO-8601 duration. Startup refuses zero or negative values. |
-| `SPRING_PROFILES_ACTIVE` | not set | Set to `dev` for local development: loads a dev-only JWT secret, the local frontend origins (`http://localhost:3000`, `http://localhost:5173`) and verbose SQL logging. Never use `dev` in production. |
+| `REGISTRATION_INVITE_CODE` | none (`registration.invite-code`) | With `registration.mode=invite` (the default), `POST /api/auth/register` needs this code; unset means registration is closed (`403`). `dev`, the test profiles and `bench` set `registration.mode=open` (ADR-0011). |
+| `DEMO_PASSWORD` | none (`demo.password`) | When set (at least 8 characters), seeds `demo1`..`demo3` and a "Demo room" at startup; a changed value resets their password hashes. Public data only. |
+| `WS_MAX_SOCKETS_PER_USER` | `10` (`ws.max-sockets-per-user`) | Open sockets per user; the next one is closed with `4007` (ADR-0006 Decision 2a). |
+| `ratelimit.*` | register 5/h per IP; login 20/min per IP and 5/min per (IP, username); ticket 30/min per user; failed handshakes 20/min per IP; `max-keys` 100000 | In-memory fixed-window limits, per instance (ADR-0011). |
+| `SPRING_PROFILES_ACTIVE` | not set | Set to `dev` for local development: loads a dev-only JWT secret, the local frontend origins (`http://localhost:3000`, `http://localhost:5173`) and verbose SQL logging. Never use `dev` in production. `prod` (graceful shutdown, INFO logs) refuses to start together with `dev` or `bench` (`ProfileGuard`). |
 
 Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `JWT_SECRET` to a cryptographically random value and `WS_ALLOWED_ORIGINS` to the real frontend origin(s).
 
@@ -199,8 +203,8 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/api/auth/register` | no | Register; returns user + token pair |
-| POST | `/api/auth/login` | no | Login; returns token pair |
+| POST | `/api/auth/register` | no | Register (`inviteCode` required in invite mode; checked before conflicts); returns user + token pair. Rate-limited per IP. |
+| POST | `/api/auth/login` | no | Login; returns token pair. Rate-limited per IP and per (IP, username), before BCrypt. |
 | POST | `/api/auth/refresh` | no | Rotate refresh token |
 | POST | `/api/auth/logout` | no | Revoke refresh token |
 | POST | `/api/conversations/direct` | yes | Create or get direct conversation |
@@ -210,7 +214,7 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 | POST | `/api/conversations/{id}/messages` | yes | Send message (idempotent) |
 | GET | `/api/conversations/{id}/messages` | yes | Paginate messages (keyset): `?before=` newest first, or `?after=` oldest first for catching up (not both); exact `hasMore` |
 | GET | `/api/conversations/heads` | yes | `[{conversationId, lastSeq}]` for my active conversations (anti-entropy check, Phase 3) |
-| POST | `/api/ws/ticket` | yes | Issue a one-time WebSocket ticket: `{ticket, expiresInSeconds}` |
+| POST | `/api/ws/ticket` | yes | Issue a one-time WebSocket ticket: `{ticket, expiresInSeconds}`. Rate-limited per user. |
 | GET (upgrade) | `/ws?ticket=...` | ticket + allowed `Origin` | Open a WebSocket (see Realtime above) |
 | POST | `/api/conversations/{id}/cursor` | yes | Move my delivered/read cursor forward: `{kind, seq}` → `{lastDeliveredSeq, lastReadSeq}` (ADR-0007) |
 | GET | `/actuator/health` | no | Health check (status only, no details) |
@@ -242,6 +246,10 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 - **Metrics exposure:** anonymous scrapes, a user's JWT and a wrong Basic password get `401`/`403`; the metrics user's credentials do not work on the API; a password shorter than 16 characters disables scraping; health is unchanged (`MetricsExposureTest`, `MetricsFailClosedTest`; mutations: `permitAll` on the metrics chain, accepting a short password).
 - **Application metrics:** each `chat.*` meter moves on its event (REST created/duplicate/rejected counted separately, WS sends counted as `ws` and timed, the sessions gauge follows connects and closes, closes by code, tickets, cursors, heads); a full push queue increments `chat.push.dropped` by exactly the listener's own count; no `chat.*` meter carries a tag outside a fixed set (`ChatMetricsTest`, `WsPushQueueTest`; mutations: a duplicate counted as created, a per-sender tag, a gauge counting users instead of sockets).
 - **Actuator:** only `/actuator/health` is public, and it shows no component details.
+- **Rate limits (ADR-0011):** the limit-plus-one register, login, ticket or failed-handshake attempt gets `429` with `Retry-After`; another IP, pair or user is unaffected; a limited login never reaches BCrypt; a blocked handshake doesn't consume the ticket; the limiter's memory stays bounded (`FixedWindowRateLimiterTest`, `RateLimitTest`).
+- **Registration policy:** without the right invite code, registration gets `403` and stores nothing, and a taken username or email isn't revealed (`RegistrationPolicyTest`, `RegistrationPolicyUnitTest`).
+- **Socket cap:** the socket over `ws.max-sockets-per-user` is closed with `4007`, the others stay open, and the cap is per user (`SocketCapTest`).
+- **Demo seed and profiles:** seeding is idempotent and a changed demo password replaces the old one (`DemoSeedTest`); `prod` with `dev` or `bench` refuses startup (`ProfileGuardTest`).
 - **Accounts:** usernames and emails are case-insensitive (`citext` column plus an explicit `CAST(... AS citext)` in queries, because a plain varchar parameter makes the comparison case-sensitive). Duplicates return `409 USERNAME_TAKEN` / `EMAIL_TAKEN`, including when two registrations race (the unique-constraint violation is translated to the same 409).
 - **History paging:** `limit` is clamped to 1..100 (default 50); the cursor is stable when new messages arrive.
 
@@ -274,6 +282,9 @@ A socket authenticates once, at the handshake, so it could otherwise outlive the
 | **No per-conversation `seq`** (order by a global id or time) | No hot row at all | **Removes it.** Clients would resync by time windows with an overlap for late commits and dedupe by id; `heads` / `lastSeq` / `?after=` change meaning. It's a redesign of ADR-0008. |
 
 ## Known Limitations
+
+- **Rate limits are in memory and per instance** (ADR-0011): two instances double them (Phase 4 moves them to Redis), a fixed window can admit up to 2× the limit across a boundary, users behind one NAT share the per-IP limits, and anyone sharing a victim's IP can use up that victim's login attempts. `GET`s and message sends aren't rate-limited.
+- **The demo is public data**, and a changed `DEMO_PASSWORD` doesn't revoke existing demo sessions.
 
 - **Metrics use HTTP Basic:** the password travels with every scrape, so production needs TLS in front (Phase 9).
 - **Measurements are single-laptop:** the load harness runs on the same machine as the app, and Postgres runs in Docker Desktop's VM. Results describe that setup only ([BENCHMARKS.md](BENCHMARKS.md)). The `bench` profile also exposes `/actuator/env` (values shown to the metrics user only); never use that profile outside local measurement.

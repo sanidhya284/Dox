@@ -31,9 +31,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ApiException.class)
     public ResponseEntity<ErrorResponse> handleApiException(ApiException ex) {
         log.warn("Domain error [{}]: {}", ex.getErrorCode(), ex.getMessage());
-        return ResponseEntity
-                .status(ex.getErrorCode().status)
-                .body(buildError(ex.getErrorCode().name(), ex.getMessage()));
+        ResponseEntity.BodyBuilder response = ResponseEntity.status(ex.getErrorCode().status);
+        if (ex instanceof com.chatplatform.shared.exception.RateLimitedException limited) {
+            response.header("Retry-After", String.valueOf(limited.retryAfterSeconds()));
+        }
+        return response.body(buildError(ex.getErrorCode().name(), ex.getMessage()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

@@ -17,6 +17,20 @@ public class UserService {
         this.userRepository = userRepository;
     }
 
+    /**
+     * Demo seeding only (ADR-0011): creates the user, or replaces an existing user's password hash, so a
+     * changed DEMO_PASSWORD takes effect on the next start. Existing sessions are not revoked.
+     */
+    public User createOrResetPassword(String username, String email, String displayName, String passwordHash) {
+        return userRepository.findByUsername(username)
+                .map(existing -> {
+                    userRepository.updatePasswordHash(existing.id(), passwordHash);
+                    return existing;
+                })
+                .orElseGet(() -> userRepository.save(
+                        new User(null, username, email, passwordHash, displayName, null, null)));
+    }
+
     public User getUserById(UUID id) {
         return userRepository.findById(id)
                 .orElseThrow(() -> new ApiException(ErrorCode.USER_NOT_FOUND));

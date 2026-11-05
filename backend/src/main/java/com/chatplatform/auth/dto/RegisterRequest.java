@@ -18,5 +18,14 @@ public record RegisterRequest(
         String password,
 
         @NotBlank(message = "Display name is required")
-        String displayName
-) {}
+        String displayName,
+
+        // Required when registration.mode=invite (ADR-0011); ignored when open.
+        @Size(max = 200, message = "Invite code is too long")
+        String inviteCode
+) {
+    /** Without an invite code (open registration: dev, tests, bench). */
+    public RegisterRequest(String username, String email, String password, String displayName) {
+        this(username, email, password, displayName, null);
+    }
+}

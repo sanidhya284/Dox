@@ -42,3 +42,13 @@ management:
     env:
       show-values: when-authorized
       roles: METRICS
+
+# Not production (ADR-0011): anyone may register; limits high enough for local use and test suites.
+registration:
+  mode: open
+ratelimit:
+  register-per-ip-per-hour: 100000
+  login-per-ip-per-minute: 100000
+  login-per-ip-and-user-per-minute: 100000
+  ticket-per-user-per-minute: 100000
+  failed-handshakes-per-ip-per-minute: 100000

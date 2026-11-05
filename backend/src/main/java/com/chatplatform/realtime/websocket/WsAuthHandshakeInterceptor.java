@@ -31,12 +31,22 @@ public class WsAuthHandshakeInterceptor implements HandshakeInterceptor {
 
     private final WsTicketService wsTicketService;
     private final List<String> allowedOrigins;
+    private final com.chatplatform.shared.ratelimit.RateLimits rateLimits;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public WsAuthHandshakeInterceptor(
             WsTicketService wsTicketService,
-            @Value("${ws.allowed-origins:}") List<String> allowedOrigins) {
+            @Value("${ws.allowed-origins:}") List<String> allowedOrigins,
+            com.chatplatform.shared.ratelimit.RateLimits rateLimits) {
         this.wsTicketService = wsTicketService;
         this.allowedOrigins = validate(allowedOrigins);
+        this.rateLimits = rateLimits;
+    }
+
+    /** Unit tests: origin validation only, with no effective handshake limit. */
+    WsAuthHandshakeInterceptor(WsTicketService wsTicketService, List<String> allowedOrigins) {
+        this(wsTicketService, allowedOrigins, new com.chatplatform.shared.ratelimit.RateLimits(
+                Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE, 1000));
     }
 
     /**
@@ -69,8 +79,18 @@ public class WsAuthHandshakeInterceptor implements HandshakeInterceptor {
         // Order reason: Origin validation must happen before ticket consumption so that
         // a bad-origin or cross-origin request does not consume a valid ticket,
         // preserving the ticket intact for a legitimate client retry.
+        // Too many failed handshakes from this IP: refuse before looking at the origin or any ticket,
+        // so a blocked client can neither probe tickets nor consume one (ADR-0011).
+        String ip = request.getRemoteAddress() == null ? "unknown"
+                : request.getRemoteAddress().getAddress().getHostAddress();
+        if (rateLimits.handshakeBlocked(ip)) {
+            response.setStatusCode(HttpStatus.TOO_MANY_REQUESTS);
+            return false;
+        }
+
         String origin = request.getHeaders().getOrigin();
         if (origin == null || !allowedOrigins.contains(origin)) {
+            rateLimits.handshakeFailed(ip);
             response.setStatusCode(HttpStatus.UNAUTHORIZED);
             return false;
         }
@@ -82,12 +102,14 @@ public class WsAuthHandshakeInterceptor implements HandshakeInterceptor {
                 .get(TICKET_PARAM);
 
         if (tickets == null || tickets.isEmpty()) {
+            rateLimits.handshakeFailed(ip);
             response.setStatusCode(HttpStatus.UNAUTHORIZED);
             return false;
         }
 
         String rawTicket = tickets.getFirst();
         if (rawTicket == null || rawTicket.isBlank()) {
+            rateLimits.handshakeFailed(ip);
             response.setStatusCode(HttpStatus.UNAUTHORIZED);
             return false;
         }
@@ -95,6 +117,7 @@ public class WsAuthHandshakeInterceptor implements HandshakeInterceptor {
         // Atomically consume ticket via WsTicketService
         Optional<UUID> userId = wsTicketService.consume(rawTicket);
         if (userId.isEmpty()) {
+            rateLimits.handshakeFailed(ip);
             response.setStatusCode(HttpStatus.UNAUTHORIZED);
             return false;
         }

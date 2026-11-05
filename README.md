@@ -15,7 +15,8 @@ A real-time chat backend built as a learning project for backend engineering: a 
 | 2e: React UI (presence and typing deferred) | Not started |
 | 3: reliable delivery and recovery (catch-up APIs, reference client, convergence under faults) | Done (PR open) |
 | 5-lite: metrics, load harness, one measured bottleneck ([ADR-0009](docs/adr/0009-observability-and-measurement.md)) | Done (PR open): metrics, load harness, measured on one laptop (below) |
-| 4, 6 onward: multi-instance, outbox, ... | Not started |
+| 6: browser UI + auto-deploy (single instance; [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md)) | In progress: step 1 pre-deploy hardening done |
+| 4, 7 onward: multi-instance, outbox, ... | Not started |
 
 Details and the next steps: [docs/HANDOFF.md](docs/HANDOFF.md).
 
@@ -36,7 +37,19 @@ The `dev` profile supplies a development-only JWT secret and the local frontend 
 - `JWT_SECRET`: at least 32 bytes.
 - `WS_ALLOWED_ORIGINS`: comma-separated exact origins allowed to open WebSockets, e.g. `https://app.example.com`. A blank entry or `*` is refused.
 
-Optional: `WS_SESSION_MAX_LIFETIME` (ISO-8601 duration, default `PT15M`) is how long a WebSocket may stay open; zero or negative values refuse startup. `WS_MAX_TEXT_FRAME_BYTES` (default `32768`) is the largest text frame accepted. Heartbeats: `WS_HEARTBEAT_INTERVAL` (default `PT25S`) and `WS_HEARTBEAT_TIMEOUT` (default `PT60S`, must be at least twice the interval). Push tuning: `WS_SEND_TIME_LIMIT_MS` (default `5000`) and `WS_SEND_BUFFER_BYTES` (default `524288`) bound how long and how much a single socket may lag before it is closed with `4003`; `WS_PUSH_THREADS` (default `2`) and `WS_PUSH_QUEUE_CAPACITY` (default `10000`) size the push executor.
+**Registration is invite-only by default:** `POST /api/auth/register` needs `"inviteCode"` equal to `REGISTRATION_INVITE_CODE`. With no code configured, registration is closed (`403 REGISTRATION_CLOSED`). The `dev` profile keeps registration open. `DEMO_PASSWORD` (optional, at least 8 characters) seeds `demo1`, `demo2`, `demo3` and a "Demo room"; **demo data is public**, so never put real data there.
+
+**Rate limits** (in memory, per instance; `429 RATE_LIMITED` with `Retry-After`):
+- register: 5 per hour per IP;
+- login: 20 per minute per IP, and 5 per minute per (IP, username);
+- WebSocket tickets: 30 per minute per user;
+- failed WebSocket handshakes: 20 per minute per IP.
+
+They're checked before BCrypt and before any ticket is touched. Users behind one NAT share the per-IP limits. Details: [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md).
+
+**Production** uses `SPRING_PROFILES_ACTIVE=prod` (never together with `dev` or `bench`; startup refuses). The configuration checklist is in [ADR-0011 Decision 4](docs/adr/0011-deployment-and-pre-deploy-hardening.md#decision-4-a-prod-profile-that-cant-be-mixed-with-dev-secrets).
+
+Optional: `WS_MAX_SOCKETS_PER_USER` (default `10`) caps open sockets per user; the next one is closed with `4007`. `WS_SESSION_MAX_LIFETIME` (ISO-8601 duration, default `PT15M`) is how long a WebSocket may stay open; zero or negative values refuse startup. `WS_MAX_TEXT_FRAME_BYTES` (default `32768`) is the largest text frame accepted. Heartbeats: `WS_HEARTBEAT_INTERVAL` (default `PT25S`) and `WS_HEARTBEAT_TIMEOUT` (default `PT60S`, must be at least twice the interval). Push tuning: `WS_SEND_TIME_LIMIT_MS` (default `5000`) and `WS_SEND_BUFFER_BYTES` (default `524288`) bound how long and how much a single socket may lag before it is closed with `4003`; `WS_PUSH_THREADS` (default `2`) and `WS_PUSH_QUEUE_CAPACITY` (default `10000`) size the push executor.
 
 Metrics: `/actuator/prometheus` needs HTTP Basic as user `metrics` with `METRICS_PASSWORD` (at least 16 characters; without it scraping is disabled). The `dev` profile sets a dev-only password. Basic sends the password on every request, so use TLS in production. `/actuator/health` stays public. Application meters are named `chat.*` (sends, acks, sockets, closes, tickets, cursors, heads, dropped pushes); see [architecture.md, Metrics](docs/architecture.md#metrics-adr-0009).
 
@@ -78,6 +91,7 @@ Close codes sent by the server:
 | `4002` | Credentials revoked: a refresh token of this user was replayed (theft signal), so all their sockets are closed | Log in again |
 | `4003` | Slow consumer: the socket fell behind the send-time or buffer limit | Reconnect and recover missed messages from history |
 | `4006` | Idle timeout: no pong or frame within `WS_HEARTBEAT_TIMEOUT` | Reconnect; recover from history |
+| `4007` | Too many sockets: the user already has `WS_MAX_SOCKETS_PER_USER` open | Don't reconnect automatically; close a tab or device |
 | `4004` | Unsupported protocol version (`v` is not 1) | Fix the client |
 | `4005` | Unknown frame `type` | Fix the client |
 | `1007` | Frame is not valid protocol JSON (envelope, or a `clientMsgId` that is not a UUID) | Fix the client |
@@ -88,7 +102,7 @@ Close codes sent by the server:
 ## Writing a client
 Pushes are an optimisation; PostgreSQL is the truth. A correct client (full algorithm and reasoning: [ADR-0008](docs/adr/0008-client-sync-protocol.md); a working reference implementation is in `backend/src/test/java/com/chatplatform/client/ReferenceClient.java`):
 1. Give each send a `clientMsgId` once and keep it for every retry; resend if no ack arrives within a timeout and after every reconnect. Treat the ack as your own copy of the message.
-2. Reconnect with a fresh ticket and exponential backoff with full jitter. On `4002` log in again; on `1007`/`4004`/`4005` stop (it is a client bug); otherwise reconnect.
+2. Reconnect with a fresh ticket and exponential backoff with full jitter. On `4002` log in again; on `4007` stop (too many open sockets); on `1007`/`4004`/`4005` stop (it is a client bug); otherwise reconnect.
 3. **Subscribe first, then fetch:** open the socket, then page `GET .../messages?after=<your contiguous seq>` where `GET /api/conversations/heads` says you are behind.
 4. Deduplicate by message id, order by `seq`; if a push skips ahead of your contiguous seq, fetch the gap.
 5. Every ~30 s (jittered) compare `heads` with your contiguous seq and fetch if behind: this is the only way to notice that the *last* push was lost.
@@ -131,7 +145,8 @@ The main ones:
 - Logout does not close open WebSockets.
 - The connection registry and pushes are single-instance (Phase 4: Redis fan-out).
 - Pushes may arrive out of `seq` order and may be dropped when the push queue is full; clients recover from history.
-- No per-socket send rate limit yet.
+- No per-socket send rate limit yet. The auth and ticket rate limits are in memory and per instance.
+- `GET` requests and message sends aren't rate-limited.
 - The 401 from the security filter has an empty body.
 - Read receipts are visible to every participant (no privacy toggle); "delivered" is reported by the client.
 
@@ -147,5 +162,6 @@ Full list: [architecture.md, Known Limitations](docs/architecture.md#known-limit
 - [ADR-0007: Heartbeats and read cursors](docs/adr/0007-heartbeats-and-read-cursors.md)
 - [ADR-0008: Client sync protocol](docs/adr/0008-client-sync-protocol.md)
 - [ADR-0009: Observability and honest measurement](docs/adr/0009-observability-and-measurement.md)
+- [ADR-0011: Deployment and pre-deploy hardening](docs/adr/0011-deployment-and-pre-deploy-hardening.md)
 - [Architecture overview](docs/architecture.md)
 - [Interview notes](docs/INTERVIEW_NOTES.md): per milestone, the problem, the bug we actually found, the test that proves the fix, the tradeoff, and likely follow-up questions
