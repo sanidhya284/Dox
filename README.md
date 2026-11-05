@@ -9,8 +9,9 @@ A real-time chat backend built as a learning project for backend engineering: a 
 | 0: skeleton, Flyway, CI | Done |
 | 1: REST core (auth, conversations, ordered idempotent messages, keyset paging) | Done |
 | 2a/2b-i: WebSocket one-time tickets, authenticated handshake | Done |
-| 2b-ii: connection registry, socket lifetime, closing sockets on token theft | Done (PR open) |
-| 2c to 2e: message frames and push, presence and read cursors, React UI | Not started |
+| 2b-ii: connection registry, socket lifetime, closing sockets on token theft | Done |
+| 2c: WebSocket send, ack, push ([ADR-0006](docs/adr/0006-websocket-frame-protocol-v1.md)) | Done (PR open) |
+| 2d, 2e: presence and read cursors, React UI | Not started |
 | 3 onward: reliable delivery, multi-instance, observability, ... | Not started |
 
 Details and the next steps: [docs/HANDOFF.md](docs/HANDOFF.md).
@@ -32,7 +33,7 @@ The `dev` profile supplies a development-only JWT secret and the local frontend 
 - `JWT_SECRET`: at least 32 bytes.
 - `WS_ALLOWED_ORIGINS`: comma-separated exact origins allowed to open WebSockets, e.g. `https://app.example.com`. A blank entry or `*` is refused.
 
-Optional: `WS_SESSION_MAX_LIFETIME` (ISO-8601 duration, default `PT15M`) is how long a WebSocket may stay open; zero or negative values refuse startup.
+Optional: `WS_SESSION_MAX_LIFETIME` (ISO-8601 duration, default `PT15M`) is how long a WebSocket may stay open; zero or negative values refuse startup. `WS_MAX_TEXT_FRAME_BYTES` (default `32768`) is the largest text frame accepted. Push tuning: `WS_SEND_TIME_LIMIT_MS` (default `5000`) and `WS_SEND_BUFFER_BYTES` (default `524288`) bound how long and how much a single socket may lag before it is closed with `4003`; `WS_PUSH_THREADS` (default `2`) and `WS_PUSH_QUEUE_CAPACITY` (default `10000`) size the push executor.
 
 All configuration: [architecture.md, Configuration](docs/architecture.md#configuration).
 
@@ -51,14 +52,16 @@ echo "api.version=1.44" > ~/.docker-java.properties
 ```
 
 ## API and WebSocket
-The REST endpoints are `/api/auth/*` (register, login, refresh, logout), `/api/conversations/*` (direct and group conversations, sending and paging messages), `POST /api/ws/ticket` and `/actuator/health`. Full table: [architecture.md, API Surface](docs/architecture.md#api-surface).
+The REST endpoints are `/api/auth/*` (register, login, refresh, logout), `/api/conversations/*` (direct and group conversations, sending and paging messages; a message body is at most 4,000 characters, longer bodies get `400 VALIDATION_ERROR`), `POST /api/ws/ticket` and `/actuator/health`. Full table: [architecture.md, API Surface](docs/architecture.md#api-surface).
 
 Connecting a WebSocket:
 1. `POST /api/ws/ticket` with `Authorization: Bearer <access token>` returns `{"ticket": "...", "expiresInSeconds": 30}`.
 2. Within 30 seconds, open `ws://localhost:8080/ws?ticket=<ticket>` from an allowed `Origin`. A ticket works once.
 3. A rejected handshake (bad, used or expired ticket, or an origin not on the list) gets HTTP `401`. A rejection for the origin leaves the ticket usable.
 
-The server tracks each open socket per user. Incoming frames are not handled yet; the frame protocol is Phase 2c.
+The server tracks each open socket per user. Frames follow protocol v1 ([ADR-0006](docs/adr/0006-websocket-frame-protocol-v1.md)): JSON text frames `{"v":1,"type":"..."}`. A client sends `{"v":1,"type":"send","conversationId":"...","clientMsgId":"...","body":"..."}`; invalid content gets an `error` frame (`{"v":1,"type":"error","clientMsgId":...,"code":"VALIDATION_ERROR","message":"..."}`) and the socket stays open. A valid send is stored exactly like a REST send, and only after it has committed does the sender get `{"v":1,"type":"ack","clientMsgId":"...","messageId":"...","conversationId":"...","seq":42,"createdAt":"..."}`; resending the same `clientMsgId` returns the same ack without storing a second message.
+
+Every new message (sent over WebSocket or REST) is then pushed, after commit, to every other open socket of the conversation's current participants, including the sender's other tabs: `{"v":1,"type":"message","message":{"id":"...","conversationId":"...","seq":42,"senderId":"...","clientMsgId":"...","body":"...","createdAt":"..."}}`. Pushes are an optimisation, not a guarantee: they may arrive out of `seq` order, may be dropped under load, and a socket that cannot keep up is closed with `4003`. **The history endpoint is the source of truth**: order by `seq`, and after a reconnect page `GET /api/conversations/{id}/messages` for anything missed.
 
 Close codes sent by the server:
 
@@ -66,17 +69,25 @@ Close codes sent by the server:
 |---|---|---|
 | `4001` | Socket lifetime reached (`WS_SESSION_MAX_LIFETIME`, default 15 minutes after the handshake) | Get a fresh ticket and reconnect |
 | `4002` | Credentials revoked: a refresh token of this user was replayed (theft signal), so all their sockets are closed | Log in again |
+| `4003` | Slow consumer: the socket fell behind the send-time or buffer limit | Reconnect and recover missed messages from history |
+| `4004` | Unsupported protocol version (`v` is not 1) | Fix the client |
+| `4005` | Unknown frame `type` | Fix the client |
+| `1007` | Frame is not valid protocol JSON (envelope, or a `clientMsgId` that is not a UUID) | Fix the client |
+| `1009` | Frame larger than `WS_MAX_TEXT_FRAME_BYTES` | Fix the client |
+| `1003` | Binary frame (not part of the protocol) | Fix the client |
 | `1008` | No authenticated user on the socket (should not happen) | Treat as a bug; get a new ticket |
 
 ## What is guaranteed (each covered by tests)
-Per-conversation ordering without gaps, idempotent sends (`client_msg_id`), atomic refresh-token rotation with theft detection, `404` for non-members, one-time WebSocket tickets, exact origin checks, per-user socket tracking, socket lifetime, and closing a user's sockets after a refresh-token replay (only once the revocation has committed). The precise list, with test names: [architecture.md, Behaviour Guarantees](docs/architecture.md#behaviour-guarantees-each-covered-by-an-integration-or-unit-test).
+Per-conversation ordering without gaps, idempotent sends (`client_msg_id`), a 4,000-character body limit, atomic refresh-token rotation with theft detection, `404` for non-members, one-time WebSocket tickets, exact origin checks, per-user socket tracking, acks only after commit, pushes only after commit and exactly once per message per socket, socket lifetime, and closing a user's sockets after a refresh-token replay (only once the revocation has committed). The precise list, with test names: [architecture.md, Behaviour Guarantees](docs/architecture.md#behaviour-guarantees-each-covered-by-an-integration-or-unit-test).
 
 No performance or capacity numbers are claimed. Tests that run on a laptop are correctness checks, not benchmarks.
 
 ## Known limitations
 The main ones:
 - Logout does not close open WebSockets.
-- The connection registry is single-instance.
+- The connection registry and pushes are single-instance (Phase 4: Redis fan-out).
+- Pushes may arrive out of `seq` order and may be dropped when the push queue is full; clients recover from history.
+- No per-socket send rate limit yet.
 - The 401 from the security filter has an empty body.
 - Unread counts include your own messages.
 

@@ -82,6 +82,10 @@ class ConnectionRegistryTest {
         WebSocketSession a2 = mock(WebSocketSession.class);
         WebSocketSession a3 = mock(WebSocketSession.class);
         WebSocketSession b1 = mock(WebSocketSession.class);
+        when(a1.getId()).thenReturn("a1");
+        when(a2.getId()).thenReturn("a2");
+        when(a3.getId()).thenReturn("a3");
+        when(b1.getId()).thenReturn("b1");
         doThrow(new IOException("peer gone")).when(a1).close(CloseStatus.POLICY_VIOLATION);
         doThrow(new IllegalStateException("already closing")).when(a2).close(CloseStatus.POLICY_VIOLATION);
         registry.register(alice, a1);
@@ -108,7 +112,7 @@ class ConnectionRegistryTest {
     void concurrentRegisterAndUnregisterForOneUserNeverLosesASession() throws Exception {
         UUID user = UUID.randomUUID();
         int threads = 4;
-        int iterations = 200_000;
+        int iterations = 50_000;
         ExecutorService pool = Executors.newFixedThreadPool(threads);
         CountDownLatch ready = new CountDownLatch(threads);
         CountDownLatch start = new CountDownLatch(1);

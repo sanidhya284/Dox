@@ -113,6 +113,15 @@ public class ConversationService {
         }
     }
     
+    /**
+     * Ids of the conversation's current participants: rows with {@code left_at IS NULL}
+     * (ParticipantRepository.findParticipantIdsByConversation). Used by realtime to address pushes
+     * without reaching into this module's repositories.
+     */
+    public List<UUID> activeParticipantIds(UUID conversationId) {
+        return participantRepository.findParticipantIdsByConversation(conversationId);
+    }
+
     public void requireConversationExists(UUID conversationId) {
         if (conversationRepository.findById(conversationId).isEmpty()) {
             throw new ApiException(ErrorCode.CONVERSATION_NOT_FOUND);
