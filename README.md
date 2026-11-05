@@ -11,7 +11,7 @@ A real-time chat backend built as a learning project for backend engineering: a 
 | 2a/2b-i: WebSocket one-time tickets, authenticated handshake | Done |
 | 2b-ii: connection registry, socket lifetime, closing sockets on token theft | Done |
 | 2c: WebSocket send, ack, push ([ADR-0006](docs/adr/0006-websocket-frame-protocol-v1.md)) | Done (PR open) |
-| 2d-lite: heartbeats and idle close, delivered/read cursors ([ADR-0007](docs/adr/0007-heartbeats-and-read-cursors.md)) | In progress (heartbeats done) |
+| 2d-lite: heartbeats and idle close, delivered/read cursors ([ADR-0007](docs/adr/0007-heartbeats-and-read-cursors.md)) | In progress (heartbeats, cursors and unread fix done; cursor frames next) |
 | 2e: React UI (presence and typing deferred) | Not started |
 | 3 onward: reliable delivery, multi-instance, observability, ... | Not started |
 
@@ -53,7 +53,7 @@ echo "api.version=1.44" > ~/.docker-java.properties
 ```
 
 ## API and WebSocket
-The REST endpoints are `/api/auth/*` (register, login, refresh, logout), `/api/conversations/*` (direct and group conversations, sending and paging messages; a message body is at most 4,000 characters, longer bodies get `400 VALIDATION_ERROR`), `POST /api/ws/ticket` and `/actuator/health`. Full table: [architecture.md, API Surface](docs/architecture.md#api-surface).
+The REST endpoints are `/api/auth/*` (register, login, refresh, logout), `/api/conversations/*` (direct and group conversations, sending and paging messages; a message body is at most 4,000 characters, longer bodies get `400 VALIDATION_ERROR`), `POST /api/conversations/{id}/cursor` (`{"kind":"read"|"delivered","seq":42}`: moves your cursor forward, never back; read implies delivered), `POST /api/ws/ticket` and `/actuator/health`. A conversation's `unreadCount` counts messages after your read cursor that *others* sent; `GET /api/conversations/{id}` also returns every participant's `lastReadSeq` / `lastDeliveredSeq`, and the list returns `myLastReadSeq`. Full table: [architecture.md, API Surface](docs/architecture.md#api-surface).
 
 Connecting a WebSocket:
 1. `POST /api/ws/ticket` with `Authorization: Bearer <access token>` returns `{"ticket": "...", "expiresInSeconds": 30}`.
@@ -91,7 +91,7 @@ The main ones:
 - Pushes may arrive out of `seq` order and may be dropped when the push queue is full; clients recover from history.
 - No per-socket send rate limit yet.
 - The 401 from the security filter has an empty body.
-- Unread counts include your own messages.
+- Read receipts are visible to every participant (no privacy toggle); "delivered" is reported by the client.
 
 Full list: [architecture.md, Known Limitations](docs/architecture.md#known-limitations).
 

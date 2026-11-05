@@ -138,6 +138,10 @@ Runs before every request. Extracts `Authorization: Bearer <token>`, validates t
 - **Heartbeats ([ADR-0007](adr/0007-heartbeats-and-read-cursors.md)):** `HeartbeatMonitor` sweeps every `ws.heartbeat.interval` on the realtime scheduler: it pings each tracked socket through its decorator (protocol-level ping; clients answer with a pong automatically) and closes with `4006` any socket with no pong or frame for `ws.heartbeat.timeout`. The handler refreshes a socket's last-seen time on connect, every text frame and every pong. The monitor counts pings sent and pongs received.
 - **`ConnectionRegistry`:** in-memory `userId → set of sessions`, so one user can have several tabs or devices. `register` and `unregister` run inside `ConcurrentHashMap.compute`, so adding a user's first socket and removing their last cannot interleave and lose a socket. It exposes session ids only, never raw sessions. It is single-instance; Phase 4 needs cross-instance fan-out. See [ADR-0005](adr/0005-connection-registry-and-after-commit-socket-closing.md).
 
+### Cursors and unread (ADR-0007)
+- `conversation_participants.last_delivered_seq` / `last_read_seq` (existing V4 columns). `ConversationService.advanceCursor` checks, in order: membership (same `404` for non-member, left participant, unknown conversation), kind and seq (negative or beyond `last_seq`: `400 VALIDATION_ERROR`), then one guarded UPDATE: read `SET last_read_seq = :seq, last_delivered_seq = GREATEST(last_delivered_seq, :seq) ... AND last_read_seq < :seq`; delivered `SET last_delivered_seq = :seq ... AND last_delivered_seq < :seq`. A stale cursor matches no row and writes nothing; concurrent updates serialise on the row lock and re-check the guard, so a cursor never moves back.
+- Unread = messages with `seq > last_read_seq` sent by someone else, counted in `ParticipantRepository` (a read-only join on `messages`; one grouped query for the list). `GET /api/conversations/{id}` returns each active participant's cursors; the list returns `myLastReadSeq`.
+
 ### HikariCP
 - Bounded pool: max 10 connections.
 - Application threads (Tomcat default: 200) ≠ DB connections.
@@ -199,6 +203,7 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 | GET | `/api/conversations/{id}/messages` | yes | Paginate messages (keyset) |
 | POST | `/api/ws/ticket` | yes | Issue a one-time WebSocket ticket: `{ticket, expiresInSeconds}` |
 | GET (upgrade) | `/ws?ticket=...` | ticket + allowed `Origin` | Open a WebSocket (see Realtime above) |
+| POST | `/api/conversations/{id}/cursor` | yes | Move my delivered/read cursor forward: `{kind, seq}` → `{lastDeliveredSeq, lastReadSeq}` (ADR-0007) |
 | GET | `/actuator/health` | no | Health check (status only, no details) |
 
 ---
@@ -206,6 +211,7 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 ## Behaviour Guarantees (each covered by an integration or unit test)
 
 - **Ordering:** each conversation's `seq` is allocated under a row lock on the conversation. Concurrent senders get unique, contiguous sequence numbers.
+- **Cursors:** cursors only move forward and read implies delivered; a stale cursor leaves the row version (`xmin`) unchanged; 8 threads x 25 random updates over 20 rounds always end at the maxima; seq beyond `last_seq`, negative seq and unknown kind give `400` and change nothing; non-member (even with an absurd seq), left participant and unknown conversation give identical `404` (`CursorTest`). Unread counts exclude your own messages and follow the read cursor, in both the list and the single view (`UnreadCountTest`).
 - **Body limit:** 4,000 chars accepted, 4,001 rejected with `400` and nothing stored, over REST and when calling `MessageService` directly (`MessageBodyLimitTest`).
 - **Idempotency:** `(sender_id, client_msg_id)` is unique. A retry with the same conversation and body returns the original message. Reusing the key in another conversation or with a different body returns `409 IDEMPOTENCY_KEY_CONFLICT`. The conversation row is locked and the key checked BEFORE the sequence is incremented, so duplicates never create sequence gaps.
 - **Refresh tokens:** rotation is a single conditional `UPDATE ... WHERE revoked_at IS NULL ... RETURNING`, so concurrent use of one token yields exactly one success. Replaying a revoked token revokes the whole token family, and that revocation is committed even though the request returns 401 (`noRollbackFor = ApiException`). Family revocation updates only still-active rows (at most one per family), so concurrent replays cannot deadlock: exactly one 200, the rest 401, never a 500 (`RefreshReplayDeadlockTest`).
@@ -242,7 +248,8 @@ A socket authenticates once, at the handshake, so it could otherwise outlive the
 - Browser refresh-token storage (HttpOnly cookie plus CSRF/Origin protection versus in-memory) is undecided; decide it in Phase 2 when the React client starts.
 - The 401 response from the security filter has an empty body; it is not yet in the standard error JSON format.
 - Integration tests need Docker. On a machine whose Docker Engine rejects old API versions, Testcontainers 1.20.1 may need a local `~/.docker-java.properties` containing `api.version=1.44`.
-- Unread counts include the sender's own messages, because nothing advances `last_read_seq` yet. Phase 2 (read cursors) owns this.
+- **Read receipts are visible to every participant;** there is no per-user privacy toggle. **"Delivered" is client-reported** (the client says it received the message), not observed by the server.
+- **Cursor fan-out (from 2d-lite step c):** a cursor change is pushed to all participants; clients should debounce cursor frames (send only the highest seq, at most about once per second). Large groups may need server-side coalescing later; there is no server-side cursor rate limit yet.
 - The 5,000-message test is a correctness check on one developer laptop, not a benchmark; no throughput claim is made until Phase 5.
 
 ## What Is Not Yet Implemented

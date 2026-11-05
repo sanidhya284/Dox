@@ -3,6 +3,9 @@ package com.chatplatform.conversation.controller;
 import com.chatplatform.conversation.dto.ConversationResponse;
 import com.chatplatform.conversation.dto.CreateDirectRequest;
 import com.chatplatform.conversation.dto.CreateGroupRequest;
+import com.chatplatform.conversation.dto.CursorRequest;
+import com.chatplatform.conversation.dto.CursorResponse;
+import com.chatplatform.conversation.dto.CursorResult;
 import com.chatplatform.conversation.service.ConversationService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -55,5 +58,15 @@ public class ConversationController {
             @AuthenticationPrincipal UUID currentUserId,
             @PathVariable UUID id) {
         return conversationService.getConversation(id, currentUserId);
+    }
+
+    /** Moves the caller's delivered or read cursor forward (ADR-0007); stale cursors change nothing. */
+    @PostMapping("/{id}/cursor")
+    public CursorResponse advanceCursor(
+            @AuthenticationPrincipal UUID currentUserId,
+            @PathVariable UUID id,
+            @Valid @RequestBody CursorRequest request) {
+        CursorResult result = conversationService.advanceCursor(id, currentUserId, request.kind(), request.seq());
+        return new CursorResponse(result.lastDeliveredSeq(), result.lastReadSeq());
     }
 }

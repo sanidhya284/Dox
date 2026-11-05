@@ -13,7 +13,7 @@ Written 2026-11-03 for Claude Code taking over from a Claude-chat architect + Ge
 | Refresh replay deadlock | Fixed (Section 3a). Merged (PR #4). |
 | Phase 2b-ii (registry, lifetime 4001, theft close 4002; [ADR-0005](adr/0005-connection-registry-and-after-commit-socket-closing.md)) | Done. Merged (PR #5). Follow-ups on branch `phase-2b-ii` after the merge: deterministic thread check in `WsTheftCloseTest`, message body limit, ADR-0004 duplicate merged; these need a new PR. |
 | Phase 2c (send, ack, push; [ADR-0006](adr/0006-websocket-frame-protocol-v1.md)) | Done. Merged (PR #6). The follow-up commit `9994d11` (forged-sender test, limitations) missed the merge and rides on `phase-2d`. |
-| Phase 2d-lite (heartbeats, cursors; [ADR-0007](adr/0007-heartbeats-and-read-cursors.md)) | In progress on branch `phase-2d`. Step (a) heartbeats: done. Step (b) cursors core + unread fix: next. Step (c) cursor over WebSocket: pending. Presence and typing: deferred. |
+| Phase 2d-lite (heartbeats, cursors; [ADR-0007](adr/0007-heartbeats-and-read-cursors.md)) | In progress on branch `phase-2d`. Step (a) heartbeats: done. Step (b) cursors core + unread fix: done. Step (c) cursor over WebSocket: next. Presence and typing: deferred. |
 | Last full local run | See the latest commit message on `phase-2b-ii`; counts are read from the XML there. |
 
 ## 1. First task: verify and tidy git (before any feature work)
@@ -94,7 +94,7 @@ Cause: `revokeFamily` rewrote every row of the family. Concurrent replays of one
 - `@TransactionalEventListener` ignores events published outside a transaction (no push / no theft close).
 - Logout does not close the user's open WebSockets (no session id in the access token). They still close within about 15 minutes (decision 5.1, from 2b-ii).
 - Strict theft detection logs out a legitimately double-submitting client.
-- Unread counts include the sender's own messages until read cursors exist (Phase 2d).
+- Read receipts are visible to all participants (no privacy toggle); "delivered" is client-reported. Cursor pushes fan out to all participants: clients should debounce (highest seq, about once per second); no server-side cursor rate limit; large groups may need coalescing.
 - The 401 from the security filter has an empty body, not the standard error JSON.
 - No per-user rate limit on ticket issuance.
 - The 5,000-message test (100 workers x 50, exactly the contiguous seq range 1..5000, about 17 s on the author's laptop) is a correctness check, not a benchmark; no throughput claim until Phase 5.
