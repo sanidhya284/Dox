@@ -94,8 +94,32 @@ public class MessageService {
 
     @Transactional(readOnly = true)
     public MessagePage getMessages(UUID conversationId, UUID currentUserId, Long beforeSeq, int limit) {
+        return getMessages(conversationId, currentUserId, beforeSeq, null, limit);
+    }
+
+    /**
+     * History paging. {@code before}: newest first (scrolling back). {@code after}: oldest first
+     * (catching up, Phase 3; ADR-0008). Both use limit + 1 for an exact hasMore; nextCursor is set only
+     * while hasMore is true. Membership is checked first (same 404 rule), then the parameters.
+     */
+    @Transactional(readOnly = true)
+    public MessagePage getMessages(UUID conversationId, UUID currentUserId, Long beforeSeq, Long afterSeq, int limit) {
         // IDOR check
         conversationService.requireParticipant(conversationId, currentUserId);
+        if (beforeSeq != null && afterSeq != null) {
+            throw new ApiException(ErrorCode.VALIDATION_ERROR, "Use either before or after, not both");
+        }
+        if (afterSeq != null) {
+            if (afterSeq < 0) {
+                throw new ApiException(ErrorCode.VALIDATION_ERROR, "after must not be negative");
+            }
+            int forwardLimit = Math.max(1, Math.min(100, limit));
+            List<Message> fetchedAfter = messageRepository.findMessagesAfter(conversationId, afterSeq, forwardLimit + 1);
+            boolean more = fetchedAfter.size() > forwardLimit;
+            List<MessageResponse> page = (more ? fetchedAfter.subList(0, forwardLimit) : fetchedAfter)
+                    .stream().map(this::toResponse).toList();
+            return new MessagePage(page, more ? page.getLast().seq() : null, more);
+        }
 
         long cursor = (beforeSeq != null) ? beforeSeq : Long.MAX_VALUE;
         // Clamp limit between 1 and 100

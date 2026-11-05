@@ -46,6 +46,7 @@ public class ConnectionRegistry {
             new ConcurrentHashMap<>();
     private final int sendTimeLimitMs;
     private final int bufferSizeLimitBytes;
+    private final java.util.concurrent.atomic.AtomicLong slowConsumerCloses = new java.util.concurrent.atomic.AtomicLong();
 
     /** Defaults; used by unit tests. */
     public ConnectionRegistry() {
@@ -61,6 +62,11 @@ public class ConnectionRegistry {
         }
         this.sendTimeLimitMs = sendTimeLimitMs;
         this.bufferSizeLimitBytes = bufferSizeLimitBytes;
+    }
+
+    /** Sessions closed with 4003 (slow or broken consumer) since startup. */
+    public long slowConsumerCloses() {
+        return slowConsumerCloses.get();
     }
 
     public int sendTimeLimitMs() {
@@ -150,8 +156,9 @@ public class ConnectionRegistry {
             target.sendMessage(message);
             return true;
         } catch (Exception e) { // SessionLimitExceededException, IOException, IllegalStateException
-            log.warn("WebSocket session {} is a slow or broken consumer ({}); closing with 4003",
-                    target.getId(), e.toString());
+            long total = slowConsumerCloses.incrementAndGet();
+            log.warn("WebSocket session {} is a slow or broken consumer ({}); closing with 4003; {} closed so far. "
+                    + "Clients recover from history.", target.getId(), e.toString(), total);
             closeSlowConsumer(userId, target);
             return false;
         }

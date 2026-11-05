@@ -2,6 +2,7 @@ package com.chatplatform.conversation.service;
 
 import com.chatplatform.conversation.dto.ConversationResponse;
 import com.chatplatform.conversation.dto.ParticipantCursor;
+import com.chatplatform.conversation.dto.ConversationHead;
 import com.chatplatform.conversation.dto.CursorResult;
 import com.chatplatform.conversation.event.CursorAdvancedEvent;
 import org.springframework.context.ApplicationEventPublisher;
@@ -101,7 +102,7 @@ public class ConversationService {
         return new ConversationResponse(
                 conv.id(), conv.type(), conv.title(), participants,
                 unreadCount, conv.lastMessageAt(), conv.createdAt(),
-                me.lastReadSeq(), cursors);
+                me.lastReadSeq(), cursors, conv.lastSeq());
     }
 
     @Transactional(readOnly = true)
@@ -117,7 +118,7 @@ public class ConversationService {
             return new ConversationResponse(
                     conv.id(), conv.type(), conv.title(), participants,
                     unreadCount, conv.lastMessageAt(), conv.createdAt(),
-                    lastReadSeq, null);
+                    lastReadSeq, null, conv.lastSeq());
         }).toList();
     }
     
@@ -179,6 +180,12 @@ public class ConversationService {
                     me.lastDeliveredSeq(), me.lastReadSeq(), originSessionId));
         }
         return new CursorResult(advanced, me.lastDeliveredSeq(), me.lastReadSeq());
+    }
+
+    /** [conversationId, lastSeq] for every conversation the user is active in (anti-entropy, ADR-0008). */
+    @Transactional(readOnly = true)
+    public List<ConversationHead> heads(UUID userId) {
+        return conversationRepository.findHeadsForUser(userId);
     }
 
     public void requireConversationExists(UUID conversationId) {
