@@ -113,6 +113,7 @@ class ConnectionRegistrySendTest {
             verify(slow).close(WsCloseStatuses.SLOW_CONSUMER);
             assertThat(WsCloseStatuses.SLOW_CONSUMER.getCode()).isEqualTo(4003);
             assertThat(registry.hasEntry(slowUser)).as("slow consumer unregistered").isFalse();
+            assertThat(registry.slowConsumerCloses()).as("counted for the INFO/WARN totals").isEqualTo(1);
 
             release.countDown();
             first.get(5, TimeUnit.SECONDS);

@@ -108,4 +108,7 @@ tasks.register('integrationTest', Test) {
     description = 'Runs integration tests that require a running Docker daemon.'
     group = 'verification'
     timeout = java.time.Duration.ofMinutes(10)
+    // ConvergenceTest replay/negative runs: ./gradlew integrationTest -Dconvergence.seed=22 -Dconvergence.bug=NO_DEDUPE
+    System.properties.findAll { it.key.toString().startsWith('convergence.') }
+            .each { k, v -> systemProperty k.toString(), v.toString() }
 }
