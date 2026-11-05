@@ -188,6 +188,16 @@ Runs before every request. Extracts `Authorization: Bearer <token>`, validates t
 - **Rendering:** message bodies are React text only. ESLint forbids `dangerouslySetInnerHTML` and `innerHTML`, and a test renders an HTML payload and finds no element.
 - **Not covered:** the fault-injection convergence test (`ConvergenceTest`) runs against the Java reference client, not this one.
 
+## Deployment topology (Phase 6, ADR-0011)
+- **`deploy/compose.yml`:**
+  - `db` (Postgres 16, a volume, no port);
+  - `app` (the `prod` profile, `mem_limit` 768m, a bash `/dev/tcp` healthcheck, no port);
+  - `web` (Caddy 2.8: automatic TLS, the built UI, and a reverse proxy for `/api/*`, `/ws` and `/actuator/health`; every other `/actuator*` is 404; publishes 80 and 443).
+- **Secrets** come from `deploy/.env` (git-ignored; templates `.env.example` and `.env.local.example`).
+- **Local build:** `compose.build.yml` builds both images from source.
+- **Phase 4:** an override adds `app2` and `redis` and widens `APP_UPSTREAMS`.
+- **Checks:** `deploy/smoke.sh` and the Playwright test in `frontend/e2e/`.
+
 ## Configuration
 
 All environment-specific configuration comes from environment variables.
@@ -307,6 +317,8 @@ A socket authenticates once, at the handshake, so it could otherwise outlive the
 
 - **Rate limits are in memory and per instance** (ADR-0011): two instances double them (Phase 4 moves them to Redis), a fixed window can admit up to 2× the limit across a boundary, users behind one NAT share the per-IP limits, and anyone sharing a victim's IP can use up that victim's login attempts. `GET`s and message sends aren't rate-limited.
 - **A lost refresh response logs the user out:** if the server rotated the token but the response (with its `Set-Cookie`) never reached the browser, the next refresh replays the old token, which revokes the family and closes the user's sockets with `4002` (ADR-0010). Two tabs refreshing at once would do the same; the UI serializes refresh across tabs.
+- **Deploys disconnect everyone:** one app instance restarts on every deploy, so sockets close (`1001`) and clients reconnect and catch up. There's no zero-downtime deploy before Phase 4.
+- **VPS sizing is derived from memory limits** (2 GB recommended for Phase 6, 4 GB for Phase 4), not measured.
 - **The browser UI:** unsent messages live in memory, so a reload loses the outbox (sends that were already acked are safe). It doesn't create conversations, and it shows senders as "You" or a short id (there's no user lookup endpoint). Its sync code is unit-tested, but the convergence-under-faults test covers only the Java reference client.
 - **The demo is public data**, and a changed `DEMO_PASSWORD` doesn't revoke existing demo sessions.
 

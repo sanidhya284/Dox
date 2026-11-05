@@ -1,7 +1,7 @@
 # ADR-0011 — Deployment and Pre-Deploy Hardening (single instance)
 
-**Status:** Accepted (hardening part)  **Date:** 2026-11-06  **Phase:** 6
-The deployment topology, pipeline, rollback and backups are added to this ADR in Phase 6 steps 4 and 5.
+**Status:** Accepted (hardening; images, compose and proxy)  **Date:** 2026-11-06  **Phase:** 6
+The deploy pipeline, rollback and backups (Phase 6 step 5) are added later.
 
 ## Context
 Phase 6 puts the app on the public internet: a browser UI and one VPS that redeploys on every merge to `main`. Until now, nothing limited how often anyone could register, log in or ask for WebSocket tickets, registration was open to anyone, and nothing stopped a production process from running with the dev profile's secrets. This ADR records the controls added **before** the first deploy. It makes no capacity or "production-grade" claims.
@@ -56,7 +56,52 @@ Phase 6 puts the app on the public internet: a browser UI and one VPS that redep
   - `DEMO_PASSWORD` (optional);
   - `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`.
 
+## Decision 5: one VPS, Docker Compose, Caddy in front (images, compose, proxy)
+```
+Internet ──443/80──▶ web (Caddy: TLS, UI files, proxy) ──▶ app:8080 (Spring Boot, prod profile) ──▶ db:5432 (Postgres 16)
+```
+- **Only Caddy publishes ports** (80, 443). The app and Postgres have none; they're reachable only on the compose network.
+- **Images** (built in CI and pushed to GHCR in step 5; locally `compose.build.yml` builds them):
+  - **app** (`backend/Dockerfile`):
+    - built with `-PprodJar`, so `application-dev.yml` and `application-bench.yml` are **not in the jar**; `verifyProdJar` fails the build otherwise, and `smoke.sh` checks the image;
+    - runs as a non-root user on `eclipse-temurin:21-jre`;
+    - with no profile and no configuration it refuses to start: the first fail-closed check to fire is `ws.allowed-origins is not set`, and with only `JWT_SECRET` missing it's `jwt.secret is not set` (both checked by `smoke.sh`);
+    - the builder stage uses the pinned `gradle:8.10.2-jdk21` image, because the wrapper's download timed out inside a Docker build once.
+  - **web** (`deploy/web.Dockerfile`): `caddy:2.8.4-alpine` with the built UI (`/srv`) and `deploy/caddy/Caddyfile`.
+- **Caddy routes:**
+  - `/actuator/health` → app;
+  - every other `/actuator*` → **404** (Prometheus and env stay internal);
+  - `/api/*` and `/ws` → app (WebSocket upgrade included);
+  - everything else → the UI (`try_files` to `index.html`).
+- **Caddy headers:**
+  - HSTS `max-age=31536000` with **no preload** (preload is hard to undo; it's off for `localhost`);
+  - `X-Content-Type-Options: nosniff`;
+  - `Referrer-Policy: no-referrer`;
+  - a strict CSP: `default-src 'self'`, `connect-src 'self' wss://<domain>`, `frame-ancestors 'none'`, no inline scripts.
+- **Logs:** the access log goes to stdout as JSON, with the `ticket` query parameter deleted and the `Cookie`, `Authorization` and `Set-Cookie` headers dropped.
+- **Client IP:** Caddy trusts no upstream proxy, so it **replaces** any client-sent `X-Forwarded-For`. The app trusts that header only from a private-address proxy (Decision 1).
+  - `smoke.sh` sends 21 logins with 21 different spoofed `X-Forwarded-For` values: the 21st gets `429`, so the limit counted the real client.
+  - **Shown capable of failing:** with Caddy told to trust all proxies, the same check fails (`401` instead of `429`).
+- **Postgres:** `postgres:16.4-alpine` with a named volume. Flyway migrates at app startup, so a deploy that brings a new migration applies it before the app reports healthy.
+- **The app's healthcheck:** `bash` with `/dev/tcp` (the JRE image has no curl). `/bin/sh` is dash there, which has no `/dev/tcp`, and that bug was found when the first `compose up` reported the app unhealthy.
+- **Phase 4 is an addition, not a rewrite:** no service sets `container_name`, and Caddy's upstream is `{$APP_UPSTREAMS:app:8080}`. A later `compose.phase4.yml` override adds `redis` and `app2` and sets `APP_UPSTREAMS="app:8080 app2:8080"` (plus `lb_policy`).
+
+## Decision 6: memory limits and the recommended VPS size (derived from limits, not measured)
+- **Limits:**
+  - the app container has `mem_limit: 768m`, and the image sets `-XX:MaxRAMPercentage=75` (heap up to about 576 MB) plus `ExitOnOutOfMemoryError`, so Docker restarts it instead of letting it limp;
+  - Caddy has `128m`;
+  - Postgres has no limit, and the defaults use a few hundred MB at this size.
+- **Recommended for Phase 6: 2 vCPU and 2 GB RAM** (plus 1–2 GB swap). App (768 MB) + Postgres (about 300 MB) + Caddy (128 MB) + OS and Docker (about 300 MB) leave a little headroom. At 1 GB, the JVM and Postgres would compete and the OOM killer would decide.
+- **Phase 4** adds a second app instance (768 MB) and Redis (about 100 MB): plan for **4 GB**.
+- These figures come from the configured limits, not from measurements on a VPS. They are not capacity claims.
+
+## Decision 7: sockets during a deploy
+- **What happens:** with one app instance, a deploy restarts it, so every WebSocket closes. Graceful shutdown (`server.shutdown: graceful`, 30 s `stop_grace_period`) lets in-flight requests finish, and the sockets close with `1001`.
+- **How clients recover:** they reconnect with full-jitter backoff, then subscribe-then-fetch, and resend unacked outbox entries with the same `clientMsgId`. No message is lost or duplicated; the user sees "Reconnecting…" for the restart time (the app needed about 20 s to start in the local stack).
+- **No zero-downtime claim:** two instances in Phase 4 make rolling deploys possible.
+
 ## Consequences
 - Abuse limits exist but are per instance, approximate (fixed window) and keyed by IP behind a trusted proxy. They're not a defence against a distributed attacker.
 - New error codes: `403 REGISTRATION_CLOSED` and `429 RATE_LIMITED`. A new close code, `4007` ([ADR-0006](0006-websocket-frame-protocol-v1.md) Decision 2a).
+- Local stack checks: `deploy/smoke.sh` (exposure, headers, redirect, fail-closed image, cookie flags, a WebSocket through Caddy, the ticket absent from logs, XFF) and one Playwright test (`frontend/e2e/smoke.spec.ts`: demo1 sends, demo2 sees it live, rendered as text; at most 1 retry, reported).
 - Tests: `FixedWindowRateLimiterTest`, `RateLimitTest`, `RegistrationPolicyTest`, `RegistrationPolicyUnitTest`, `SocketCapTest`, `DemoSeedTest`, `ProfileGuardTest`, each with a mutation shown to fail it.

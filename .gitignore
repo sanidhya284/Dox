@@ -28,3 +28,6 @@ Thumbs.db
 
 # Load-harness raw result files (summaries go into docs/BENCHMARKS.md)
 bench-results/
+
+# Compose secrets (Phase 6): never commit; templates are deploy/.env.example and deploy/.env.local.example
+deploy/.env

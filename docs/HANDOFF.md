@@ -24,7 +24,13 @@ Written 2026-11-03 for Claude Code taking over from a Claude-chat architect + Ge
   - the `prod` profile and `ProfileGuard`.
   **2 cookie refresh token: done** (ADR-0010): the refresh token is only in an HttpOnly/Secure/SameSite=Strict cookie `chat_rt` with Path=/api/auth; refresh and logout need an allowed Origin; ConvergenceTest and a tiny load-harness smoke (A 20/s, C 2/s, both VALID) were re-run after the change.
   **3 UI: done** (`frontend/`: Vite + React + TS; the sync client is a TypeScript port of the ReferenceClient; Vitest 36 tests with negative forms; ESLint bans HTML rendering).
-  The next steps are 4 compose + Caddy + smoke + e2e (**then STOP and report**, so the user can do the hand checklist), and 5 the deploy pipeline. |
+  **4 compose stack: done**:
+  - images: app with `-PprodJar`/`verifyProdJar` and `MaxRAMPercentage`; web = Caddy + UI;
+  - `deploy/compose.yml`, plus `compose.build.yml` for local builds;
+  - the Caddyfile (headers, actuator 404, ticket-free logs);
+  - `deploy/smoke.sh`: SMOKE OK, and the XFF check was shown to fail when Caddy trusts all proxies;
+  - Playwright e2e: 1 passed, 0 retries.
+  **STOPPED after step 4 (2026-11-06), as the user asked.** The user now completes the hand checklist below; then step 5 (the deploy pipeline). |
 | Last full local run | See the latest commit message on `phase-2b-ii`; counts are read from the XML there. |
 
 ## 1. First task: verify and tidy git (before any feature work)
@@ -85,6 +91,15 @@ Cause: `revokeFamily` rewrote every row of the family. Concurrent replays of one
   - **Relabel:** all 68 summaries relabelled from their recorded fields (`deploy/bench/relabel.py`; no re-run). The run-time label is kept as `labelAtRun`. 2 outcomes changed (BENCHMARKS.md, "Relabelling").
 - **P5-2. Next experiment: NOT NOW.** Kept as an **optional overnight run:** scenario A with `synchronous_commit=off` **on the bench DB only**, to test whether the commit flush dominates the lock hold. The other two options are recorded in BENCHMARKS.md section 7: more sender sockets, and B at 400–600/s.
 - **P5-3. The hot-row limit: DOCUMENT ONLY.** See ADR-0009 Decision 5 and architecture.md, "Per-conversation serialization". No code.
+
+**Phase 6 hand checklist (the user, before step 5):**
+1. Buy or point a domain; create an A (and AAAA) record to the VPS.
+2. Create the VPS: 2 vCPU / 2 GB RAM recommended (ADR-0011 Decision 6), Ubuntu LTS, Docker Engine + compose plugin. Create a `deploy` user in the `docker` group. The firewall allows only 22, 80 and 443.
+3. Create an SSH key pair for deploys. Put the public key in `~deploy/.ssh/authorized_keys`, and add the private key and the `ssh-keyscan <host>` output as GitHub secrets (`DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_HOST`, `DEPLOY_USER`).
+4. Create `/opt/chat/.env` from `deploy/.env.example` (mode 600), with fresh secrets (`openssl rand -base64 48`).
+5. After the first image push in step 5: make the GHCR packages `dox-app` and `dox-web` public.
+6. Add a free external uptime monitor on `https://<domain>/actuator/health`.
+7. Optionally, an off-site copy of the backups.
 
 ## 6. Remaining Phase 2 plan (each step small enough to test and review)
 - **2b-ii: connection registry + real handler** (design: [ADR-0005](adr/0005-connection-registry-and-after-commit-socket-closing.md); plan approved 2026-11-04). Three steps, one commit each:

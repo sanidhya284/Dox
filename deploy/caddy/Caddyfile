@@ -1,0 +1,63 @@
+# Caddy: TLS terminator, static UI server and reverse proxy (ADR-0011).
+# Exposes only: the UI, /api/*, /ws and /actuator/health. Every other /actuator path is 404.
+# Environment (set by compose): DOMAIN, APP_UPSTREAMS (default "app:8080"; Phase 4 adds a second instance),
+# HSTS_SNIPPET ("hsts" in production, "nohsts" for local https://localhost so the browser doesn't pin localhost).
+
+(hsts) {
+	# No preload: this is a demo domain, and preload is hard to undo.
+	header Strict-Transport-Security "max-age=31536000"
+}
+
+(nohsts) {
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Access log on stdout, WITHOUT secrets: the one-time WebSocket ticket in /ws?ticket=... is deleted from
+	# the logged URI; Cookie, Authorization and Set-Cookie are dropped.
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					delete ticket
+				}
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+				resp_headers>Set-Cookie delete
+			}
+		}
+	}
+
+	import {$HSTS_SNIPPET:hsts}
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		# Message bodies render as text; the CSP is defence in depth against any HTML injection.
+		Content-Security-Policy "default-src 'self'; connect-src 'self' wss://{$DOMAIN}; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+		-Server
+	}
+
+	# Caddy replaces any client-sent X-Forwarded-For with the real peer address (it trusts no upstream proxy),
+	# so the app's per-IP rate limits can't be dodged by spoofing the header (smoke.sh checks this).
+	handle /actuator/health {
+		reverse_proxy {$APP_UPSTREAMS:app:8080}
+	}
+	handle /actuator* {
+		respond 404
+	}
+	handle /api/* {
+		reverse_proxy {$APP_UPSTREAMS:app:8080}
+	}
+	handle /ws {
+		reverse_proxy {$APP_UPSTREAMS:app:8080}
+	}
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

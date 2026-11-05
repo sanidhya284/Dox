@@ -15,7 +15,7 @@ A real-time chat backend built as a learning project for backend engineering: a 
 | 2e: React UI (presence and typing deferred) | Minimal UI done in Phase 6 (`frontend/`) |
 | 3: reliable delivery and recovery (catch-up APIs, reference client, convergence under faults) | Done (PR open) |
 | 5-lite: metrics, load harness, one measured bottleneck ([ADR-0009](docs/adr/0009-observability-and-measurement.md)) | Done (PR open): metrics, load harness, measured on one laptop (below) |
-| 6: browser UI + auto-deploy (single instance; [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md)) | In progress: steps 1 (pre-deploy hardening), 2 (refresh token in an HttpOnly cookie) and 3 (browser UI) done |
+| 6: browser UI + auto-deploy (single instance; [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md)) | In progress: steps 1 (pre-deploy hardening), 2 (refresh token in an HttpOnly cookie) 3 (browser UI) and 4 (compose stack + Caddy, smoke and e2e) done; 5 (deploy pipeline) next |
 | 4, 7 onward: multi-instance, outbox, ... | Not started |
 
 Details and the next steps: [docs/HANDOFF.md](docs/HANDOFF.md).
@@ -54,6 +54,19 @@ Optional: `WS_MAX_SOCKETS_PER_USER` (default `10`) caps open sockets per user; t
 Metrics: `/actuator/prometheus` needs HTTP Basic as user `metrics` with `METRICS_PASSWORD` (at least 16 characters; without it scraping is disabled). The `dev` profile sets a dev-only password. Basic sends the password on every request, so use TLS in production. `/actuator/health` stays public. Application meters are named `chat.*` (sends, acks, sockets, closes, tickets, cursors, heads, dropped pushes); see [architecture.md, Metrics](docs/architecture.md#metrics-adr-0009).
 
 All configuration: [architecture.md, Configuration](docs/architecture.md#configuration).
+
+### The whole stack in Docker (as deployed)
+Postgres, the app (`prod` profile) and Caddy (TLS + UI + proxy) on https://localhost (Caddy's local CA, so your browser warns once):
+
+```bash
+cd deploy
+cp .env.local.example .env                                   # local-only values; .env is git-ignored
+docker compose -f compose.yml -f compose.build.yml up -d --build
+cd .. && deploy/smoke.sh                                     # exposure, headers, logs, fail-closed image, XFF
+cd frontend && npx playwright install chromium && npm run e2e   # demo1 sends, demo2 sees it live
+```
+
+Log in as `demo1` / `local-demo-password`. Stop the stack with `docker compose -f compose.yml down` (add `-v` to wipe its database). It needs ports 80 and 443 free. How it's put together: [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md).
 
 ### The browser UI (development)
 Prerequisites: Node 22 (npm 10). With the backend running as above (`dev` profile on :8080):
