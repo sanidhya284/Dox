@@ -3,6 +3,8 @@ package com.chatplatform.realtime.websocket.protocol;
 import com.chatplatform.message.dto.MessageResponse;
 import com.chatplatform.realtime.websocket.WsCloseStatuses;
 import com.chatplatform.realtime.websocket.protocol.Frames.AckFrame;
+import com.chatplatform.realtime.websocket.protocol.Frames.CursorCommand;
+import com.chatplatform.realtime.websocket.protocol.Frames.CursorFrame;
 import com.chatplatform.realtime.websocket.protocol.Frames.ErrorFrame;
 import com.chatplatform.realtime.websocket.protocol.Frames.MessageFrame;
 import com.chatplatform.realtime.websocket.protocol.Frames.Parsed;
@@ -64,10 +66,32 @@ public class FrameCodec {
         if (type == null || !type.isTextual()) {
             return violation(CloseStatus.BAD_DATA);
         }
-        if (!"send".equals(type.textValue())) {
-            return violation(WsCloseStatuses.UNKNOWN_FRAME_TYPE);
+        return switch (type.textValue()) {
+            case "send" -> parseSend(root);
+            case "cursor" -> parseCursor(root);
+            default -> violation(WsCloseStatuses.UNKNOWN_FRAME_TYPE);
+        };
+    }
+
+    /**
+     * {@code {"v":1,"type":"cursor","conversationId","kind","seq"}} (ADR-0007). There is no clientMsgId,
+     * so errors carry {@code clientMsgId: null}. Only shapes are checked here; the kind's value and the
+     * seq range are checked by ConversationService after membership.
+     */
+    private Parsed parseCursor(JsonNode root) {
+        UUID conversationId = uuidOrNull(root.get("conversationId"));
+        if (conversationId == null) {
+            return new Rejected(null, VALIDATION_ERROR, "conversationId must be a UUID");
         }
-        return parseSend(root);
+        JsonNode kind = root.get("kind");
+        if (kind == null || !kind.isTextual()) {
+            return new Rejected(null, VALIDATION_ERROR, "kind must be \"delivered\" or \"read\"");
+        }
+        JsonNode seq = root.get("seq");
+        if (seq == null || !seq.isIntegralNumber() || !seq.canConvertToLong()) {
+            return new Rejected(null, VALIDATION_ERROR, "seq must be an integer");
+        }
+        return new CursorCommand(conversationId, kind.textValue(), seq.longValue());
     }
 
     private Parsed parseSend(JsonNode root) {
@@ -115,6 +139,10 @@ public class FrameCodec {
 
     public String message(MessageResponse m) {
         return write(MessageFrame.of(m));
+    }
+
+    public String cursor(UUID conversationId, UUID userId, long lastDeliveredSeq, long lastReadSeq) {
+        return write(CursorFrame.of(conversationId, userId, lastDeliveredSeq, lastReadSeq));
     }
 
     public String error(Rejected rejected) {

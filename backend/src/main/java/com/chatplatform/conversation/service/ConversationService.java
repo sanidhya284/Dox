@@ -3,6 +3,8 @@ package com.chatplatform.conversation.service;
 import com.chatplatform.conversation.dto.ConversationResponse;
 import com.chatplatform.conversation.dto.ParticipantCursor;
 import com.chatplatform.conversation.dto.CursorResult;
+import com.chatplatform.conversation.event.CursorAdvancedEvent;
+import org.springframework.context.ApplicationEventPublisher;
 import com.chatplatform.conversation.dto.CreateDirectRequest;
 import com.chatplatform.conversation.dto.CreateGroupRequest;
 import com.chatplatform.conversation.repository.Conversation;
@@ -24,14 +26,17 @@ public class ConversationService {
 
     private final ConversationRepository conversationRepository;
     private final ParticipantRepository participantRepository;
+    private final ApplicationEventPublisher events;
     private final UserService userService;
 
     public ConversationService(ConversationRepository conversationRepository,
                                ParticipantRepository participantRepository,
-                               UserService userService) {
+                               UserService userService,
+                               ApplicationEventPublisher events) {
         this.conversationRepository = conversationRepository;
         this.participantRepository = participantRepository;
         this.userService = userService;
+        this.events = events;
     }
 
     @Transactional
@@ -139,6 +144,16 @@ public class ConversationService {
      */
     @Transactional
     public CursorResult advanceCursor(UUID conversationId, UUID userId, String kind, long seq) {
+        return advanceCursor(conversationId, userId, kind, seq, null);
+    }
+
+    /**
+     * Same as {@link #advanceCursor(UUID, UUID, String, long)}; {@code originSessionId} is the WebSocket
+     * session the update came from (null for REST). If a cursor advanced, publishes
+     * {@link CursorAdvancedEvent} (delivered after commit by realtime).
+     */
+    @Transactional
+    public CursorResult advanceCursor(UUID conversationId, UUID userId, String kind, long seq, String originSessionId) {
         requireParticipant(conversationId, userId);
         boolean read = "read".equals(kind);
         if (!read && !"delivered".equals(kind)) {
@@ -158,7 +173,12 @@ public class ConversationService {
                 : participantRepository.advanceDelivered(conversationId, userId, seq);
         ConversationParticipant me = participantRepository.find(conversationId, userId)
                 .orElseThrow(() -> new ApiException(ErrorCode.CONVERSATION_NOT_FOUND));
-        return new CursorResult(updated == 1, me.lastDeliveredSeq(), me.lastReadSeq());
+        boolean advanced = updated == 1;
+        if (advanced) {
+            events.publishEvent(new CursorAdvancedEvent(conversationId, userId,
+                    me.lastDeliveredSeq(), me.lastReadSeq(), originSessionId));
+        }
+        return new CursorResult(advanced, me.lastDeliveredSeq(), me.lastReadSeq());
     }
 
     public void requireConversationExists(UUID conversationId) {

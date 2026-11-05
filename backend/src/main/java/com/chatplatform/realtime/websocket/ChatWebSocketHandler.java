@@ -6,11 +6,13 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.stereotype.Component;
+import com.chatplatform.conversation.service.ConversationService;
 import com.chatplatform.message.dto.MessageResponse;
 import com.chatplatform.message.dto.SendMessageRequest;
 import com.chatplatform.message.service.MessageService;
 import com.chatplatform.realtime.websocket.protocol.FrameCodec;
 import com.chatplatform.shared.exception.ApiException;
+import com.chatplatform.realtime.websocket.protocol.Frames.CursorCommand;
 import com.chatplatform.realtime.websocket.protocol.Frames.Parsed;
 import com.chatplatform.realtime.websocket.protocol.Frames.Rejected;
 import com.chatplatform.realtime.websocket.protocol.Frames.SendCommand;
@@ -49,6 +51,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private final FrameCodec codec;
     private final MessageService messageService;
     private final HeartbeatMonitor heartbeat;
+    private final ConversationService conversationService;
 
     public ChatWebSocketHandler(
             ConnectionRegistry registry,
@@ -56,12 +59,14 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             @Value("${ws.session.max-lifetime:#{null}}") Duration maxLifetime,
             FrameCodec codec,
             MessageService messageService,
-            HeartbeatMonitor heartbeat) {
+            HeartbeatMonitor heartbeat,
+            ConversationService conversationService) {
         this.registry = registry;
         this.scheduler = scheduler;
         this.codec = codec;
         this.messageService = messageService;
         this.heartbeat = heartbeat;
+        this.conversationService = conversationService;
         if (maxLifetime == null || maxLifetime.isZero() || maxLifetime.isNegative()) {
             throw new IllegalStateException("ws.session.max-lifetime must be set to a positive duration "
                     + "(ISO-8601, e.g. PT15M; env WS_SESSION_MAX_LIFETIME), got: " + maxLifetime);
@@ -123,6 +128,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             case Violation v -> session.close(v.status());
             case Rejected r -> reply(session, codec.error(r));
             case SendCommand cmd -> handleSend(session, cmd);
+            case CursorCommand cmd -> handleCursor(session, cmd);
         }
     }
 
@@ -147,6 +153,23 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             reply = codec.errorFor(cmd.clientMsgId(), e);
         }
         reply(session, reply);
+    }
+
+    /**
+     * Cursor frame (ADR-0007): same checks and guarded update as the REST endpoint. No reply on success
+     * (the pushed cursor frame to the user's other sockets is the confirmation); any error becomes an
+     * error frame with clientMsgId null.
+     */
+    private void handleCursor(WebSocketSession session, CursorCommand cmd) {
+        UUID userId = (UUID) session.getAttributes().get(WsAuthHandshakeInterceptor.ATTR_USER_ID);
+        try {
+            conversationService.advanceCursor(cmd.conversationId(), userId, cmd.kind(), cmd.seq(), session.getId());
+        } catch (ApiException e) {
+            reply(session, codec.errorFor(null, e));
+        } catch (RuntimeException e) {
+            log.error("WebSocket cursor update failed on session {}", session.getId(), e);
+            reply(session, codec.errorFor(null, e));
+        }
     }
 
     /**

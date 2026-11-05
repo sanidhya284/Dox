@@ -13,7 +13,7 @@ Written 2026-11-03 for Claude Code taking over from a Claude-chat architect + Ge
 | Refresh replay deadlock | Fixed (Section 3a). Merged (PR #4). |
 | Phase 2b-ii (registry, lifetime 4001, theft close 4002; [ADR-0005](adr/0005-connection-registry-and-after-commit-socket-closing.md)) | Done. Merged (PR #5). Follow-ups on branch `phase-2b-ii` after the merge: deterministic thread check in `WsTheftCloseTest`, message body limit, ADR-0004 duplicate merged; these need a new PR. |
 | Phase 2c (send, ack, push; [ADR-0006](adr/0006-websocket-frame-protocol-v1.md)) | Done. Merged (PR #6). The follow-up commit `9994d11` (forged-sender test, limitations) missed the merge and rides on `phase-2d`. |
-| Phase 2d-lite (heartbeats, cursors; [ADR-0007](adr/0007-heartbeats-and-read-cursors.md)) | In progress on branch `phase-2d`. Step (a) heartbeats: done. Step (b) cursors core + unread fix: done. Step (c) cursor over WebSocket: next. Presence and typing: deferred. |
+| Phase 2d-lite (heartbeats, cursors; [ADR-0007](adr/0007-heartbeats-and-read-cursors.md)) | Done on branch `phase-2d` (steps a, b, c); PR into `main` open, not merged. Presence and typing: deferred. Next: 2e (React UI). |
 | Last full local run | See the latest commit message on `phase-2b-ii`; counts are read from the XML there. |
 
 ## 1. First task: verify and tidy git (before any feature work)

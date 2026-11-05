@@ -15,11 +15,26 @@ public final class Frames {
     }
 
     /** Result of parsing one inbound text frame. */
-    public sealed interface Parsed permits SendCommand, Rejected, Violation {
+    public sealed interface Parsed permits SendCommand, CursorCommand, Rejected, Violation {
     }
 
     /** A well-formed, valid {@code send} frame. */
     public record SendCommand(UUID conversationId, UUID clientMsgId, String body) implements Parsed {
+    }
+
+    /**
+     * A well-formed {@code cursor} frame (ADR-0007). {@code kind} and the range of {@code seq} are
+     * validated by ConversationService after the membership check.
+     */
+    public record CursorCommand(UUID conversationId, String kind, long seq) implements Parsed {
+    }
+
+    /** Pushed when a participant's cursor advanced. */
+    public record CursorFrame(int v, String type, UUID conversationId, UUID userId,
+                              long lastDeliveredSeq, long lastReadSeq) {
+        public static CursorFrame of(UUID conversationId, UUID userId, long lastDeliveredSeq, long lastReadSeq) {
+            return new CursorFrame(VERSION, "cursor", conversationId, userId, lastDeliveredSeq, lastReadSeq);
+        }
     }
 
     /** Well-formed envelope but invalid content: answer with an error frame, keep the socket open. */
