@@ -1,0 +1,44 @@
+# BENCHMARK profile (Phase 5-lite, docs/BENCHMARKS.md). LOCAL MEASUREMENT ONLY, never production.
+# Run: SPRING_PROFILES_ACTIVE=bench java -jar build/libs/<app>.jar  (Hikari pool: BENCH_HIKARI_POOL)
+spring:
+  datasource:
+    # The dedicated benchmark database (deploy/bench), never the dev one on 5432.
+    url: jdbc:postgresql://localhost:55432/chat_bench
+    username: chat_bench
+    password: chat_bench
+    hikari:
+      maximum-pool-size: ${BENCH_HIKARI_POOL:10}
+
+# INFO only: the base config logs com.chatplatform at DEBUG, and no JDBC logging, because log volume
+# would be measured as server cost.
+logging:
+  level:
+    root: INFO
+    com.chatplatform: INFO
+    org.springframework.jdbc: INFO
+
+jwt:
+  # LOCAL MEASUREMENT ONLY. Never use in production.
+  secret: "bench-only-secret-key-that-is-at-least-40-bytes-long-98765"
+
+ws:
+  allowed-origins: http://localhost:3000
+  session:
+    # Above any single run (warm-up + window + drain), so no 4001 lifetime close lands inside a run.
+    max-lifetime: PT2H
+
+metrics:
+  # LOCAL MEASUREMENT ONLY. Password of the 'metrics' user (HTTP Basic).
+  password: bench-only-metrics-password-123
+
+# The harness records the app's effective configuration in each result file. /actuator/env sits
+# behind the same metrics-user chain as /actuator/prometheus; values are shown only to that user.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus,metrics,env
+  endpoint:
+    env:
+      show-values: when-authorized
+      roles: METRICS

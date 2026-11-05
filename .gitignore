@@ -25,3 +25,6 @@ Thumbs.db
 
 # Claude Code worktrees (local, per-session checkouts)
 .claude/worktrees/
+
+# Load-harness raw result files (summaries go into docs/BENCHMARKS.md)
+bench-results/

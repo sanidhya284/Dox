@@ -12,6 +12,8 @@ import com.chatplatform.message.dto.SendMessageRequest;
 import com.chatplatform.message.service.MessageService;
 import com.chatplatform.realtime.websocket.protocol.FrameCodec;
 import com.chatplatform.shared.exception.ApiException;
+import com.chatplatform.shared.metrics.ChatMetrics;
+import io.micrometer.core.instrument.Timer;
 import com.chatplatform.realtime.websocket.protocol.Frames.CursorCommand;
 import com.chatplatform.realtime.websocket.protocol.Frames.Parsed;
 import com.chatplatform.realtime.websocket.protocol.Frames.Rejected;
@@ -52,6 +54,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private final MessageService messageService;
     private final HeartbeatMonitor heartbeat;
     private final ConversationService conversationService;
+    private final ChatMetrics metrics;
 
     public ChatWebSocketHandler(
             ConnectionRegistry registry,
@@ -60,7 +63,9 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             FrameCodec codec,
             MessageService messageService,
             HeartbeatMonitor heartbeat,
-            ConversationService conversationService) {
+            ConversationService conversationService,
+            ChatMetrics metrics) {
+        this.metrics = metrics;
         this.registry = registry;
         this.scheduler = scheduler;
         this.codec = codec;
@@ -139,13 +144,16 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
      * carrying its clientMsgId instead, and nothing is persisted.
      */
     private void handleSend(WebSocketSession session, SendCommand cmd) throws IOException {
+        Timer.Sample ackTimer = Timer.start(); // server side of send-to-ack (ADR-0009); acks only
         UUID userId = (UUID) session.getAttributes().get(WsAuthHandshakeInterceptor.ATTR_USER_ID);
         String reply;
+        boolean acked = false;
         try {
             MessageResponse saved = messageService.sendMessage(
                     cmd.conversationId(), userId, new SendMessageRequest(cmd.clientMsgId(), cmd.body()),
                     session.getId());
             reply = codec.ack(saved);
+            acked = true;
         } catch (ApiException e) {
             reply = codec.errorFor(cmd.clientMsgId(), e);
         } catch (RuntimeException e) {
@@ -153,6 +161,9 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             reply = codec.errorFor(cmd.clientMsgId(), e);
         }
         reply(session, reply);
+        if (acked) {
+            ackTimer.stop(metrics.sendAckTimer());
+        }
     }
 
     /**
@@ -196,6 +207,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        metrics.wsClosed(status.getCode()); // called once per session, with the code that closed it
         unregister(session);
     }
 

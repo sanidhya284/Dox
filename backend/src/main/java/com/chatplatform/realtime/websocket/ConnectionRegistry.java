@@ -98,6 +98,15 @@ public class ConnectionRegistry {
         });
     }
 
+    /** Registered sessions across all users (the chat.ws.sessions gauge; a moment's snapshot). */
+    public int sessionCount() {
+        int n = 0;
+        for (Map<String, ConcurrentWebSocketSessionDecorator> sessions : sessionsByUser.values()) {
+            n += sessions.size();
+        }
+        return n;
+    }
+
     /** Ids of the user's currently registered sessions (a snapshot). */
     public Set<String> sessionIdsFor(UUID userId) {
         Map<String, ConcurrentWebSocketSessionDecorator> sessions = sessionsByUser.get(userId);

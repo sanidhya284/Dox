@@ -66,6 +66,8 @@ dependencies {
     // ── Observability: Spring Boot Actuator ───────────────────────────────
     // Exposes /actuator/health and other management endpoints out of the box.
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    // Phase 5-lite: Prometheus scrape format for Micrometer (version managed by Spring Boot). ADR-0009.
+    runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
 
     // ── Testing ────────────────────────────────────────────────────────────
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
@@ -79,6 +81,9 @@ dependencies {
     testImplementation 'org.testcontainers:junit-jupiter'
     testImplementation 'org.testcontainers:postgresql'
     testImplementation 'org.apache.httpcomponents.client5:httpclient5'
+
+    // Load harness latency histograms (Phase 5-lite; same version Micrometer already brings in).
+    testImplementation 'org.hdrhistogram:HdrHistogram:2.2.2'
 }
 
 dependencyManagement {
@@ -111,4 +116,27 @@ tasks.register('integrationTest', Test) {
     // ConvergenceTest replay/negative runs: ./gradlew integrationTest -Dconvergence.seed=22 -Dconvergence.bug=NO_DEDUPE
     System.properties.findAll { it.key.toString().startsWith('convergence.') }
             .each { k, v -> systemProperty k.toString(), v.toString() }
+}
+
+// ── Load harness (Phase 5-lite; docs/BENCHMARKS.md) ──────────────────────────────
+// On demand only: not part of check, test or integrationTest, never in CI. Targets a separately started
+// app (bench profile) and the dedicated benchmark database. Arguments are key=value pairs, e.g.
+//   ./gradlew loadTest -Pload.args="scenario=A rate=50 warmup=PT30S window=PT60S out=../bench-results"
+tasks.register('loadTest', JavaExec) {
+    description = 'Runs one load-harness scenario against a running app (see docs/BENCHMARKS.md).'
+    group = 'benchmark'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.chatplatform.load.LoadMain'
+    args = (project.findProperty('load.args') ?: '').toString().tokenize(' ')
+    jvmArgs = ['-Xms512m', '-Xmx512m', '-XX:+UseG1GC']
+}
+
+// Re-derive run outcomes from stored summaries with the current classifier (no re-run):
+//   python3 deploy/bench/relabel.py   (calls this task, then writes the labels back)
+tasks.register('benchRelabel', JavaExec) {
+    description = 'Prints re-derived outcomes for stored run summaries (see docs/BENCHMARKS.md).'
+    group = 'benchmark'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.chatplatform.load.Relabel'
+    args = [(project.findProperty('relabel.dir') ?: '../docs/benchmarks').toString()]
 }

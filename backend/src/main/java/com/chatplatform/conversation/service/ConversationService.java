@@ -14,6 +14,8 @@ import com.chatplatform.conversation.repository.ConversationRepository;
 import com.chatplatform.conversation.repository.ParticipantRepository;
 import com.chatplatform.shared.exception.ApiException;
 import com.chatplatform.shared.exception.ErrorCode;
+import com.chatplatform.shared.metrics.ChatMetrics;
+import com.chatplatform.shared.metrics.ChatMetrics.CursorOutcome;
 import com.chatplatform.user.service.UserService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -29,15 +31,18 @@ public class ConversationService {
     private final ParticipantRepository participantRepository;
     private final ApplicationEventPublisher events;
     private final UserService userService;
+    private final ChatMetrics metrics;
 
     public ConversationService(ConversationRepository conversationRepository,
                                ParticipantRepository participantRepository,
                                UserService userService,
-                               ApplicationEventPublisher events) {
+                               ApplicationEventPublisher events,
+                               ChatMetrics metrics) {
         this.conversationRepository = conversationRepository;
         this.participantRepository = participantRepository;
         this.userService = userService;
         this.events = events;
+        this.metrics = metrics;
     }
 
     @Transactional
@@ -175,6 +180,7 @@ public class ConversationService {
         ConversationParticipant me = participantRepository.find(conversationId, userId)
                 .orElseThrow(() -> new ApiException(ErrorCode.CONVERSATION_NOT_FOUND));
         boolean advanced = updated == 1;
+        metrics.cursorUpdate(advanced ? CursorOutcome.ADVANCED : CursorOutcome.STALE);
         if (advanced) {
             events.publishEvent(new CursorAdvancedEvent(conversationId, userId,
                     me.lastDeliveredSeq(), me.lastReadSeq(), originSessionId));
@@ -185,6 +191,7 @@ public class ConversationService {
     /** [conversationId, lastSeq] for every conversation the user is active in (anti-entropy, ADR-0008). */
     @Transactional(readOnly = true)
     public List<ConversationHead> heads(UUID userId) {
+        metrics.headsRequest();
         return conversationRepository.findHeadsForUser(userId);
     }
 

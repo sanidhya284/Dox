@@ -18,6 +18,9 @@ import java.util.Optional;
 import java.util.UUID;
 import com.chatplatform.shared.exception.ApiException;
 import com.chatplatform.shared.exception.ErrorCode;
+import com.chatplatform.shared.metrics.ChatMetrics;
+import com.chatplatform.shared.metrics.ChatMetrics.Channel;
+import com.chatplatform.shared.metrics.ChatMetrics.SendOutcome;
 
 @Service
 public class MessageService {
@@ -26,15 +29,18 @@ public class MessageService {
     private final ConversationRepository conversationRepository;
     private final ConversationService conversationService;
     private final ApplicationEventPublisher events;
+    private final ChatMetrics metrics;
 
     public MessageService(MessageRepository messageRepository,
                           ConversationRepository conversationRepository,
                           ConversationService conversationService,
-                          ApplicationEventPublisher events) {
+                          ApplicationEventPublisher events,
+                          ChatMetrics metrics) {
         this.messageRepository = messageRepository;
         this.conversationRepository = conversationRepository;
         this.conversationService = conversationService;
         this.events = events;
+        this.metrics = metrics;
     }
 
     @Transactional
@@ -46,10 +52,24 @@ public class MessageService {
      * Same as {@link #sendMessage(UUID, UUID, SendMessageRequest)}; {@code originSessionId} is the
      * WebSocket session the send came from (null for REST), carried on the push event so the origin
      * socket is not pushed its own message (it gets the ack).
+     *
+     * <p>Metrics (ADR-0009): {@code chat.messages.sent}, channel ws when there is an origin session,
+     * else rest. Created and duplicate are counted after commit; rejected when this method refuses.
      */
     @Transactional
     public MessageResponse sendMessage(UUID conversationId, UUID senderId, SendMessageRequest request,
                                        String originSessionId) {
+        Channel channel = (originSessionId == null) ? Channel.REST : Channel.WS;
+        try {
+            return send(conversationId, senderId, request, originSessionId, channel);
+        } catch (ApiException e) {
+            metrics.messageSent(channel, SendOutcome.REJECTED);
+            throw e;
+        }
+    }
+
+    private MessageResponse send(UUID conversationId, UUID senderId, SendMessageRequest request,
+                                 String originSessionId, Channel channel) {
         // 0. Body length: enforced here too, so callers without REST validation (WebSocket, 2c) share it.
         //    Pure input validation, checked before membership, so it reveals nothing about the conversation.
         if (request.body() != null && request.body().length() > MessageLimits.MAX_BODY_CHARS) {
@@ -68,6 +88,7 @@ public class MessageService {
         if (existing.isPresent()) {
             Message existingMsg = existing.get();
             if (existingMsg.conversationId().equals(conversationId) && existingMsg.body().equals(request.body())) {
+                metrics.messageSent(channel, SendOutcome.DUPLICATE);
                 return toResponse(existingMsg);
             } else {
                 throw new ApiException(ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
@@ -86,6 +107,7 @@ public class MessageService {
             // Only a NEW row is announced (duplicates returned above are never pushed again).
             // Listeners deliver it after commit (realtime: MessagePushListener).
             events.publishEvent(new MessageCreatedEvent(created, originSessionId));
+            metrics.messageSent(channel, SendOutcome.CREATED);
             return created;
         } else {
             throw new ApiException(ErrorCode.IDEMPOTENCY_KEY_CONFLICT);

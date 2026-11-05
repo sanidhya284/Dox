@@ -5,6 +5,7 @@ import com.chatplatform.conversation.service.ConversationService;
 import com.chatplatform.message.dto.MessageResponse;
 import com.chatplatform.message.event.MessageCreatedEvent;
 import com.chatplatform.realtime.websocket.protocol.FrameCodec;
+import com.chatplatform.shared.metrics.ChatMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -41,9 +42,12 @@ public class MessagePushListener {
     private final FrameCodec codec;
     private final ThreadPoolExecutor pushExecutor;
     private final AtomicLong droppedPushes = new AtomicLong();
+    private final ChatMetrics metrics;
 
     public MessagePushListener(ConnectionRegistry registry, ConversationService conversationService, FrameCodec codec,
-                               @Qualifier(RealtimeSchedulingConfig.WS_PUSH_EXECUTOR) ThreadPoolExecutor pushExecutor) {
+                               @Qualifier(RealtimeSchedulingConfig.WS_PUSH_EXECUTOR) ThreadPoolExecutor pushExecutor,
+                               ChatMetrics metrics) {
+        this.metrics = metrics;
         this.registry = registry;
         this.conversationService = conversationService;
         this.codec = codec;
@@ -57,6 +61,7 @@ public class MessagePushListener {
             pushExecutor.execute(() -> push(message, event.originSessionId()));
         } catch (RejectedExecutionException e) {
             long total = droppedPushes.incrementAndGet();
+            metrics.pushDropped();
             log.warn("Push queue full: dropped push of message {} (conversation {}); {} dropped so far. "
                     + "Clients recover from history.", message.id(), message.conversationId(), total);
         }
@@ -73,6 +78,7 @@ public class MessagePushListener {
             pushExecutor.execute(() -> pushCursor(event));
         } catch (RejectedExecutionException e) {
             long total = droppedPushes.incrementAndGet();
+            metrics.pushDropped();
             log.warn("Push queue full: dropped cursor push for user {} in conversation {}; {} dropped so far.",
                     event.userId(), event.conversationId(), total);
         }

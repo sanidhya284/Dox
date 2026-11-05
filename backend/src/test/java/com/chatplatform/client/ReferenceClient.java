@@ -82,6 +82,20 @@ public final class ReferenceClient implements AutoCloseable {
         }
     }
 
+    /**
+     * Load-harness hook (Phase 5-lite): callbacks on the client's loop thread with System.nanoTime()
+     * stamps. Receive stamps are taken when the socket handler gets the frame, before the loop queue.
+     * Observing changes nothing about the client's behaviour; the default does nothing.
+     */
+    public interface Observer {
+        /** A send frame was written; {@code previousAttempts} > 0 means a resend (ack timeout, reconnect, retryable error). */
+        default void onFrameSent(UUID clientMsgId, String body, int previousAttempts, long nanos) { }
+        default void onAck(Msg msg, long receivedNanos) { }
+        default void onPush(Msg msg, long receivedNanos) { }
+        default void onOutboxFull(UUID conversationId, String body) { }
+        Observer NONE = new Observer() { };
+    }
+
     /** Client-side fault hook (Phase 3 step 4); the default injects nothing. */
     public interface Faults {
         default boolean duplicateSend() { return false; }
@@ -111,6 +125,7 @@ public final class ReferenceClient implements AutoCloseable {
     private final Backoff backoff;
     private final Outbox outbox;
     private volatile Faults faults = Faults.NONE;
+    private volatile Observer observer = Observer.NONE;
 
     // ── auth (any thread) ──
     private volatile String accessToken;
@@ -174,6 +189,24 @@ public final class ReferenceClient implements AutoCloseable {
             e.ifPresent(x -> flushDue());
             return e.map(Outbox.Entry::clientMsgId);
         });
+    }
+
+    /**
+     * Non-blocking send for the load harness: queued to the loop thread, which enqueues it in the
+     * outbox and flushes as {@link #send} does. A full outbox is reported to the observer.
+     */
+    public void sendAsync(UUID conversationId, String body) {
+        post(() -> {
+            if (outbox.enqueue(conversationId, body).isPresent()) {
+                flushDue();
+            } else {
+                observer.onOutboxFull(conversationId, body);
+            }
+        });
+    }
+
+    public void setObserver(Observer observer) {
+        this.observer = (observer == null) ? Observer.NONE : observer;
     }
 
     /** The client's history for a conversation, ordered by seq. */
@@ -491,6 +524,7 @@ public final class ReferenceClient implements AutoCloseable {
                 sleep(delay);
             }
             sendFrame(frame);
+            observer.onFrameSent(toSend.clientMsgId(), toSend.body(), toSend.attempts(), now());
             if (faults.duplicateSend()) {
                 sendFrame(frame); // same clientMsgId twice: the server must store one row
             }
@@ -522,7 +556,8 @@ public final class ReferenceClient implements AutoCloseable {
         @Override
         protected void handleTextMessage(WebSocketSession s, TextMessage message) {
             String text = message.getPayload();
-            post(() -> onFrame(text, gen));
+            long receivedNanos = now();
+            post(() -> onFrame(text, gen, receivedNanos));
         }
 
         @Override
@@ -532,6 +567,10 @@ public final class ReferenceClient implements AutoCloseable {
     }
 
     private void onFrame(String text, int gen) {
+        onFrame(text, gen, now());
+    }
+
+    private void onFrame(String text, int gen, long receivedNanos) {
         if (gen != generation) {
             return; // from an old socket
         }
@@ -542,15 +581,19 @@ public final class ReferenceClient implements AutoCloseable {
                     return;
                 }
                 UUID cmid = UUID.fromString(f.get("clientMsgId").asText());
-                outbox.acked(cmid).ifPresent(entry -> merge(new Msg(
-                        UUID.fromString(f.get("messageId").asText()), entry.conversationId(),
-                        f.get("seq").asLong(), userId, cmid, entry.body())));
+                outbox.acked(cmid).ifPresent(entry -> {
+                    Msg own = new Msg(UUID.fromString(f.get("messageId").asText()), entry.conversationId(),
+                            f.get("seq").asLong(), userId, cmid, entry.body());
+                    merge(own);
+                    observer.onAck(own, receivedNanos);
+                });
             }
             case "message" -> {
                 if (dropNextPushes.getAndUpdate(n -> Math.max(0, n - 1)) > 0) {
                     return;
                 }
                 Msg msg = toMsg(f.get("message"));
+                observer.onPush(msg, receivedNanos);
                 long before = conversations.computeIfAbsent(msg.conversationId(), c -> new ConvState()).contiguousSeq;
                 merge(msg);
                 if (!bugs.contains(Bug.NO_GAP_DETECTION) && msg.seq() > before + 1) {

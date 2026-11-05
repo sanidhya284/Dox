@@ -9,6 +9,8 @@ import com.chatplatform.realtime.websocket.ConnectionRegistry;
 import com.chatplatform.realtime.websocket.MessagePushListener;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -52,6 +54,14 @@ public class WsPushQueueTest extends AbstractIntegrationTest {
     @SpyBean
     private ConnectionRegistry registry;
 
+    @Autowired
+    private MeterRegistry meters;
+
+    private double droppedMetric() {
+        Counter c = meters.find("chat.push.dropped").tag("reason", "queue_full").counter();
+        return c == null ? 0 : c.count();
+    }
+
     private AuthResponse register(String prefix) {
         String s = UUID.randomUUID().toString().replace("-", "").substring(0, 10);
         ResponseEntity<AuthResponse> res = restTemplate.postForEntity("/api/auth/register",
@@ -74,6 +84,7 @@ public class WsPushQueueTest extends AbstractIntegrationTest {
             return invocation.callRealMethod();
         }).when(registry).sendToUsers(anyCollection(), any(TextMessage.class), any());
         long droppedBefore = pushListener.droppedPushes();
+        double droppedMetricBefore = droppedMetric();
 
         WsTestClient s1 = WsTestClient.connect(port, wsTicketService.issue(a.user().id()).ticket());
         long start = System.nanoTime();
@@ -93,6 +104,8 @@ public class WsPushQueueTest extends AbstractIntegrationTest {
         long ms = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
 
         assertThat(pushListener.droppedPushes() - droppedBefore).as("pushes dropped by the full queue").isGreaterThan(0);
+        assertThat(droppedMetric() - droppedMetricBefore).as("chat.push.dropped matches the listener's own count")
+                .isEqualTo((double) (pushListener.droppedPushes() - droppedBefore));
         assertThat(ms).as("10 acks with pushes stalled 1 s each (loose)").isLessThan(5000);
     }
 }

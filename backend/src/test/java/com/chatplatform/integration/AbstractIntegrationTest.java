@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 
@@ -20,6 +21,14 @@ public abstract class AbstractIntegrationTest {
 
     // Singleton container: started once per JVM, shared by all integration test classes, cleaned up by Testcontainers Ryuk at JVM exit. Do not use @Container here: it stops the container after each class while Spring caches the context.
     static {
+        if (!DockerClientFactory.instance().isDockerAvailable()) {
+            String msg = "ENVIRONMENT PROBLEM, NOT A TEST FAILURE: Docker is not reachable, so the PostgreSQL "
+                    + "test container cannot start and no integration test ran. Start Docker (Docker Desktop on "
+                    + "macOS) and re-run. If Docker is running but this persists, see the Docker 29 note in "
+                    + "CLAUDE.md (~/.docker-java.properties: api.version=1.44).";
+            System.err.println(msg);
+            throw new IllegalStateException(msg);
+        }
         postgres.start();
     }
 
