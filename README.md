@@ -14,7 +14,7 @@ A real-time chat backend built as a learning project for backend engineering: a 
 | 2d-lite: heartbeats and idle close, delivered/read cursors ([ADR-0007](docs/adr/0007-heartbeats-and-read-cursors.md)) | Done (PR open) |
 | 2e: React UI (presence and typing deferred) | Not started |
 | 3: reliable delivery and recovery (catch-up APIs, reference client, convergence under faults) | Done (PR open) |
-| 5-lite: metrics, load harness, one measured bottleneck ([ADR-0009](docs/adr/0009-observability-and-measurement.md)) | In progress (secured metrics endpoint done) |
+| 5-lite: metrics, load harness, one measured bottleneck ([ADR-0009](docs/adr/0009-observability-and-measurement.md)) | In progress (secured metrics endpoint and application metrics done) |
 | 4, 6 onward: multi-instance, outbox, ... | Not started |
 
 Details and the next steps: [docs/HANDOFF.md](docs/HANDOFF.md).
@@ -38,7 +38,7 @@ The `dev` profile supplies a development-only JWT secret and the local frontend 
 
 Optional: `WS_SESSION_MAX_LIFETIME` (ISO-8601 duration, default `PT15M`) is how long a WebSocket may stay open; zero or negative values refuse startup. `WS_MAX_TEXT_FRAME_BYTES` (default `32768`) is the largest text frame accepted. Heartbeats: `WS_HEARTBEAT_INTERVAL` (default `PT25S`) and `WS_HEARTBEAT_TIMEOUT` (default `PT60S`, must be at least twice the interval). Push tuning: `WS_SEND_TIME_LIMIT_MS` (default `5000`) and `WS_SEND_BUFFER_BYTES` (default `524288`) bound how long and how much a single socket may lag before it is closed with `4003`; `WS_PUSH_THREADS` (default `2`) and `WS_PUSH_QUEUE_CAPACITY` (default `10000`) size the push executor.
 
-Metrics: `/actuator/prometheus` needs HTTP Basic as user `metrics` with `METRICS_PASSWORD` (at least 16 characters; without it scraping is disabled). The `dev` profile sets a dev-only password. Basic sends the password on every request, so use TLS in production. `/actuator/health` stays public.
+Metrics: `/actuator/prometheus` needs HTTP Basic as user `metrics` with `METRICS_PASSWORD` (at least 16 characters; without it scraping is disabled). The `dev` profile sets a dev-only password. Basic sends the password on every request, so use TLS in production. `/actuator/health` stays public. Application meters are named `chat.*` (sends, acks, sockets, closes, tickets, cursors, heads, dropped pushes); see [architecture.md, Metrics](docs/architecture.md#metrics-adr-0009).
 
 All configuration: [architecture.md, Configuration](docs/architecture.md#configuration).
 

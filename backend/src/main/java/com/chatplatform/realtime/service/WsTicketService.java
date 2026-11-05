@@ -2,6 +2,8 @@ package com.chatplatform.realtime.service;
 
 import com.chatplatform.realtime.dto.IssuedTicket;
 import com.chatplatform.realtime.repository.WsTicketRepository;
+import com.chatplatform.shared.metrics.ChatMetrics;
+import com.chatplatform.shared.metrics.ChatMetrics.TicketOutcome;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -30,11 +32,14 @@ public class WsTicketService {
 
     private final WsTicketRepository wsTicketRepository;
     private final int ttlSeconds;
+    private final ChatMetrics metrics;
     private final SecureRandom secureRandom = new SecureRandom();
 
     public WsTicketService(
             WsTicketRepository wsTicketRepository,
-            @Value("${ws.ticket.ttl-seconds:30}") int ttlSeconds) {
+            @Value("${ws.ticket.ttl-seconds:30}") int ttlSeconds,
+            ChatMetrics metrics) {
+        this.metrics = metrics;
         this.wsTicketRepository = wsTicketRepository;
         this.ttlSeconds = ttlSeconds;
     }
@@ -59,6 +64,7 @@ public class WsTicketService {
         // Clean expired rows before inserting to keep the table small
         wsTicketRepository.deleteExpired(now);
         wsTicketRepository.insert(hash, userId, expiresAt);
+        metrics.ticket(TicketOutcome.ISSUED);
 
         return new IssuedTicket(rawTicket, ttlSeconds);
     }
@@ -74,7 +80,9 @@ public class WsTicketService {
     public Optional<UUID> consume(String rawTicket) {
         String hash = sha256Hex(rawTicket);
         OffsetDateTime now = OffsetDateTime.ofInstant(Instant.now(), ZoneOffset.UTC);
-        return wsTicketRepository.consume(hash, now);
+        Optional<UUID> userId = wsTicketRepository.consume(hash, now);
+        metrics.ticket(userId.isPresent() ? TicketOutcome.CONSUMED : TicketOutcome.REJECTED);
+        return userId;
     }
 
     /**

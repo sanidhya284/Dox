@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 public class MetricsExposureTest extends AbstractIntegrationTest {
 
     /** Matches application-integration.yml (test-only value). */
-    private static final String METRICS_PASSWORD = "integration-metrics-password-123";
+    static final String METRICS_PASSWORD = "integration-metrics-password-123";
 
     @Autowired
     private ObjectMapper mapper;

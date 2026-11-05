@@ -34,11 +34,14 @@ class ChatWebSocketHandlerTest {
                     org.springframework.http.converter.json.Jackson2ObjectMapperBuilder.json().build());
     private final ChatWebSocketHandler handler;
 
+    private static final com.chatplatform.shared.metrics.ChatMetrics METRICS =
+            new com.chatplatform.shared.metrics.ChatMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
+
     ChatWebSocketHandlerTest() {
         doReturn(lifetimeClose).when(scheduler).schedule(any(Runnable.class), any(Instant.class));
         handler = new ChatWebSocketHandler(registry, scheduler, LIFETIME, codec,
                 mock(com.chatplatform.message.service.MessageService.class), mock(HeartbeatMonitor.class),
-                mock(com.chatplatform.conversation.service.ConversationService.class));
+                mock(com.chatplatform.conversation.service.ConversationService.class), METRICS);
     }
 
     private static WebSocketSession sessionWithAttributes(String id, Map<String, Object> attributes) {
@@ -108,7 +111,7 @@ class ChatWebSocketHandlerTest {
         for (Duration bad : new Duration[]{null, Duration.ZERO, Duration.ofSeconds(-1)}) {
             assertThatThrownBy(() -> new ChatWebSocketHandler(registry, scheduler, bad, codec,
                     mock(com.chatplatform.message.service.MessageService.class), mock(HeartbeatMonitor.class),
-                    mock(com.chatplatform.conversation.service.ConversationService.class)))
+                    mock(com.chatplatform.conversation.service.ConversationService.class), METRICS))
                     .as("lifetime %s", bad)
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("ws.session.max-lifetime");

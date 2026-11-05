@@ -11,7 +11,7 @@ Phases 1–3 established correctness (ADRs 0002–0008), but nothing had been me
   - `chat.messages.sent` (counter, `channel`, `outcome`);
   - `chat.ws.send.ack` (timer: server side, frame received → ack written);
   - `chat.push.dropped` (counter, `reason`);
-  - `chat.ws.closes` (counter, `code` from a fixed set);
+  - `chat.ws.closes` (counter, `code` from a fixed set: 1000, 1001, 1007, 1009, 4001, 4002, 4003, 4005, 4006, else `other`);
   - `chat.ws.tickets` (counter, `outcome`);
   - `chat.cursor.updates` (counter, `outcome`);
   - `chat.heads.requests` (counter).

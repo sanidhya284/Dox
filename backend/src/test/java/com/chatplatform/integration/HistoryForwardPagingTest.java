@@ -214,8 +214,8 @@ public class HistoryForwardPagingTest extends AbstractIntegrationTest {
 
     /**
      * The ascending catch-up query is served by an index in seq order: the plan has an index scan
-     * and no Sort node. Sequential scans are disabled in this one transaction because on a small
-     * test table the planner may prefer them; the assertion is "an index can deliver this order",
+     * and no Sort node. Sequential and bitmap scans are disabled in this one transaction because on a
+     * small, shared test table the planner may prefer them; the assertion is "an index can deliver this order",
      * not a performance claim.
      */
     @Test
@@ -226,6 +226,10 @@ public class HistoryForwardPagingTest extends AbstractIntegrationTest {
 
         List<String> plan = new TransactionTemplate(txManager).execute(st -> {
             jdbcClient.sql("SET LOCAL enable_seqscan = off").update();
+            // Bitmap scans return rows in physical order, so with one the plan needs a Sort; whether
+            // the planner picks one depends on the shared table's stats (it did once, Phase 5 step 2).
+            // Disabled too, the remaining index path either delivers seq order or needs a Sort.
+            jdbcClient.sql("SET LOCAL enable_bitmapscan = off").update();
             return jdbcClient.sql("EXPLAIN SELECT * FROM messages WHERE conversation_id = :c AND seq > :after "
                             + "ORDER BY seq ASC LIMIT 51")
                     .param("c", conv).param("after", 0L).query(String.class).list();
