@@ -23,6 +23,7 @@ public enum ErrorCode {
 
     // 403
     REGISTRATION_CLOSED(HttpStatus.FORBIDDEN, "Registration requires a valid invite code"),
+    ORIGIN_NOT_ALLOWED(HttpStatus.FORBIDDEN, "Request origin is not allowed"),
 
     // 404
     USER_NOT_FOUND(HttpStatus.NOT_FOUND, "User not found"),

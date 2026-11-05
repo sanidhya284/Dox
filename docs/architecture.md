@@ -189,6 +189,7 @@ All environment-specific configuration comes from environment variables.
 | `WS_HEARTBEAT_INTERVAL` | `PT25S` (`ws.heartbeat.interval`) | How often the server pings every socket. |
 | `WS_HEARTBEAT_TIMEOUT` | `PT60S` (`ws.heartbeat.timeout`) | A socket with no pong or frame for this long is closed with `4006`. Startup requires it to be at least twice the interval. |
 | `WS_SESSION_MAX_LIFETIME` | `PT15M` (`ws.session.max-lifetime`) | How long a WebSocket may stay open after its handshake; then the server closes it with `4001`. ISO-8601 duration. Startup refuses zero or negative values. |
+| `auth.refresh-cookie.secure` | `true` (`false` in `dev` only) | The `Secure` attribute of the `chat_rt` refresh cookie (ADR-0010). |
 | `REGISTRATION_INVITE_CODE` | none (`registration.invite-code`) | With `registration.mode=invite` (the default), `POST /api/auth/register` needs this code; unset means registration is closed (`403`). `dev`, the test profiles and `bench` set `registration.mode=open` (ADR-0011). |
 | `DEMO_PASSWORD` | none (`demo.password`) | When set (at least 8 characters), seeds `demo1`..`demo3` and a "Demo room" at startup; a changed value resets their password hashes. Public data only. |
 | `WS_MAX_SOCKETS_PER_USER` | `10` (`ws.max-sockets-per-user`) | Open sockets per user; the next one is closed with `4007` (ADR-0006 Decision 2a). |
@@ -203,10 +204,10 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/api/auth/register` | no | Register (`inviteCode` required in invite mode; checked before conflicts); returns user + token pair. Rate-limited per IP. |
-| POST | `/api/auth/login` | no | Login; returns token pair. Rate-limited per IP and per (IP, username), before BCrypt. |
-| POST | `/api/auth/refresh` | no | Rotate refresh token |
-| POST | `/api/auth/logout` | no | Revoke refresh token |
+| POST | `/api/auth/register` | no | Register (`inviteCode` required in invite mode; checked before conflicts); returns `{user, accessToken}` and sets the `chat_rt` refresh cookie. Rate-limited per IP. |
+| POST | `/api/auth/login` | no | Login; returns `{accessToken}` and sets the `chat_rt` cookie. Rate-limited per IP and per (IP, username), before BCrypt. |
+| POST | `/api/auth/refresh` | `chat_rt` cookie + allowed `Origin` | Rotate the refresh token; returns `{accessToken}` and a new cookie. A failed refresh clears the cookie (ADR-0010). |
+| POST | `/api/auth/logout` | `chat_rt` cookie + allowed `Origin` | Revoke the refresh token and clear the cookie (`204`). |
 | POST | `/api/conversations/direct` | yes | Create or get direct conversation |
 | POST | `/api/conversations/group` | yes | Create group conversation |
 | GET | `/api/conversations` | yes | List user's conversations |
@@ -246,6 +247,7 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 - **Metrics exposure:** anonymous scrapes, a user's JWT and a wrong Basic password get `401`/`403`; the metrics user's credentials do not work on the API; a password shorter than 16 characters disables scraping; health is unchanged (`MetricsExposureTest`, `MetricsFailClosedTest`; mutations: `permitAll` on the metrics chain, accepting a short password).
 - **Application metrics:** each `chat.*` meter moves on its event (REST created/duplicate/rejected counted separately, WS sends counted as `ws` and timed, the sessions gauge follows connects and closes, closes by code, tickets, cursors, heads); a full push queue increments `chat.push.dropped` by exactly the listener's own count; no `chat.*` meter carries a tag outside a fixed set (`ChatMetricsTest`, `WsPushQueueTest`; mutations: a duplicate counted as created, a per-sender tag, a gauge counting users instead of sockets).
 - **Actuator:** only `/actuator/health` is public, and it shows no component details.
+- **Refresh cookie (ADR-0010):** register and login set `chat_rt` with HttpOnly, Secure, SameSite=Strict, `Path=/api/auth` and a 7-day Max-Age, and no body contains the refresh token; refresh rotates the cookie; refresh or logout with a missing or foreign `Origin` gets `403` and changes nothing; logout clears the cookie (`RefreshCookieTest`).
 - **Rate limits (ADR-0011):** the limit-plus-one register, login, ticket or failed-handshake attempt gets `429` with `Retry-After`; another IP, pair or user is unaffected; a limited login never reaches BCrypt; a blocked handshake doesn't consume the ticket; the limiter's memory stays bounded (`FixedWindowRateLimiterTest`, `RateLimitTest`).
 - **Registration policy:** without the right invite code, registration gets `403` and stores nothing, and a taken username or email isn't revealed (`RegistrationPolicyTest`, `RegistrationPolicyUnitTest`).
 - **Socket cap:** the socket over `ws.max-sockets-per-user` is closed with `4007`, the others stay open, and the cap is per user (`SocketCapTest`).
@@ -284,6 +286,7 @@ A socket authenticates once, at the handshake, so it could otherwise outlive the
 ## Known Limitations
 
 - **Rate limits are in memory and per instance** (ADR-0011): two instances double them (Phase 4 moves them to Redis), a fixed window can admit up to 2× the limit across a boundary, users behind one NAT share the per-IP limits, and anyone sharing a victim's IP can use up that victim's login attempts. `GET`s and message sends aren't rate-limited.
+- **A lost refresh response logs the user out:** if the server rotated the token but the response (with its `Set-Cookie`) never reached the browser, the next refresh replays the old token, which revokes the family and closes the user's sockets with `4002` (ADR-0010). Two tabs refreshing at once would do the same; the UI serializes refresh across tabs.
 - **The demo is public data**, and a changed `DEMO_PASSWORD` doesn't revoke existing demo sessions.
 
 - **Metrics use HTTP Basic:** the password travels with every scrape, so production needs TLS in front (Phase 9).

@@ -100,3 +100,8 @@ ratelimit:
 # Demo accounts demo1..demo3 + "Demo room", seeded at startup when DEMO_PASSWORD is set. Public data only.
 demo:
   password: ${DEMO_PASSWORD:}
+
+# Refresh-token cookie (ADR-0010). Secure (HTTPS only) everywhere except the dev profile.
+auth:
+  refresh-cookie:
+    secure: true

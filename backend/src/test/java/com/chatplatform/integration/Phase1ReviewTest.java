@@ -35,6 +35,9 @@ class Phase1ReviewTest extends AbstractIntegrationTest {
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
+    /** Refresh-token cookie of the most recent register() call. */
+    private String lastRefreshToken;
+
     private AuthResponse register(String suffix) {
         RegisterRequest req = new RegisterRequest(
                 "user_" + suffix,
@@ -44,6 +47,7 @@ class Phase1ReviewTest extends AbstractIntegrationTest {
         );
         ResponseEntity<AuthResponse> res = restTemplate.postForEntity("/api/auth/register", req, AuthResponse.class);
         assertThat(res.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        lastRefreshToken = AuthCookies.refreshToken(res); // the refresh token is only in the cookie (ADR-0010)
         assertThat(res.getBody()).isNotNull();
         return res.getBody();
     }
@@ -381,7 +385,7 @@ class Phase1ReviewTest extends AbstractIntegrationTest {
     void concurrentRefreshWithSameTokenReturnsOneSuccessAndRevokesFamily() throws Exception {
         String s = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
         AuthResponse auth = register("cr_" + s);
-        String refreshToken = auth.refreshToken();
+        String refreshToken = lastRefreshToken;
 
         int threadCount = 5;
         ExecutorService exec = Executors.newFixedThreadPool(threadCount);
@@ -391,7 +395,7 @@ class Phase1ReviewTest extends AbstractIntegrationTest {
             futures[i] = CompletableFuture.supplyAsync(() ->
                     restTemplate.postForEntity(
                             "/api/auth/refresh",
-                            new com.chatplatform.auth.dto.RefreshRequest(refreshToken),
+                            AuthCookies.request(refreshToken, AuthCookies.ORIGIN),
                             Object.class
                     ), exec
             );
@@ -417,14 +421,9 @@ class Phase1ReviewTest extends AbstractIntegrationTest {
         assertThat(failures).isEqualTo(4);
 
         // Then take the refresh token from the 200 response and use it
-        java.util.Map<String, String> body = (java.util.Map<String, String>) successfulResponse.getBody();
-        String newRefreshToken = body.get("refreshToken");
-        
-        ResponseEntity<Object> subsequentRefresh = restTemplate.postForEntity(
-                "/api/auth/refresh",
-                new com.chatplatform.auth.dto.RefreshRequest(newRefreshToken),
-                Object.class
-        );
+        String newRefreshToken = AuthCookies.refreshToken(successfulResponse);
+
+        ResponseEntity<String> subsequentRefresh = AuthCookies.refresh(restTemplate, newRefreshToken);
         // It must return 401 (the family was revoked by the losing attempts)
         assertThat(subsequentRefresh.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }

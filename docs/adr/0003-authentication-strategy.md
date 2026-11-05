@@ -1,7 +1,8 @@
 # ADR-0003 — Authentication Strategy: Stateless JWT + Stored Refresh Tokens
 
 **Status:** Accepted
-**Date:** 2026-10-08 (amended 2026-10-17, 2026-11-03)
+**Date:** 2026-10-08 (amended 2026-10-17, 2026-11-03, 2026-11-06)
+**Amended 2026-11-06 (Phase 6):** the refresh token is no longer returned in or accepted from JSON bodies; it travels only in an HttpOnly, Secure, SameSite=Strict cookie scoped to `/api/auth`, and refresh and logout require an allowed `Origin`. See [ADR-0010](0010-refresh-token-cookie.md). Rotation, family revocation and the atomic claim are unchanged.
 **Phase:** 1 — REST Core
 
 ---

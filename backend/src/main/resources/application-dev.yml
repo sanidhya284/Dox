@@ -30,3 +30,8 @@ ratelimit:
   login-per-ip-and-user-per-minute: 100000
   ticket-per-user-per-minute: 100000
   failed-handshakes-per-ip-per-minute: 100000
+
+# Local http://localhost only: allow the refresh cookie without HTTPS (ADR-0010).
+auth:
+  refresh-cookie:
+    secure: false

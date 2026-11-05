@@ -130,6 +130,8 @@ public final class ReferenceClient implements AutoCloseable {
     // ── auth (any thread) ──
     private volatile String accessToken;
     private volatile String refreshToken;
+    private static final String REFRESH_COOKIE = "chat_rt";
+    private static final String ORIGIN = "http://localhost:3000";
     private final Object refreshLock = new Object();
     private final AtomicInteger refreshes = new AtomicInteger();
 
@@ -423,7 +425,7 @@ public final class ReferenceClient implements AutoCloseable {
             WebSocketContainer container = ContainerProvider.getWebSocketContainer();
             container.setDefaultMaxTextMessageBufferSize(64 * 1024);
             WebSocketHttpHeaders headers = new WebSocketHttpHeaders();
-            headers.setOrigin("http://localhost:3000");
+            headers.setOrigin(ORIGIN);
             int gen = ++generation;
             session = new StandardWebSocketClient(container)
                     .execute(new Handler(gen), headers, URI.create("ws://localhost:" + port + "/ws?ticket=" + ticket))
@@ -649,7 +651,21 @@ public final class ReferenceClient implements AutoCloseable {
         }
         JsonNode t = readTree(r.getBody());
         accessToken = t.get("accessToken").asText();
-        refreshToken = t.get("refreshToken").asText();
+        refreshToken = refreshCookie(r); // only in the HttpOnly cookie (ADR-0010)
+    }
+
+    /** The refresh token from the chat_rt Set-Cookie header (a browser would store it; we keep it here). */
+    private static String refreshCookie(ResponseEntity<String> r) {
+        java.util.List<String> cookies = r.getHeaders().get(HttpHeaders.SET_COOKIE);
+        if (cookies != null) {
+            for (String c : cookies) {
+                if (c.startsWith(REFRESH_COOKIE + "=")) {
+                    int end = c.indexOf(';');
+                    return c.substring(REFRESH_COOKIE.length() + 1, end < 0 ? c.length() : end);
+                }
+            }
+        }
+        throw new IllegalStateException("no " + REFRESH_COOKIE + " cookie in the response");
     }
 
     private ResponseEntity<String> rest(HttpMethod method, String url, Object body) {
@@ -676,14 +692,16 @@ public final class ReferenceClient implements AutoCloseable {
             if (!failedToken.equals(accessToken)) {
                 return true; // someone else already refreshed
             }
-            ResponseEntity<String> r = rest.postForEntity("/api/auth/refresh",
-                    new HttpEntity<>("{\"refreshToken\":" + quote(refreshToken) + "}", json(null)), String.class);
+            HttpHeaders h = new HttpHeaders();
+            h.add(HttpHeaders.COOKIE, REFRESH_COOKIE + "=" + refreshToken);
+            h.setOrigin(ORIGIN); // refresh is cookie-authenticated, so the server checks Origin (CSRF)
+            ResponseEntity<String> r = rest.postForEntity("/api/auth/refresh", new HttpEntity<>(null, h), String.class);
             if (!r.getStatusCode().is2xxSuccessful()) {
                 state.set(State.LOGGED_OUT);
                 return false;
             }
             JsonNode t = readTree(r.getBody());
-            refreshToken = t.get("refreshToken").asText();
+            refreshToken = refreshCookie(r);
             accessToken = t.get("accessToken").asText();
             refreshes.incrementAndGet();
             return true;

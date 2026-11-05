@@ -15,7 +15,7 @@ A real-time chat backend built as a learning project for backend engineering: a 
 | 2e: React UI (presence and typing deferred) | Not started |
 | 3: reliable delivery and recovery (catch-up APIs, reference client, convergence under faults) | Done (PR open) |
 | 5-lite: metrics, load harness, one measured bottleneck ([ADR-0009](docs/adr/0009-observability-and-measurement.md)) | Done (PR open): metrics, load harness, measured on one laptop (below) |
-| 6: browser UI + auto-deploy (single instance; [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md)) | In progress: step 1 pre-deploy hardening done |
+| 6: browser UI + auto-deploy (single instance; [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md)) | In progress: steps 1 (pre-deploy hardening) and 2 (refresh token in an HttpOnly cookie) done |
 | 4, 7 onward: multi-instance, outbox, ... | Not started |
 
 Details and the next steps: [docs/HANDOFF.md](docs/HANDOFF.md).
@@ -72,7 +72,7 @@ echo "api.version=1.44" > ~/.docker-java.properties
 **Load harness** (on demand, never in CI): `./gradlew loadTest` against a separately started app (`bench` profile) and a dedicated benchmark database (`deploy/bench/bench-db.sh`). Method, scenarios, every run and the analysis: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## API and WebSocket
-The REST endpoints are `/api/auth/*` (register, login, refresh, logout), `/api/conversations/*` (direct and group conversations, sending and paging messages; a message body is at most 4,000 characters, longer bodies get `400 VALIDATION_ERROR`), `GET /api/conversations/{id}/messages?after={seq}&limit={n}` (catch up: messages after a seq, oldest first, exact `hasMore`; `?before=` pages backwards), `GET /api/conversations/heads` (`[{conversationId, lastSeq}]` for your conversations: a cheap "am I behind?" check), `POST /api/conversations/{id}/cursor` (`{"kind":"read"|"delivered","seq":42}`: moves your cursor forward, never back; read implies delivered), `POST /api/ws/ticket` and `/actuator/health`. A conversation's `unreadCount` counts messages after your read cursor that *others* sent; `GET /api/conversations/{id}` also returns every participant's `lastReadSeq` / `lastDeliveredSeq`, and the list returns `myLastReadSeq`. Both also return `lastSeq`, the conversation's newest seq. Full table: [architecture.md, API Surface](docs/architecture.md#api-surface).
+The REST endpoints are `/api/auth/*` (register, login, refresh, logout; the refresh token is set and read **only as an HttpOnly, Secure, SameSite=Strict cookie `chat_rt` scoped to `/api/auth`**, never in a body; refresh and logout need an allowed `Origin`: [ADR-0010](docs/adr/0010-refresh-token-cookie.md)), `/api/conversations/*` (direct and group conversations, sending and paging messages; a message body is at most 4,000 characters, longer bodies get `400 VALIDATION_ERROR`), `GET /api/conversations/{id}/messages?after={seq}&limit={n}` (catch up: messages after a seq, oldest first, exact `hasMore`; `?before=` pages backwards), `GET /api/conversations/heads` (`[{conversationId, lastSeq}]` for your conversations: a cheap "am I behind?" check), `POST /api/conversations/{id}/cursor` (`{"kind":"read"|"delivered","seq":42}`: moves your cursor forward, never back; read implies delivered), `POST /api/ws/ticket` and `/actuator/health`. A conversation's `unreadCount` counts messages after your read cursor that *others* sent; `GET /api/conversations/{id}` also returns every participant's `lastReadSeq` / `lastDeliveredSeq`, and the list returns `myLastReadSeq`. Both also return `lastSeq`, the conversation's newest seq. Full table: [architecture.md, API Surface](docs/architecture.md#api-surface).
 
 Connecting a WebSocket:
 1. `POST /api/ws/ticket` with `Authorization: Bearer <access token>` returns `{"ticket": "...", "expiresInSeconds": 30}`.
@@ -106,7 +106,7 @@ Pushes are an optimisation; PostgreSQL is the truth. A correct client (full algo
 3. **Subscribe first, then fetch:** open the socket, then page `GET .../messages?after=<your contiguous seq>` where `GET /api/conversations/heads` says you are behind.
 4. Deduplicate by message id, order by `seq`; if a push skips ahead of your contiguous seq, fetch the gap.
 5. Every ~30 s (jittered) compare `heads` with your contiguous seq and fetch if behind: this is the only way to notice that the *last* push was lost.
-6. On a 401, refresh the access token once (shared by concurrent requests) and retry.
+6. On a 401, refresh the access token once (shared by concurrent requests, and in a browser across tabs) and retry. Keep the access token in memory; the refresh token is the `chat_rt` cookie.
 
 `ConvergenceTest` checks this end to end: 8 clients under seeded faults (dropped connections, pushes and acks, duplicated and delayed sends, failed commits) all end with exactly the database's history.
 
@@ -148,6 +148,7 @@ The main ones:
 - No per-socket send rate limit yet. The auth and ticket rate limits are in memory and per instance.
 - `GET` requests and message sends aren't rate-limited.
 - The 401 from the security filter has an empty body.
+- If a refresh response is lost after the server rotated the token, the next refresh looks like a replay: the user is logged out everywhere ([ADR-0010](docs/adr/0010-refresh-token-cookie.md)).
 - Read receipts are visible to every participant (no privacy toggle); "delivered" is reported by the client.
 
 Full list: [architecture.md, Known Limitations](docs/architecture.md#known-limitations).
@@ -162,6 +163,7 @@ Full list: [architecture.md, Known Limitations](docs/architecture.md#known-limit
 - [ADR-0007: Heartbeats and read cursors](docs/adr/0007-heartbeats-and-read-cursors.md)
 - [ADR-0008: Client sync protocol](docs/adr/0008-client-sync-protocol.md)
 - [ADR-0009: Observability and honest measurement](docs/adr/0009-observability-and-measurement.md)
+- [ADR-0010: Refresh token in an HttpOnly cookie](docs/adr/0010-refresh-token-cookie.md)
 - [ADR-0011: Deployment and pre-deploy hardening](docs/adr/0011-deployment-and-pre-deploy-hardening.md)
 - [Architecture overview](docs/architecture.md)
 - [Interview notes](docs/INTERVIEW_NOTES.md): per milestone, the problem, the bug we actually found, the test that proves the fix, the tradeoff, and likely follow-up questions

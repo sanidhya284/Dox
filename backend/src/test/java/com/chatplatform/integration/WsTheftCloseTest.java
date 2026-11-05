@@ -1,7 +1,6 @@
 package com.chatplatform.integration;
 
 import com.chatplatform.auth.dto.AuthResponse;
-import com.chatplatform.auth.dto.RefreshRequest;
 import com.chatplatform.auth.dto.RegisterRequest;
 import com.chatplatform.auth.dto.TokenPair;
 import com.chatplatform.realtime.service.WsTicketService;
@@ -102,13 +101,21 @@ public class WsTheftCloseTest extends AbstractIntegrationTest {
         }
     }
 
+    /** Refresh-token cookie per registered user (the token is never in a response body; ADR-0010). */
+    private final java.util.Map<UUID, String> refreshTokens = new java.util.concurrent.ConcurrentHashMap<>();
+
     private AuthResponse registerUser(String prefix) {
         String s = UUID.randomUUID().toString().replace("-", "").substring(0, 10);
         ResponseEntity<AuthResponse> res = restTemplate.postForEntity("/api/auth/register",
                 new RegisterRequest(prefix + s, prefix + s + "@example.com", "password123", "U " + s),
                 AuthResponse.class);
         assertThat(res.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        refreshTokens.put(res.getBody().user().id(), AuthCookies.refreshToken(res));
         return res.getBody();
+    }
+
+    private String rt(AuthResponse user) {
+        return refreshTokens.get(user.user().id());
     }
 
     private CloseRecorder connect(UUID userId) throws Exception {
@@ -129,7 +136,7 @@ public class WsTheftCloseTest extends AbstractIntegrationTest {
     }
 
     private ResponseEntity<String> refresh(String refreshToken) {
-        return restTemplate.postForEntity("/api/auth/refresh", new RefreshRequest(refreshToken), String.class);
+        return AuthCookies.refresh(restTemplate, refreshToken);
     }
 
     private void awaitClosedWith4002(CloseRecorder recorder, String what) {
@@ -154,8 +161,8 @@ public class WsTheftCloseTest extends AbstractIntegrationTest {
         awaitRegistered(bobId, 1);
 
         // Legitimate rotation, then the old token is replayed (theft signal).
-        assertThat(refresh(alice.refreshToken()).getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(refresh(alice.refreshToken()).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(refresh(rt(alice)).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(refresh(rt(alice)).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
 
         awaitClosedWith4002(alice1, "alice's first socket");
         awaitClosedWith4002(alice2, "alice's second socket");
@@ -174,11 +181,9 @@ public class WsTheftCloseTest extends AbstractIntegrationTest {
         CloseRecorder socket = connect(userId);
         awaitRegistered(userId, 1);
 
-        ResponseEntity<TokenPair> rotated = restTemplate.postForEntity(
-                "/api/auth/refresh", new RefreshRequest(user.refreshToken()), TokenPair.class);
+        ResponseEntity<String> rotated = refresh(rt(user));
         assertThat(rotated.getStatusCode()).isEqualTo(HttpStatus.OK);
-        ResponseEntity<Void> logout = restTemplate.postForEntity(
-                "/api/auth/logout", new RefreshRequest(rotated.getBody().refreshToken()), Void.class);
+        ResponseEntity<String> logout = AuthCookies.logout(restTemplate, AuthCookies.refreshToken(rotated));
         assertThat(logout.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
 
         // Known limitation (decision 5.1): logout does not close sockets.
@@ -211,8 +216,8 @@ public class WsTheftCloseTest extends AbstractIntegrationTest {
 
         CloseRecorder socket = connect(userId);
         awaitRegistered(userId, 1);
-        assertThat(refresh(user.refreshToken()).getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(refresh(user.refreshToken()).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(refresh(rt(user)).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(refresh(rt(user)).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
 
         awaitClosedWith4002(socket, "the socket");
         assertThat(activeTokensSeenInCloseAll.get())
@@ -239,10 +244,10 @@ public class WsTheftCloseTest extends AbstractIntegrationTest {
 
         CloseRecorder socket = connect(userId);
         awaitRegistered(userId, 1);
-        assertThat(refresh(user.refreshToken()).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(refresh(rt(user)).getStatusCode()).isEqualTo(HttpStatus.OK);
 
         long start = System.nanoTime();
-        ResponseEntity<String> replay = refresh(user.refreshToken());
+        ResponseEntity<String> replay = refresh(rt(user));
         long ms = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
         assertThat(replay.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
 
