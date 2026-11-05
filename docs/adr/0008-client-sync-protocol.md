@@ -43,6 +43,7 @@ Pushes are best effort by design ([ADR-0006](0006-websocket-frame-protocol-v1.md
 ## Consequences and limitations
 - **The reference client lives in test sources;** it documents and verifies the algorithm and is not a published SDK.
 - **Anti-entropy polling cost** is one `heads` query per client per interval, about O(conversations) rows each time. It is **not measured**: that is a Phase 5 item, to decide whether 30 s is right and whether `heads` needs caching. `heads` was chosen over polling the full list because the list runs extra per-conversation queries.
+- **`heads` is unpaginated:** it returns every active conversation in one response; users with very many conversations will need pagination or a "changed since" variant later.
 - **Seeds reproduce the faults, not the thread schedule.**
 - **Masked bugs:** in the convergence test, a missing gap detection or a fetch-before-subscribe bug is repaired by the other layers (anti-entropy, later pushes); the targeted tests carry those guarantees.
 - **No server-sent "resync" hint;** clients rely on gap detection and anti-entropy.
