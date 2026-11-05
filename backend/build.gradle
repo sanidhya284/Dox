@@ -66,6 +66,8 @@ dependencies {
     // ── Observability: Spring Boot Actuator ───────────────────────────────
     // Exposes /actuator/health and other management endpoints out of the box.
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    // Phase 5-lite: Prometheus scrape format for Micrometer (version managed by Spring Boot). ADR-0009.
+    runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
 
     // ── Testing ────────────────────────────────────────────────────────────
     testImplementation 'org.springframework.boot:spring-boot-starter-test'

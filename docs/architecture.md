@@ -179,6 +179,7 @@ All environment-specific configuration comes from environment variables.
 | `WS_SEND_BUFFER_BYTES` | `524288` (`ws.send.buffer-bytes`) | Per-socket send buffer limit; exceeding it closes the socket with `4003`. |
 | `WS_PUSH_THREADS` | `2` (`ws.push.threads`) | Push executor threads. |
 | `WS_PUSH_QUEUE_CAPACITY` | `10000` (`ws.push.queue-capacity`) | Push queue size; when full, pushes are dropped, logged and counted. |
+| `METRICS_PASSWORD` | none (`metrics.password`) | Password of the `metrics` user for `/actuator/prometheus` and `/actuator/metrics` (HTTP Basic). Missing or shorter than 16 characters: scraping disabled (fail closed). |
 | `WS_HEARTBEAT_INTERVAL` | `PT25S` (`ws.heartbeat.interval`) | How often the server pings every socket. |
 | `WS_HEARTBEAT_TIMEOUT` | `PT60S` (`ws.heartbeat.timeout`) | A socket with no pong or frame for this long is closed with `4006`. Startup requires it to be at least twice the interval. |
 | `WS_SESSION_MAX_LIFETIME` | `PT15M` (`ws.session.max-lifetime`) | How long a WebSocket may stay open after its handshake; then the server closes it with `4001`. ISO-8601 duration. Startup refuses zero or negative values. |
@@ -207,6 +208,7 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 | GET (upgrade) | `/ws?ticket=...` | ticket + allowed `Origin` | Open a WebSocket (see Realtime above) |
 | POST | `/api/conversations/{id}/cursor` | yes | Move my delivered/read cursor forward: `{kind, seq}` → `{lastDeliveredSeq, lastReadSeq}` (ADR-0007) |
 | GET | `/actuator/health` | no | Health check (status only, no details) |
+| GET | `/actuator/prometheus`, `/actuator/metrics` | `metrics` user (HTTP Basic) | Micrometer metrics; never public (ADR-0009) |
 
 ---
 
@@ -231,6 +233,7 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 - **WebSocket push:** the origin socket gets only the ack, the sender's other sockets and the other participants get the `message` once; duplicates are not pushed again; REST sends are pushed; a participant with `left_at` set gets nothing; a closed recipient does not affect the sender; nothing is pushed for a send whose commit fails; Tomcat's blocking-send timeout is set and read by Tomcat itself (`WsPushTest`). A full push queue drops pushes while every ack still arrives (`WsPushQueueTest`). 6 sockets sending 20 messages each concurrently: seq is exactly 1..120 and each socket gets exactly its 20 acks and the other 100 messages once (`WsConcurrentSendTest`). A stalled consumer is closed with `4003` and unregistered while others still receive (`ConnectionRegistrySendTest`).
 - **Heartbeats:** a stale socket is closed with `4006` and unregistered, a fresh one is pinged, a pong or frame keeps it alive, and a timeout below twice the interval refuses startup (`HeartbeatMonitorTest`, fake clock); a real client that answers pings stays open over 3x the timeout while the server counts its pings and pongs (`WsHeartbeatTest`; mutation "pong does not refresh" closes it with 4006, 3 of 3 runs).
 - **WebSocket lifetime:** each socket is closed with `4001` its configured lifetime after its own handshake, and then forgotten by the registry (`WsSessionLifetimeTest`, 1-second lifetime); zero, negative or missing lifetimes refuse startup (`ChatWebSocketHandlerTest`).
+- **Metrics exposure:** anonymous scrapes, a user's JWT and a wrong Basic password get `401`/`403`; the metrics user's credentials do not work on the API; a password shorter than 16 characters disables scraping; health is unchanged (`MetricsExposureTest`, `MetricsFailClosedTest`; mutations: `permitAll` on the metrics chain, accepting a short password).
 - **Actuator:** only `/actuator/health` is public, and it shows no component details.
 - **Accounts:** usernames and emails are case-insensitive (`citext` column plus an explicit `CAST(... AS citext)` in queries, because a plain varchar parameter makes the comparison case-sensitive). Duplicates return `409 USERNAME_TAKEN` / `EMAIL_TAKEN`, including when two registrations race (the unique-constraint violation is translated to the same 409).
 - **History paging:** `limit` is clamped to 1..100 (default 50); the cursor is stable when new messages arrive.
@@ -244,6 +247,7 @@ A socket authenticates once, at the handshake, so it could otherwise outlive the
 
 ## Known Limitations
 
+- **Metrics use HTTP Basic:** the password travels with every scrape, so production needs TLS in front (Phase 9).
 - **`heads` is unpaginated:** `GET /api/conversations/heads` returns all of a user's active conversations in one response (no pagination); users with very many conversations will need pagination or a "changed since" variant later. The anti-entropy polling cost (one `heads` call per client every ~30 s) is unmeasured until Phase 5.
 - **Reliable delivery is a client responsibility (ADR-0008):** the reference client lives in test sources (not a published SDK); convergence is shown on one instance with a bounded workload; seeds reproduce faults, not thread schedules; anti-entropy polling cost (`heads` every ~30 s per client) is unmeasured (Phase 5); there is no server-sent resync hint; a client offline longer than the refresh-token lifetime must log in again.
 - **WebSocket pushes are best effort:** they may arrive out of `seq` order (after-commit handoffs can interleave), are dropped when the push queue is full, and a slow socket is closed with `4003`. Clients order by `seq` and recover from history; gap detection and resync are Phase 3.

@@ -47,7 +47,8 @@ management:
   endpoints:
     web:
       exposure:
-        include: health
+        # prometheus/metrics need the metrics user (HTTP Basic, METRICS_PASSWORD); health stays public. ADR-0009.
+        include: health,prometheus,metrics
   endpoint:
     health:
       show-details: never

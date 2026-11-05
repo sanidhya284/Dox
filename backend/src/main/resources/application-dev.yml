@@ -16,3 +16,7 @@ jwt:
 ws:
   # LOCAL DEVELOPMENT ONLY. Exact origins of the local frontend dev servers.
   allowed-origins: http://localhost:3000,http://localhost:5173
+
+metrics:
+  # LOCAL DEVELOPMENT ONLY. Password of the 'metrics' user for /actuator/prometheus (HTTP Basic).
+  password: dev-only-metrics-password-123
