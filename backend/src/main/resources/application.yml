@@ -66,3 +66,9 @@ logging:
 ws:
   session:
     max-lifetime: PT15M
+  # Heartbeats (ADR-0007): ping every interval; close (4006) after timeout with no pong or frame.
+  # Env overrides: WS_HEARTBEAT_INTERVAL, WS_HEARTBEAT_TIMEOUT. Startup requires timeout >= 2 x interval.
+  heartbeat:
+    interval: PT25S
+    timeout: PT60S
+

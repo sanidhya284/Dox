@@ -16,6 +16,7 @@ import com.chatplatform.realtime.websocket.protocol.Frames.Rejected;
 import com.chatplatform.realtime.websocket.protocol.Frames.SendCommand;
 import com.chatplatform.realtime.websocket.protocol.Frames.Violation;
 import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.PongMessage;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.adapter.NativeWebSocketSession;
@@ -47,17 +48,20 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private final Duration maxLifetime;
     private final FrameCodec codec;
     private final MessageService messageService;
+    private final HeartbeatMonitor heartbeat;
 
     public ChatWebSocketHandler(
             ConnectionRegistry registry,
             @Qualifier(RealtimeSchedulingConfig.WS_TASK_SCHEDULER) TaskScheduler scheduler,
             @Value("${ws.session.max-lifetime:#{null}}") Duration maxLifetime,
             FrameCodec codec,
-            MessageService messageService) {
+            MessageService messageService,
+            HeartbeatMonitor heartbeat) {
         this.registry = registry;
         this.scheduler = scheduler;
         this.codec = codec;
         this.messageService = messageService;
+        this.heartbeat = heartbeat;
         if (maxLifetime == null || maxLifetime.isZero() || maxLifetime.isNegative()) {
             throw new IllegalStateException("ws.session.max-lifetime must be set to a positive duration "
                     + "(ISO-8601, e.g. PT15M; env WS_SESSION_MAX_LIFETIME), got: " + maxLifetime);
@@ -76,6 +80,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         }
         setTomcatBlockingSendTimeout(session);
         registry.register(userId, session);
+        heartbeat.track(userId, session.getId());
         ScheduledFuture<?> lifetimeClose = scheduler.schedule(
                 () -> closeAtEndOfLifetime(session), Instant.now().plus(maxLifetime));
         session.getAttributes().put(ATTR_LIFETIME_CLOSE, lifetimeClose);
@@ -112,6 +117,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
      */
     @Override
     protected void handleTextMessage(WebSocketSession session, TextMessage message) throws IOException {
+        heartbeat.touch(session.getId());
         Parsed parsed = codec.parse(message.getPayload());
         switch (parsed) {
             case Violation v -> session.close(v.status());
@@ -154,6 +160,12 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
+    /** A pong (answer to the heartbeat ping) proves the connection is alive. */
+    @Override
+    protected void handlePongMessage(WebSocketSession session, PongMessage message) {
+        heartbeat.onPong(session.getId());
+    }
+
     @Override
     public void handleTransportError(WebSocketSession session, Throwable exception) {
         unregister(session);
@@ -165,6 +177,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void unregister(WebSocketSession session) {
+        heartbeat.forget(session.getId());
         if (session.getAttributes().get(ATTR_LIFETIME_CLOSE) instanceof ScheduledFuture<?> lifetimeClose) {
             lifetimeClose.cancel(false); // a socket closed early must not leave its close task queued
         }
