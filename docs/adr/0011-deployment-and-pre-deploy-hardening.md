@@ -116,6 +116,7 @@ Internet ──443/80──▶ web (Caddy: TLS, UI files, proxy) ──▶ app:8
     2. **Browsers treat every `*.work.gd` site as same-site,** so `SameSite=Strict` doesn't stop requests from other `*.work.gd` sites. The exact Origin checks and the host-only cookie still held (ADR-0010).
     3. **A large ISP resolver failed DNSSEC validation for the whole `work.gd` zone** (SERVFAIL, while it resolved with checking disabled, and Google and Cloudflare resolved it). Visitors on that ISP couldn't reach the site at all. Found on 2026-11-08 from the author's own connection.
   - **Resolved 2026-11-08 by our own domain `dox-chat.in`:** our own rate-limit budget, a real same-site boundary, and it resolves on that ISP's resolver.
+    - **Certificates:** staging certificates first, then Let's Encrypt production, issued on the first attempt with no ZeroSSL fallback.
   - **The redirects:** `www.dox-chat.in` and the old `dox.work.gd` get certificates and a **308** to `https://dox-chat.in` (path and query kept), so old links keep working until `work.gd` is dropped. The app's only allowed Origin stays the canonical one.
   - **Mechanism:** `REDIRECT_HOSTS` in the Caddyfile; compose defaults it to `www.<DOMAIN>`, and `smoke.sh` checks it.
 

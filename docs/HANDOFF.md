@@ -32,7 +32,7 @@ Written 2026-11-03 for Claude Code taking over from a Claude-chat architect + Ge
   - Playwright e2e: 1 passed, 0 retries.
   **STOPPED after step 4 (2026-11-06), as the user asked.**
   **5 deploy: built and tested locally (2026-11-08)**:
-  - target: EC2 `t3.small` in ap-southeast-2 (Mumbai blocked by the Free plan); first deployed on `dox.work.gd` (2026-11-08, `sha-c89219d`), then moved to the own domain `dox-chat.in` (`www` and `dox.work.gd` redirect with a 308);
+  - target: EC2 `t3.small` in ap-southeast-2 (Mumbai blocked by the Free plan); first deployed on `dox.work.gd` (2026-11-08, `sha-c89219d`), then moved to the own domain `dox-chat.in` on 2026-11-08 (`sha-31bfc4d`; Let's Encrypt production certificates; `www` and `dox.work.gd` redirect with a 308; verified: health, actuator 404s, redirects, a live two-user message, host-only cookie);
   - server prep done per runbook section 4 (with the user's approval for each sudo group);
   - four repository secrets set;
   - `ci.yml` gained the frontend and e2e jobs; `deploy.yml` is manual only;
