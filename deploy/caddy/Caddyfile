@@ -1,6 +1,6 @@
 # Caddy: TLS terminator, static UI server and reverse proxy (ADR-0011).
 # Exposes only: the UI, /api/*, /ws and /actuator/health. Every other /actuator path is 404.
-# Environment (set by compose): DOMAIN, APP_UPSTREAMS (default "app:8080"; Phase 4 adds a second instance),
+# Environment (set by compose): DOMAIN, REDIRECT_HOSTS, APP_UPSTREAMS (default "app:8080"; Phase 4 adds a second instance),
 # HSTS_SNIPPET ("hsts" in production, "nohsts" for local https://localhost so the browser doesn't pin localhost).
 
 (hsts) {
@@ -22,6 +22,14 @@
 }
 
 (tls_default) {
+}
+
+# Old and alternative names (REDIRECT_HOSTS, space-separated; compose defaults it to "www.<DOMAIN>") get a
+# certificate too, and a permanent 308 redirect to the one canonical origin, so old links keep working and the
+# app only ever sees Origin https://<DOMAIN> (the only allowed origin).
+{$REDIRECT_HOSTS} {
+	import tls_{$ACME_MODE:default}
+	redir https://{$DOMAIN}{uri} 308
 }
 
 {$DOMAIN} {

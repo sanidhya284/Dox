@@ -4,23 +4,26 @@ Written 2026-11-07 for: AWS Free plan, $100 credits, plan ends 2027-04-07. Price
 
 Rule for this whole document: if a step does not behave as described, STOP and ask. Do not improvise around security groups, billing or secrets.
 
-## This deployment (status as of 2026-11-08)
+## This deployment (status as of 2026-11-08, own domain)
 
 | Item | Value | Status |
 |---|---|---|
 | Region | ap-southeast-2 (Sydney) | done |
 | Instance | `chat-prod`, `t3.small`, Ubuntu 24.04 x86, 20 GB | done; verified `t3.small`, IMDSv1 returns 401 |
 | Elastic IP | `3.24.141.155` | done |
-| Hostname | `dox.work.gd` (DNSExit, A record to the Elastic IP) | done; resolves on public DNS (8.8.8.8, 1.1.1.1, ns13.dnsexit.com) |
+| Hostname | **`dox-chat.in`** (own domain; A records for `dox-chat.in` and `www.dox-chat.in` → the Elastic IP, no AAAA) | bought 2026-11-08; resolves on 8.8.8.8 and on the ISP resolver that failed `work.gd` |
+| Old hostname | `dox.work.gd` (DNSExit) | first deploy ran here 2026-11-08 (`sha-c89219d`, Let's Encrypt `YE2`); now only 308-redirects to `https://dox-chat.in` until it's dropped |
 | SSH host key (ED25519) | `SHA256:3Fzi3ki+FgNUEOXITT6MxnEWqv4Ul/7y0pHQScIDpvo` | verified on the server |
 | Sections 1-3 | account safety, hostname, launch | done by hand |
 | Section 4 | server prep | done 2026-11-08: packages updated (still 24.04.5, no reboot needed), Docker 29.9.3 + compose v5.7.0, log rotation, 2 GB swap (swappiness 10), fail2ban (sshd jail), `deploy` user (docker group, no sudo; verified), host key A = B, `/opt/chat/.env` generated on the server (13 variables, mode 600, `ACME_MODE=staging`) |
 | Section 5.2 | repository secrets | done 2026-11-08: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY` (`~/.ssh/chat-deploy`, fingerprint `SHA256:aSCBaspWSmWL8YEGUtPg+Hf/Q63nawA8saYytHq5tEE`), `DEPLOY_KNOWN_HOSTS` (hostname + IP, pinned ED25519 key) |
-| Section 6 | repo pipeline | done on branch `phase-6-ui-deploy` (`ci.yml`, `deploy.yml`, `deploy/prod/*`); see 6.1 |
-| Section 5.1 | GitHub environment `production` | to do by hand (clicks below in 7.0) |
+| Section 6 | repo pipeline | done (PR #10, merged 2026-11-08); see 6.1 |
+| Section 5.1 | GitHub environment `production` | done by hand 2026-11-08 |
+| Section 7 | first deploy | done 2026-11-08 on `dox.work.gd`: `sha-c89219d`, post-deploy check OK, staging then Let's Encrypt production (`YE2`); CI on the merge commit 7 min 22 s |
+| Own domain | `DOMAIN=dox-chat.in`, `REDIRECT_HOSTS=www.dox-chat.in dox.work.gd` | switching (procedure 7.3) |
 | Still to confirm by hand | only one Elastic IP in the account; credit specification Standard | pending |
 
-**Hostname caveats (`work.gd`):** it is a shared DNSExit domain that is not on the Public Suffix List. (1) Let's Encrypt rate limits are shared with every other `*.work.gd` user, so issuance can fail for reasons outside our control; use the staging CA first, and accept a ZeroSSL fallback from Caddy. (2) Browsers treat other `*.work.gd` sites as same-site, so `SameSite=Strict` does not stop requests from them; the exact Origin checks on refresh, logout and the WebSocket still do. The refresh cookie must be host-only (no `Domain` attribute). If certificates keep failing, buy a cheap domain.
+**Hostname caveats (`work.gd`, resolved by the own domain `dox-chat.in` on 2026-11-08; kept for the record):** it is a shared DNSExit domain that is not on the Public Suffix List. (1) Let's Encrypt rate limits are shared with every other `*.work.gd` user, so issuance can fail for reasons outside our control; use the staging CA first, and accept a ZeroSSL fallback from Caddy. (2) Browsers treat other `*.work.gd` sites as same-site, so `SameSite=Strict` does not stop requests from them; the exact Origin checks on refresh, logout and the WebSocket still do. The refresh cookie must be host-only (no `Domain` attribute). If certificates keep failing, buy a cheap domain.
 
 ---
 
@@ -274,7 +277,23 @@ sed -i 's/^ACME_MODE=staging$/ACME_MODE=default/' /opt/chat/.env
 cd /opt/chat && IMAGE_TAG=$(cat .deployed-tag) docker compose -f compose.yml up -d web
 docker compose -f compose.yml logs web | grep -iE '"issuer"|certificate obtained|acme'   # which CA issued it
 ```
-Record which CA issued the certificate (Let's Encrypt, or ZeroSSL as Caddy's fallback; both are acceptable). Don't loop retries against the production CA: `*.work.gd` shares its rate limits (ADR-0011 Decision 8).
+Record which CA issued the certificate (Let's Encrypt, or ZeroSSL as Caddy's fallback; both are acceptable). Don't loop retries against the production CA.
+
+### 7.3 Move to a new domain (done once: `dox.work.gd` → `dox-chat.in`)
+1. Point A records for the new name and `www.` at the Elastic IP, no AAAA. Check `dig +short @8.8.8.8 <name>` and also your ISP's resolver.
+2. In `/opt/chat/.env` (as `deploy`):
+   - `DOMAIN=<new>`;
+   - `WS_ALLOWED_ORIGINS=https://<new>`;
+   - `REDIRECT_HOSTS=www.<new> <old>`;
+   - `ACME_MODE=staging`.
+3. Run **Actions → Deploy** (the new web image carries the redirect block). The post-deploy check uses the new `DOMAIN`.
+4. Once staging certificates exist for every name, do 7.2 (`ACME_MODE=default`) and record the issuing CA.
+5. Verify:
+   - the new name loads;
+   - health is 200, and prometheus and env are 404;
+   - a live message passes between two demo users;
+   - `curl -sI https://<old>/` gives `308` with `location: https://<new>/`.
+6. **Effects of the move:** the refresh cookie is host-only, so sessions on the old name don't carry over and users log in once on the new name. Old HSTS entries for the old name stay harmless (it still serves HTTPS).
 
 
 1. CI green on the step 5 PR. Merge it (merge commit).

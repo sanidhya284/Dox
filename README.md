@@ -69,7 +69,7 @@ cd frontend && npx playwright install chromium && npm run e2e   # demo1 sends, d
 Log in as `demo1` / `local-demo-password`. Stop the stack with `docker compose -f compose.yml down` (add `-v` to wipe its database). It needs ports 80 and 443 free. How it's put together: [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md).
 
 ### How deploys work (single instance; not production-grade)
-The demo target is one AWS EC2 `t3.small` in Sydney behind `dox.work.gd`. Details: [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md); step by step: [docs/AWS-DEPLOY-RUNBOOK.md](docs/AWS-DEPLOY-RUNBOOK.md).
+**Live demo: https://dox-chat.in** (temporary; one small server, demo data is public). It runs on one AWS EC2 `t3.small` in Sydney; `www.dox-chat.in` and the old `dox.work.gd` redirect there. Details: [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md); step by step: [docs/AWS-DEPLOY-RUNBOOK.md](docs/AWS-DEPLOY-RUNBOOK.md).
 - **CI** (every PR and push touching code): backend unit + integration, the prod-jar check, frontend lint, typecheck, Vitest and build, then the whole stack in compose with Playwright and `smoke.sh`.
 - **Deploy** (**manual for now**: Actions → Deploy → Run workflow on `main`):
   1. a gate checks that CI is green for that commit;

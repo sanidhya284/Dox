@@ -197,7 +197,7 @@ Runs before every request. Extracts `Authorization: Bearer <token>`, validates t
 - **Local build:** `compose.build.yml` builds both images from source.
 - **Phase 4:** an override adds `app2` and `redis` and widens `APP_UPSTREAMS`.
 - **Checks:** `deploy/smoke.sh` and the Playwright test in `frontend/e2e/`.
-- **Pipeline (ADR-0011 Decisions 8 and 9):** `ci.yml` (backend, frontend, e2e) and `deploy.yml` (manual: gate → GHCR images → `production` approval → SSH with a pinned host key → `deploy/prod/deploy.sh`, a health and functional check with rollback). Daily `backup.sh` cron; `restore.sh` drill. Target: one EC2 `t3.small` in ap-southeast-2 behind `dox.work.gd`.
+- **Pipeline (ADR-0011 Decisions 8 and 9):** `ci.yml` (backend, frontend, e2e) and `deploy.yml` (manual: gate → GHCR images → `production` approval → SSH with a pinned host key → `deploy/prod/deploy.sh`, a health and functional check with rollback). Daily `backup.sh` cron; `restore.sh` drill. Target: one EC2 `t3.small` in ap-southeast-2 behind `dox-chat.in`; `www.dox-chat.in` and `dox.work.gd` 308-redirect (`REDIRECT_HOSTS`).
 
 ## Configuration
 
@@ -319,7 +319,6 @@ A socket authenticates once, at the handshake, so it could otherwise outlive the
 - **Rate limits are in memory and per instance** (ADR-0011): two instances double them (Phase 4 moves them to Redis), a fixed window can admit up to 2× the limit across a boundary, users behind one NAT share the per-IP limits, and anyone sharing a victim's IP can use up that victim's login attempts. `GET`s and message sends aren't rate-limited.
 - **A lost refresh response logs the user out:** if the server rotated the token but the response (with its `Set-Cookie`) never reached the browser, the next refresh replays the old token, which revokes the family and closes the user's sockets with `4002` (ADR-0010). Two tabs refreshing at once would do the same; the UI serializes refresh across tabs.
 - **Deploys disconnect everyone:** one app instance restarts on every deploy, so sockets close (`1001`) and clients reconnect and catch up. There's no zero-downtime deploy before Phase 4.
-- **Shared hostname:** `dox.work.gd` isn't on the Public Suffix List, so Let's Encrypt limits are shared with other `*.work.gd` users, and SameSite doesn't separate us from other `*.work.gd` sites (the Origin checks and the host-only cookie still do; ADR-0010, ADR-0011).
 - **Backups live on the same server** until they're copied off by hand; restoring the live database is a manual procedure (runbook 6.2).
 - **VPS sizing is derived from memory limits** (2 GB recommended for Phase 6, 4 GB for Phase 4), not measured.
 - **The browser UI:** unsent messages live in memory, so a reload loses the outbox (sends that were already acked are safe). It doesn't create conversations, and it shows senders as "You" or a short id (there's no user lookup endpoint). Its sync code is unit-tested, but the convergence-under-faults test covers only the Java reference client.
