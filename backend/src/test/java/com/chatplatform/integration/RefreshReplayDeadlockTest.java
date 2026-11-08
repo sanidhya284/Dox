@@ -1,7 +1,6 @@
 package com.chatplatform.integration;
 
 import com.chatplatform.auth.dto.AuthResponse;
-import com.chatplatform.auth.dto.RefreshRequest;
 import com.chatplatform.auth.dto.RegisterRequest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -68,12 +67,11 @@ public class RefreshReplayDeadlockTest extends AbstractIntegrationTest {
                 AuthResponse.class);
         assertThat(reg.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         UUID userId = reg.getBody().user().id();
-        String refreshToken = reg.getBody().refreshToken();
+        String refreshToken = AuthCookies.refreshToken(reg);
         for (int i = 0; i < PRIOR_ROTATIONS; i++) {
-            ResponseEntity<AuthResponse> rot = restTemplate.postForEntity(
-                    "/api/auth/refresh", new RefreshRequest(refreshToken), AuthResponse.class);
+            ResponseEntity<String> rot = AuthCookies.refresh(restTemplate, refreshToken);
             assertThat(rot.getStatusCode()).isEqualTo(HttpStatus.OK);
-            refreshToken = rot.getBody().refreshToken();
+            refreshToken = AuthCookies.refreshToken(rot);
         }
         String contested = refreshToken;
 
@@ -85,8 +83,7 @@ public class RefreshReplayDeadlockTest extends AbstractIntegrationTest {
             futures.add(exec.submit(() -> {
                 ready.countDown();
                 start.await(10, TimeUnit.SECONDS);
-                ResponseEntity<String> r = restTemplate.postForEntity(
-                        "/api/auth/refresh", new RefreshRequest(contested), String.class);
+                ResponseEntity<String> r = AuthCookies.refresh(restTemplate, contested);
                 return HttpStatus.valueOf(r.getStatusCode().value());
             }));
         }

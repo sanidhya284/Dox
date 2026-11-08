@@ -46,6 +46,9 @@ public class ConnectionRegistry {
             new ConcurrentHashMap<>();
     private final int sendTimeLimitMs;
     private final int bufferSizeLimitBytes;
+    private final int maxSocketsPerUser;
+
+    static final int DEFAULT_MAX_SOCKETS_PER_USER = 10;
     private final java.util.concurrent.atomic.AtomicLong slowConsumerCloses = new java.util.concurrent.atomic.AtomicLong();
 
     /** Defaults; used by unit tests. */
@@ -53,15 +56,22 @@ public class ConnectionRegistry {
         this(DEFAULT_SEND_TIME_LIMIT_MS, DEFAULT_BUFFER_SIZE_LIMIT_BYTES);
     }
 
+    public ConnectionRegistry(int sendTimeLimitMs, int bufferSizeLimitBytes) {
+        this(sendTimeLimitMs, bufferSizeLimitBytes, DEFAULT_MAX_SOCKETS_PER_USER);
+    }
+
     @Autowired
     public ConnectionRegistry(
             @Value("${ws.send.time-limit-ms:" + DEFAULT_SEND_TIME_LIMIT_MS + "}") int sendTimeLimitMs,
-            @Value("${ws.send.buffer-bytes:" + DEFAULT_BUFFER_SIZE_LIMIT_BYTES + "}") int bufferSizeLimitBytes) {
-        if (sendTimeLimitMs <= 0 || bufferSizeLimitBytes <= 0) {
-            throw new IllegalStateException("ws.send.time-limit-ms and ws.send.buffer-bytes must be positive");
+            @Value("${ws.send.buffer-bytes:" + DEFAULT_BUFFER_SIZE_LIMIT_BYTES + "}") int bufferSizeLimitBytes,
+            @Value("${ws.max-sockets-per-user:" + DEFAULT_MAX_SOCKETS_PER_USER + "}") int maxSocketsPerUser) {
+        if (sendTimeLimitMs <= 0 || bufferSizeLimitBytes <= 0 || maxSocketsPerUser <= 0) {
+            throw new IllegalStateException(
+                    "ws.send.time-limit-ms, ws.send.buffer-bytes and ws.max-sockets-per-user must be positive");
         }
         this.sendTimeLimitMs = sendTimeLimitMs;
         this.bufferSizeLimitBytes = bufferSizeLimitBytes;
+        this.maxSocketsPerUser = maxSocketsPerUser;
     }
 
     /** Sessions closed with 4003 (slow or broken consumer) since startup. */
@@ -73,15 +83,27 @@ public class ConnectionRegistry {
         return sendTimeLimitMs;
     }
 
-    public void register(UUID userId, WebSocketSession session) {
+    /**
+     * Registers the socket unless the user already has {@code ws.max-sockets-per-user} open ones (ADR-0006).
+     * The check and the insert happen in one {@code compute} on the user's entry, so concurrent connects of
+     * one user can't both slip past the cap.
+     *
+     * @return false when the cap was reached; the caller closes the socket with 4007
+     */
+    public boolean register(UUID userId, WebSocketSession session) {
         ConcurrentWebSocketSessionDecorator decorated = new ConcurrentWebSocketSessionDecorator(
                 session, sendTimeLimitMs, bufferSizeLimitBytes,
                 ConcurrentWebSocketSessionDecorator.OverflowStrategy.TERMINATE);
+        boolean[] accepted = {false};
         sessionsByUser.compute(userId, (id, sessions) -> {
             Map<String, ConcurrentWebSocketSessionDecorator> map = (sessions != null) ? sessions : new ConcurrentHashMap<>();
-            map.put(session.getId(), decorated);
-            return map;
+            if (map.size() < maxSocketsPerUser) {
+                map.put(session.getId(), decorated);
+                accepted[0] = true;
+            }
+            return map.isEmpty() ? null : map;
         });
+        return accepted[0];
     }
 
     public void unregister(UUID userId, WebSocketSession session) {

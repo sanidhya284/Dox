@@ -148,6 +148,8 @@ So the A prediction isn't blind about "400/s is too much". Everything else is a 
 
 ## 6. Results (step 4, measured 2026-11-05)
 
+> **These results predate Phase 6** (auth changes: the refresh token moved to a cookie, rate limits, a socket cap of 10 per user, invite-only registration). The harness was adapted to them, with open registration and high limits in the `bench` profile, but the published numbers were **not** re-measured.
+
 **Results are for this machine and this workload; they are not capacity claims.**
 
 **Setup** (from the result files):

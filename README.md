@@ -12,15 +12,16 @@ A real-time chat backend built as a learning project for backend engineering: a 
 | 2b-ii: connection registry, socket lifetime, closing sockets on token theft | Done |
 | 2c: WebSocket send, ack, push ([ADR-0006](docs/adr/0006-websocket-frame-protocol-v1.md)) | Done (PR open) |
 | 2d-lite: heartbeats and idle close, delivered/read cursors ([ADR-0007](docs/adr/0007-heartbeats-and-read-cursors.md)) | Done (PR open) |
-| 2e: React UI (presence and typing deferred) | Not started |
+| 2e: React UI (presence and typing deferred) | Minimal UI done in Phase 6 (`frontend/`) |
 | 3: reliable delivery and recovery (catch-up APIs, reference client, convergence under faults) | Done (PR open) |
 | 5-lite: metrics, load harness, one measured bottleneck ([ADR-0009](docs/adr/0009-observability-and-measurement.md)) | Done (PR open): metrics, load harness, measured on one laptop (below) |
-| 4, 6 onward: multi-instance, outbox, ... | Not started |
+| 6: browser UI + auto-deploy (single instance; [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md)) | In progress: steps 1 (pre-deploy hardening), 2 (refresh token in an HttpOnly cookie) 3 (browser UI), 4 (compose stack + Caddy, smoke and e2e) and 5 (server prepared, deploy pipeline built) done; first deploy pending |
+| 4, 7 onward: multi-instance, outbox, ... | Not started |
 
 Details and the next steps: [docs/HANDOFF.md](docs/HANDOFF.md).
 
 ## Stack
-Java 21, Spring Boot 3.3, Gradle 8.10, PostgreSQL 16, Flyway, Spring JDBC (`JdbcClient`, explicit SQL), HikariCP, Spring Security with JWT (HS256) and BCrypt, Testcontainers, JUnit 5, GitHub Actions. `frontend/` and `load-tests/` are placeholders.
+Java 21, Spring Boot 3.3, Gradle 8.10, PostgreSQL 16, Flyway, Spring JDBC (`JdbcClient`, explicit SQL), HikariCP, Spring Security with JWT (HS256) and BCrypt, Testcontainers, JUnit 5, GitHub Actions. UI: Vite + React 18 + TypeScript in `frontend/`, tested with Vitest. `load-tests/` is a placeholder (the load harness lives in `backend/src/test/java/.../load`).
 
 ## Run locally
 Prerequisites: Java 21 and Docker.
@@ -36,11 +37,68 @@ The `dev` profile supplies a development-only JWT secret and the local frontend 
 - `JWT_SECRET`: at least 32 bytes.
 - `WS_ALLOWED_ORIGINS`: comma-separated exact origins allowed to open WebSockets, e.g. `https://app.example.com`. A blank entry or `*` is refused.
 
-Optional: `WS_SESSION_MAX_LIFETIME` (ISO-8601 duration, default `PT15M`) is how long a WebSocket may stay open; zero or negative values refuse startup. `WS_MAX_TEXT_FRAME_BYTES` (default `32768`) is the largest text frame accepted. Heartbeats: `WS_HEARTBEAT_INTERVAL` (default `PT25S`) and `WS_HEARTBEAT_TIMEOUT` (default `PT60S`, must be at least twice the interval). Push tuning: `WS_SEND_TIME_LIMIT_MS` (default `5000`) and `WS_SEND_BUFFER_BYTES` (default `524288`) bound how long and how much a single socket may lag before it is closed with `4003`; `WS_PUSH_THREADS` (default `2`) and `WS_PUSH_QUEUE_CAPACITY` (default `10000`) size the push executor.
+**Registration is invite-only by default:** `POST /api/auth/register` needs `"inviteCode"` equal to `REGISTRATION_INVITE_CODE`. With no code configured, registration is closed (`403 REGISTRATION_CLOSED`). The `dev` profile keeps registration open. `DEMO_PASSWORD` (optional, at least 8 characters) seeds `demo1`, `demo2`, `demo3` and a "Demo room"; **demo data is public**, so never put real data there.
+
+**Rate limits** (in memory, per instance; `429 RATE_LIMITED` with `Retry-After`):
+- register: 5 per hour per IP;
+- login: 20 per minute per IP, and 5 per minute per (IP, username);
+- WebSocket tickets: 30 per minute per user;
+- failed WebSocket handshakes: 20 per minute per IP.
+
+They're checked before BCrypt and before any ticket is touched. Users behind one NAT share the per-IP limits. Details: [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md).
+
+**Production** uses `SPRING_PROFILES_ACTIVE=prod` (never together with `dev` or `bench`; startup refuses). The configuration checklist is in [ADR-0011 Decision 4](docs/adr/0011-deployment-and-pre-deploy-hardening.md#decision-4-a-prod-profile-that-cant-be-mixed-with-dev-secrets).
+
+Optional: `WS_MAX_SOCKETS_PER_USER` (default `10`) caps open sockets per user; the next one is closed with `4007`. `WS_SESSION_MAX_LIFETIME` (ISO-8601 duration, default `PT15M`) is how long a WebSocket may stay open; zero or negative values refuse startup. `WS_MAX_TEXT_FRAME_BYTES` (default `32768`) is the largest text frame accepted. Heartbeats: `WS_HEARTBEAT_INTERVAL` (default `PT25S`) and `WS_HEARTBEAT_TIMEOUT` (default `PT60S`, must be at least twice the interval). Push tuning: `WS_SEND_TIME_LIMIT_MS` (default `5000`) and `WS_SEND_BUFFER_BYTES` (default `524288`) bound how long and how much a single socket may lag before it is closed with `4003`; `WS_PUSH_THREADS` (default `2`) and `WS_PUSH_QUEUE_CAPACITY` (default `10000`) size the push executor.
 
 Metrics: `/actuator/prometheus` needs HTTP Basic as user `metrics` with `METRICS_PASSWORD` (at least 16 characters; without it scraping is disabled). The `dev` profile sets a dev-only password. Basic sends the password on every request, so use TLS in production. `/actuator/health` stays public. Application meters are named `chat.*` (sends, acks, sockets, closes, tickets, cursors, heads, dropped pushes); see [architecture.md, Metrics](docs/architecture.md#metrics-adr-0009).
 
 All configuration: [architecture.md, Configuration](docs/architecture.md#configuration).
+
+### The whole stack in Docker (as deployed)
+Postgres, the app (`prod` profile) and Caddy (TLS + UI + proxy) on https://localhost (Caddy's local CA, so your browser warns once):
+
+```bash
+cd deploy
+cp .env.local.example .env                                   # local-only values; .env is git-ignored
+docker compose -f compose.yml -f compose.build.yml up -d --build
+cd .. && deploy/smoke.sh                                     # exposure, headers, logs, fail-closed image, XFF
+cd frontend && npx playwright install chromium && npm run e2e   # demo1 sends, demo2 sees it live
+```
+
+Log in as `demo1` / `local-demo-password`. Stop the stack with `docker compose -f compose.yml down` (add `-v` to wipe its database). It needs ports 80 and 443 free. How it's put together: [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md).
+
+### How deploys work (single instance; not production-grade)
+The demo target is one AWS EC2 `t3.small` in Sydney behind `dox.work.gd`. Details: [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md); step by step: [docs/AWS-DEPLOY-RUNBOOK.md](docs/AWS-DEPLOY-RUNBOOK.md).
+- **CI** (every PR and push touching code): backend unit + integration, the prod-jar check, frontend lint, typecheck, Vitest and build, then the whole stack in compose with Playwright and `smoke.sh`.
+- **Deploy** (**manual for now**: Actions → Deploy → Run workflow on `main`):
+  1. a gate checks that CI is green for that commit;
+  2. images are pushed to GHCR (`sha-<short>`);
+  3. after your approval in the `production` environment, the job SSHes in with a pinned host key and runs `deploy.sh`.
+- **`deploy.sh`:** pulls, restarts, then checks health, a demo login, a ticket, a socket, and a message send, ack and read-back through Caddy. It rolls back to the previous tag if any of that fails.
+- **During a deploy,** every WebSocket closes once and clients reconnect and catch up.
+- **Backups:** daily `pg_dump` on the server (keeps 7), plus a restore drill script. Copy backups off the server yourself.
+- **Not covered:** high availability, zero-downtime deploys, and any capacity claim.
+
+### The browser UI (development)
+Prerequisites: Node 22 (npm 10). With the backend running as above (`dev` profile on :8080):
+
+```bash
+cd frontend && npm ci && npm run dev        # http://localhost:5173
+```
+
+Vite proxies `/api` and `/ws` to `localhost:8080`, so the UI and the API share one origin, as they do behind Caddy in production: no CORS. The `dev` profile keeps registration open and lets the refresh cookie work over plain `http://localhost`.
+
+Frontend checks: `npm run lint` (bans `dangerouslySetInnerHTML`), `npm run typecheck`, `npm test` (Vitest).
+
+The UI covers:
+- register and login;
+- the conversation list with unread counts;
+- the message pane and composer;
+- read cursors;
+- live push with reconnect.
+
+It doesn't create conversations yet (use the seeded "Demo room", or create groups through the API), and it shows senders as "You" or a short user id.
 
 ## Tests
 ```bash
@@ -59,7 +117,7 @@ echo "api.version=1.44" > ~/.docker-java.properties
 **Load harness** (on demand, never in CI): `./gradlew loadTest` against a separately started app (`bench` profile) and a dedicated benchmark database (`deploy/bench/bench-db.sh`). Method, scenarios, every run and the analysis: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## API and WebSocket
-The REST endpoints are `/api/auth/*` (register, login, refresh, logout), `/api/conversations/*` (direct and group conversations, sending and paging messages; a message body is at most 4,000 characters, longer bodies get `400 VALIDATION_ERROR`), `GET /api/conversations/{id}/messages?after={seq}&limit={n}` (catch up: messages after a seq, oldest first, exact `hasMore`; `?before=` pages backwards), `GET /api/conversations/heads` (`[{conversationId, lastSeq}]` for your conversations: a cheap "am I behind?" check), `POST /api/conversations/{id}/cursor` (`{"kind":"read"|"delivered","seq":42}`: moves your cursor forward, never back; read implies delivered), `POST /api/ws/ticket` and `/actuator/health`. A conversation's `unreadCount` counts messages after your read cursor that *others* sent; `GET /api/conversations/{id}` also returns every participant's `lastReadSeq` / `lastDeliveredSeq`, and the list returns `myLastReadSeq`. Both also return `lastSeq`, the conversation's newest seq. Full table: [architecture.md, API Surface](docs/architecture.md#api-surface).
+The REST endpoints are `/api/auth/*` (register, login, refresh, logout; the refresh token is set and read **only as an HttpOnly, Secure, SameSite=Strict cookie `chat_rt` scoped to `/api/auth`**, never in a body; refresh and logout need an allowed `Origin`: [ADR-0010](docs/adr/0010-refresh-token-cookie.md)), `/api/conversations/*` (direct and group conversations, sending and paging messages; a message body is at most 4,000 characters, longer bodies get `400 VALIDATION_ERROR`), `GET /api/conversations/{id}/messages?after={seq}&limit={n}` (catch up: messages after a seq, oldest first, exact `hasMore`; `?before=` pages backwards), `GET /api/conversations/heads` (`[{conversationId, lastSeq}]` for your conversations: a cheap "am I behind?" check), `POST /api/conversations/{id}/cursor` (`{"kind":"read"|"delivered","seq":42}`: moves your cursor forward, never back; read implies delivered), `POST /api/ws/ticket` and `/actuator/health`. A conversation's `unreadCount` counts messages after your read cursor that *others* sent; `GET /api/conversations/{id}` also returns every participant's `lastReadSeq` / `lastDeliveredSeq`, and the list returns `myLastReadSeq`. Both also return `lastSeq`, the conversation's newest seq. Full table: [architecture.md, API Surface](docs/architecture.md#api-surface).
 
 Connecting a WebSocket:
 1. `POST /api/ws/ticket` with `Authorization: Bearer <access token>` returns `{"ticket": "...", "expiresInSeconds": 30}`.
@@ -78,6 +136,7 @@ Close codes sent by the server:
 | `4002` | Credentials revoked: a refresh token of this user was replayed (theft signal), so all their sockets are closed | Log in again |
 | `4003` | Slow consumer: the socket fell behind the send-time or buffer limit | Reconnect and recover missed messages from history |
 | `4006` | Idle timeout: no pong or frame within `WS_HEARTBEAT_TIMEOUT` | Reconnect; recover from history |
+| `4007` | Too many sockets: the user already has `WS_MAX_SOCKETS_PER_USER` open | Don't reconnect automatically; close a tab or device |
 | `4004` | Unsupported protocol version (`v` is not 1) | Fix the client |
 | `4005` | Unknown frame `type` | Fix the client |
 | `1007` | Frame is not valid protocol JSON (envelope, or a `clientMsgId` that is not a UUID) | Fix the client |
@@ -88,11 +147,13 @@ Close codes sent by the server:
 ## Writing a client
 Pushes are an optimisation; PostgreSQL is the truth. A correct client (full algorithm and reasoning: [ADR-0008](docs/adr/0008-client-sync-protocol.md); a working reference implementation is in `backend/src/test/java/com/chatplatform/client/ReferenceClient.java`):
 1. Give each send a `clientMsgId` once and keep it for every retry; resend if no ack arrives within a timeout and after every reconnect. Treat the ack as your own copy of the message.
-2. Reconnect with a fresh ticket and exponential backoff with full jitter. On `4002` log in again; on `1007`/`4004`/`4005` stop (it is a client bug); otherwise reconnect.
+2. Reconnect with a fresh ticket and exponential backoff with full jitter. On `4002` log in again; on `4007` stop (too many open sockets); on `1007`/`4004`/`4005` stop (it is a client bug); otherwise reconnect.
 3. **Subscribe first, then fetch:** open the socket, then page `GET .../messages?after=<your contiguous seq>` where `GET /api/conversations/heads` says you are behind.
 4. Deduplicate by message id, order by `seq`; if a push skips ahead of your contiguous seq, fetch the gap.
 5. Every ~30 s (jittered) compare `heads` with your contiguous seq and fetch if behind: this is the only way to notice that the *last* push was lost.
-6. On a 401, refresh the access token once (shared by concurrent requests) and retry.
+6. On a 401, refresh the access token once (shared by concurrent requests, and in a browser across tabs) and retry. Keep the access token in memory; the refresh token is the `chat_rt` cookie.
+
+**Which client is tested how:** the browser UI's sync code (`frontend/src/sync/client.ts`) is a TypeScript port of the Java reference client. It's unit-tested with a fake server, a fake socket and fake timers (dedupe, subscribe-first, gap fetch, anti-entropy, same-id resend, close codes, single-flight refresh; each with a negative form). **The convergence-under-faults guarantee below is tested on the Java reference client only, not on the TypeScript client.**
 
 `ConvergenceTest` checks this end to end: 8 clients under seeded faults (dropped connections, pushes and acks, duplicated and delayed sends, failed commits) all end with exactly the database's history.
 
@@ -131,8 +192,10 @@ The main ones:
 - Logout does not close open WebSockets.
 - The connection registry and pushes are single-instance (Phase 4: Redis fan-out).
 - Pushes may arrive out of `seq` order and may be dropped when the push queue is full; clients recover from history.
-- No per-socket send rate limit yet.
+- No per-socket send rate limit yet. The auth and ticket rate limits are in memory and per instance.
+- `GET` requests and message sends aren't rate-limited.
 - The 401 from the security filter has an empty body.
+- If a refresh response is lost after the server rotated the token, the next refresh looks like a replay: the user is logged out everywhere ([ADR-0010](docs/adr/0010-refresh-token-cookie.md)).
 - Read receipts are visible to every participant (no privacy toggle); "delivered" is reported by the client.
 
 Full list: [architecture.md, Known Limitations](docs/architecture.md#known-limitations).
@@ -147,5 +210,7 @@ Full list: [architecture.md, Known Limitations](docs/architecture.md#known-limit
 - [ADR-0007: Heartbeats and read cursors](docs/adr/0007-heartbeats-and-read-cursors.md)
 - [ADR-0008: Client sync protocol](docs/adr/0008-client-sync-protocol.md)
 - [ADR-0009: Observability and honest measurement](docs/adr/0009-observability-and-measurement.md)
+- [ADR-0010: Refresh token in an HttpOnly cookie](docs/adr/0010-refresh-token-cookie.md)
+- [ADR-0011: Deployment and pre-deploy hardening](docs/adr/0011-deployment-and-pre-deploy-hardening.md)
 - [Architecture overview](docs/architecture.md)
 - [Interview notes](docs/INTERVIEW_NOTES.md): per milestone, the problem, the bug we actually found, the test that proves the fix, the tradeoff, and likely follow-up questions

@@ -21,6 +21,10 @@ public enum ErrorCode {
     NOT_AUTHENTICATED(HttpStatus.UNAUTHORIZED, "Authentication required"),
 
 
+    // 403
+    REGISTRATION_CLOSED(HttpStatus.FORBIDDEN, "Registration requires a valid invite code"),
+    ORIGIN_NOT_ALLOWED(HttpStatus.FORBIDDEN, "Request origin is not allowed"),
+
     // 404
     USER_NOT_FOUND(HttpStatus.NOT_FOUND, "User not found"),
     CONVERSATION_NOT_FOUND(HttpStatus.NOT_FOUND, "Conversation does not exist or is inaccessible"),
@@ -28,7 +32,10 @@ public enum ErrorCode {
     // 409
     IDEMPOTENCY_KEY_CONFLICT(HttpStatus.CONFLICT, "client_msg_id was already used for a different message"),
     USERNAME_TAKEN(HttpStatus.CONFLICT, "Username is already taken"),
-    EMAIL_TAKEN(HttpStatus.CONFLICT, "Email is already registered");
+    EMAIL_TAKEN(HttpStatus.CONFLICT, "Email is already registered"),
+
+    // 429
+    RATE_LIMITED(HttpStatus.TOO_MANY_REQUESTS, "Too many requests; retry later");
 
     public final HttpStatus status;
     public final String defaultMessage;

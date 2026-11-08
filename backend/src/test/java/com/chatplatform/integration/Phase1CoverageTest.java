@@ -2,7 +2,6 @@ package com.chatplatform.integration;
 
 import com.chatplatform.auth.dto.AuthResponse;
 import com.chatplatform.auth.dto.LoginRequest;
-import com.chatplatform.auth.dto.RefreshRequest;
 import com.chatplatform.auth.dto.RegisterRequest;
 import com.chatplatform.auth.dto.TokenPair;
 import com.chatplatform.conversation.dto.ConversationResponse;
@@ -32,6 +31,9 @@ class Phase1CoverageTest extends AbstractIntegrationTest {
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
+    /** Refresh-token cookie of the most recent register() call. */
+    private String lastRefreshToken;
+
     private AuthResponse register(String suffix) {
         RegisterRequest req = new RegisterRequest(
                 "user_" + suffix,
@@ -41,6 +43,7 @@ class Phase1CoverageTest extends AbstractIntegrationTest {
         );
         ResponseEntity<AuthResponse> res = restTemplate.postForEntity("/api/auth/register", req, AuthResponse.class);
         assertThat(res.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        lastRefreshToken = AuthCookies.refreshToken(res); // the refresh token is only in the cookie (ADR-0010)
         assertThat(res.getBody()).isNotNull();
         return res.getBody();
     }
@@ -92,7 +95,8 @@ class Phase1CoverageTest extends AbstractIntegrationTest {
         TokenPair tokens = loginRes.getBody();
         assertThat(tokens).isNotNull();
         assertThat(tokens.accessToken()).isNotBlank();
-        assertThat(tokens.refreshToken()).isNotBlank();
+        String refreshToken = AuthCookies.refreshToken(loginRes);
+        assertThat(refreshToken).isNotBlank();
 
         // use the returned access token on GET /api/conversations (200)
         ResponseEntity<List> convRes = restTemplate.exchange(
@@ -106,7 +110,7 @@ class Phase1CoverageTest extends AbstractIntegrationTest {
         // and the returned refresh token on /api/auth/refresh (200)
         ResponseEntity<TokenPair> refreshRes = restTemplate.postForEntity(
                 "/api/auth/refresh",
-                new RefreshRequest(tokens.refreshToken()),
+                AuthCookies.request(refreshToken, AuthCookies.ORIGIN),
                 TokenPair.class
         );
         assertThat(refreshRes.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -219,19 +223,11 @@ class Phase1CoverageTest extends AbstractIntegrationTest {
         AuthResponse auth = register("logout_" + s);
 
         // POST /api/auth/logout with the refresh token (expect 204)
-        ResponseEntity<Void> logoutRes = restTemplate.postForEntity(
-                "/api/auth/logout",
-                new RefreshRequest(auth.refreshToken()),
-                Void.class
-        );
+        ResponseEntity<String> logoutRes = AuthCookies.logout(restTemplate, lastRefreshToken);
         assertThat(logoutRes.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
 
         // then POST /api/auth/refresh with that same token returns 401
-        ResponseEntity<Map> refreshRes = restTemplate.postForEntity(
-                "/api/auth/refresh",
-                new RefreshRequest(auth.refreshToken()),
-                Map.class
-        );
+        ResponseEntity<String> refreshRes = AuthCookies.refresh(restTemplate, lastRefreshToken);
         assertThat(refreshRes.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
 

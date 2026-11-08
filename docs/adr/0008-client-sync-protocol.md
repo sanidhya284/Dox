@@ -28,6 +28,7 @@ Pushes are best effort by design ([ADR-0006](0006-websocket-frame-protocol-v1.md
    | `4002` | Stop; re-login required |
    | `1007`, `4004`, `4005` | Stop: client bug, never loop |
    | `1008` | Stop: server bug |
+   | `4007` | Stop: too many open sockets for this user (added 2026-11-06, [ADR-0006](0006-websocket-frame-protocol-v1.md) Decision 2a); the user closes a tab or device and reconnects by hand |
 
 4. **Subscribe first, then fetch.** Open the socket first, so new commits arrive as pushes; then page `?after=contiguousSeq` for each conversation where `heads` says the client is behind. Fetching first and subscribing afterwards loses anything committed in between.
 5. **Local history.** Deduplicate by message id, order by `seq`, and track `contiguousSeq`, the highest seq with every earlier seq present.
@@ -49,3 +50,6 @@ Pushes are best effort by design ([ADR-0006](0006-websocket-frame-protocol-v1.md
 - **No server-sent "resync" hint;** clients rely on gap detection and anti-entropy.
 - **Long offline periods:** a client offline longer than the refresh-token lifetime must log in again.
 - **Single instance;** multi-instance delivery is Phase 4.
+
+## Addendum 2026-11-06 (Phase 6): the browser client
+The browser UI's sync code (`frontend/src/sync/client.ts`) ports this algorithm to TypeScript, with the same rules, the same close-code table and the same negative-form tests (Vitest, fake server, fake timers). The fault-injection `ConvergenceTest` still runs only against the Java reference client.

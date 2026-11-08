@@ -1,9 +1,7 @@
 package com.chatplatform.integration;
 
 import com.chatplatform.auth.dto.AuthResponse;
-import com.chatplatform.auth.dto.RefreshRequest;
 import com.chatplatform.auth.dto.RegisterRequest;
-import com.chatplatform.auth.dto.TokenPair;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -30,26 +28,24 @@ class TokenTheftTest extends AbstractIntegrationTest {
         assertThat(res1.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(res1.getBody()).isNotNull();
 
-        String refreshToken1 = res1.getBody().refreshToken();
-        
+        // The refresh token is only in the HttpOnly cookie (ADR-0010).
+        String refreshToken1 = AuthCookies.refreshToken(res1);
+
         // Action: legitimate client uses refreshToken1 -> gets refreshToken2 (refreshToken1 revoked)
-        RefreshRequest refreshReq1 = new RefreshRequest(refreshToken1);
-        ResponseEntity<TokenPair> res2 = restTemplate.postForEntity("/api/auth/refresh", refreshReq1, TokenPair.class);
-        
+        ResponseEntity<String> res2 = AuthCookies.refresh(restTemplate, refreshToken1);
         assertThat(res2.getStatusCode()).isEqualTo(HttpStatus.OK);
-        
-        String refreshToken2 = res2.getBody().refreshToken();
-        
+        String refreshToken2 = AuthCookies.refreshToken(res2);
+
         // Action: attacker attempts to use refreshToken1 again (the "stolen" token)
-        ResponseEntity<TokenPair> res3 = restTemplate.postForEntity("/api/auth/refresh", refreshReq1, TokenPair.class);
-        
-        // Assert: 401 on the replay
+        ResponseEntity<String> res3 = AuthCookies.refresh(restTemplate, refreshToken1);
+
+        // Assert: 401 on the replay, and the browser is told to drop the cookie
         assertThat(res3.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
-        
+        assertThat(AuthCookies.setCookie(res3)).contains("Max-Age=0");
+
         // Assert: ALL tokens in the family are revoked, meaning refreshToken2 should now be invalid
-        RefreshRequest refreshReq2 = new RefreshRequest(refreshToken2);
-        ResponseEntity<TokenPair> res4 = restTemplate.postForEntity("/api/auth/refresh", refreshReq2, TokenPair.class);
-        
+        ResponseEntity<String> res4 = AuthCookies.refresh(restTemplate, refreshToken2);
+
         // The legitimate client's new token is also now invalid
         assertThat(res4.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }

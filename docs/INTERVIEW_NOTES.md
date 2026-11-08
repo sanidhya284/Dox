@@ -245,3 +245,41 @@ Short, honest notes per milestone: the problem, what actually went wrong (or cou
 - *So it handles 300 messages a second?* No. On one laptop, one conversation was reliable at 200/s and unstable at 300/s. Spread over 10 conversations, it kept up at 300/s, and I didn't push further, so I don't know that limit. A laptop with the generator on the same machine and Postgres in a VM is not a capacity measurement.
 - *How would you make a hot conversation faster?* First measure how much of the lock hold is the commit flush. If it's most of it, batch sends per conversation (one transaction, N contiguous `seq`): that keeps gap detection intact, at the cost of batch latency and complexity. Allocating `seq` outside the transaction (a sequence) removes the wait but creates holes and out-of-order commits, which breaks the client's gap detection. `synchronous_commit=off` can lose acked messages, so it's rejected.
 - *Why didn't a bigger connection pool help?* The bottleneck is a lock on one row, and every extra connection just waits in the same lock queue. Also, only 10 senders existed, so there was no extra concurrency to serve. Pool 30 even had a higher p99; I didn't investigate why, and 3 runs at an unstable rate can't separate that from noise.
+
+---
+
+## Phase 6 — browser UI and a deployable stack (steps 1–4; the deploy pipeline is step 5)
+
+**Problem.** Put the backend behind a real browser UI on the public internet, without opening holes the test client never needed.
+
+**What we built and why.**
+- **Rate limits in the app, not the proxy.**
+  - **Why the app:** it knows the username and the user (per (IP, username) login, per-user tickets), and it can check before BCrypt.
+  - **Memory is bounded:** expired windows are evicted, and new keys are refused when the map is full.
+  - **Cost:** the limits are per instance, so Redis is needed in Phase 4.
+- **Invite-only registration, checked before the conflict checks,** so nobody can learn which usernames exist without the code.
+- **The refresh token moved to an HttpOnly, Secure, SameSite=Strict cookie** scoped to `/api/auth`, with an exact `Origin` check on refresh and logout. The access token stays in memory.
+- **A TypeScript port of the Java reference client,** unit-tested with a fake server and fake timers.
+- **One compose stack:** Caddy (TLS, UI, proxy), the app and Postgres, plus a smoke script and one Playwright test.
+
+**What we found** (each caught by running something, not by reading code).
+- **The HTTP client retried a 429.** TestRestTemplate's default Apache client honours `Retry-After` on 429, so the rate-limit tests hung instead of seeing the 429. The tests now use the JDK client.
+- **A mutation that survived:** changing only the `@Value` default for the cookie's `Secure` flag changed nothing, because `application.yml` sets it. The config value is the real guarantee, so its mutation is the one that counts.
+- **The healthcheck shell:** the app container's healthcheck used `/bin/sh`, which is dash, and dash has no `/dev/tcp`. The app was healthy but reported unhealthy.
+- **Fail-closed order:** the bare image refused to start on `ws.allowed-origins is not set` before reaching the JWT check, so the smoke test checks both cases separately.
+- **A test bug:** the e2e test's `getByLabel('Message')` also matched the "Messages" list (substring match).
+- **The XFF check:** spoofed `X-Forwarded-For` doesn't dodge the per-IP limit, and the check was shown to fail when Caddy is told to trust every proxy.
+
+**Tradeoffs.**
+- **Cookie vs memory:** the cookie survives reloads and keeps the long-lived token away from JavaScript, but it adds CSRF (handled by SameSite plus Origin) and a multi-tab problem (handled by a Web Lock).
+- **Strict replay detection:** a lost refresh response logs the user out.
+- **Single instance:** deploys disconnect every socket for the restart time; no zero-downtime claim.
+
+**Follow-ups.**
+- *Why not keep the refresh token in localStorage?* Any XSS could read it and use it for a week from anywhere. With an HttpOnly cookie, XSS can act only while the page is open and can't take the long-lived credential away.
+- *How do you stop CSRF if the cookie is sent automatically?*
+  - SameSite=Strict, so it's not sent on cross-site requests;
+  - an exact `Origin` check on the two cookie endpoints;
+  - same-origin serving, so there's no CORS to misconfigure.
+- *Why rate-limit in the app instead of nginx or Caddy?* The app knows the account being attacked, so it can key on (IP, username) and check before the expensive BCrypt. The price is per-instance memory, which moves to Redis when there are two instances.
+- *What happens to open chats during a deploy?* The sockets close with `1001`. Clients reconnect with jittered backoff, fetch what they missed, and resend unacked messages with the same id, so there are no losses and no duplicates, just a visible reconnect.

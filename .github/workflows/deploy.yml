@@ -1,0 +1,121 @@
+name: Deploy
+
+# Manual only for now (runbook section 9 turns on deploys after CI on main, later).
+# Flow: gate (CI passed for this exact commit) -> images (build + push to GHCR) -> deploy (environment
+# `production`: waits for a required reviewer; SSH with a pinned host key; deploy.sh health-gates and rolls back).
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  APP_IMAGE: ghcr.io/sanidhya284/dox-app
+  WEB_IMAGE: ghcr.io/sanidhya284/dox-web
+
+jobs:
+  gate:
+    name: Gate (main, and CI green for this commit)
+    runs-on: ubuntu-latest
+    permissions:
+      checks: read
+      contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Only main deploys
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "Deploys run from main only (got ${{ github.ref }})."
+          exit 1
+      - name: CI must have passed for ${{ github.sha }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          required=("Build & Test (Java 21)" "Frontend (lint, typecheck, Vitest, build)" "Stack smoke + e2e (compose, Caddy, Playwright)")
+          runs=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?per_page=100")
+          for name in "${required[@]}"; do
+            c=$(jq -r --arg n "$name" '[.check_runs[] | select(.name == $n)] | sort_by(.completed_at) | last | .conclusion // "missing"' <<<"$runs")
+            echo "$name: $c"
+            [ "$c" = "success" ] || { echo "CI check '$name' is '$c' for this commit: not deploying."; exit 1; }
+          done
+      - id: tag
+        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+  images:
+    name: Build and push images
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: app image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: true
+          tags: ${{ env.APP_IMAGE }}:${{ needs.gate.outputs.tag }},${{ env.APP_IMAGE }}:main
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,mode=max,scope=app
+      - name: web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/web.Dockerfile
+          push: true
+          tags: ${{ env.WEB_IMAGE }}:${{ needs.gate.outputs.tag }},${{ env.WEB_IMAGE }}:main
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+  deploy:
+    name: Deploy to production
+    needs: [gate, images]
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: SSH key and pinned host key (no host-key prompts, no StrictHostKeyChecking=no)
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host deploy-target
+            HostName ${{ secrets.DEPLOY_HOST }}
+            User ${{ secrets.DEPLOY_USER }}
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile ~/.ssh/known_hosts
+            ConnectTimeout 20
+          EOF
+      - name: Copy compose file and server scripts
+        run: |
+          scp deploy/compose.yml deploy/prod/deploy.sh deploy/prod/backup.sh deploy/prod/restore.sh \
+              deploy/prod/postdeploy_check.py deploy-target:/opt/chat/
+      - name: Deploy ${{ needs.gate.outputs.tag }} (health-gated, rolls back on failure)
+        run: ssh deploy-target "chmod +x /opt/chat/*.sh && /opt/chat/deploy.sh ${{ needs.gate.outputs.tag }}"
+      - name: Install the daily backup cron (idempotent; deploy user's own crontab)
+        run: |
+          ssh deploy-target '(crontab -l 2>/dev/null | grep -v "/opt/chat/backup.sh"; echo "15 3 * * * /opt/chat/backup.sh >> /opt/chat/backups/backup.log 2>&1") | crontab - && crontab -l | grep backup.sh'
+      - name: Remove the key from the runner
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

@@ -38,6 +38,14 @@ Every frame is a JSON text frame `{"v":1,"type":"...", ...}`. Version 1 has:
 - **Codes reuse REST's:** `VALIDATION_ERROR`, `CONVERSATION_NOT_FOUND`, `IDEMPOTENCY_KEY_CONFLICT`, and `INTERNAL_ERROR` ("An unexpected error occurred", the same text as REST's 500). The message is the code's fixed default, except for `VALIDATION_ERROR`, whose detail only describes the client's own input.
 - **"Doesn't exist" and "not a member"** give identical frames apart from `clientMsgId`, the same 404 rule as REST (`FrameCodecTest`, with a mutation check).
 
+## Decision 2a: a per-user socket cap, close code `4007` (amended 2026-11-06, Phase 6)
+- **What it does:** a user may have at most `ws.max-sockets-per-user` open sockets (env `WS_MAX_SOCKETS_PER_USER`). The default is **10**, which is generous for a few devices and tabs each, and bounds the per-user cost of every push fan-out.
+- **When it applies:** the check runs when the socket is registered, after the handshake, as one atomic `compute` on the user's registry entry, so concurrent connects of one user can't both slip past it.
+- **What happens:** the new socket over the cap is closed with **`4007 too many sockets`**. The existing sockets stay open.
+- **Why a close code rather than an HTTP error at the handshake:** browsers don't expose the HTTP status of a failed WebSocket handshake (only a `1006`), so a close code is the only way to tell the client why.
+- **Client rule:** don't reconnect automatically on `4007`; show "too many open tabs or devices". This is the [ADR-0008](0008-client-sync-protocol.md) close-code table's "stop" class.
+- **Tests:** `SocketCapTest` (cap 2): the third socket gets `4007`, the first two stay open, a freed slot can be reused, and the cap is per user. A mutation (an off-by-one in the cap) fails the test.
+
 ## Decision 3: explicit frame-size limit, 32 KiB
 The text limit is `ws.max-text-frame-bytes` (default 32,768) and binary is 1 KiB. They are set as Tomcat servlet-context init parameters (`org.apache.tomcat.websocket.textBufferSize` / `binaryBufferSize`, from Tomcat's own constants), which Tomcat's WebSocket container reads at startup. Spring's `ServletServerContainerFactoryBean` was tried first, but it needs a live container and broke the mock-web context test. Tomcat's default (8 KiB) is too small: a 4,000-char body is up to 12,000 bytes in UTF-8, and a client may legally escape every character as `\uXXXX` (6 bytes), about 24,000 bytes plus the envelope. `WsProtocolTest` sends such a frame. It was closed with 1009 under the default limit, and is read and parsed under this one. The body limit itself (4,000 chars) is enforced in `MessageService` for REST and WebSocket alike.
 

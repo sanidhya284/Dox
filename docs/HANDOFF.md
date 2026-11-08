@@ -16,6 +16,29 @@ Written 2026-11-03 for Claude Code taking over from a Claude-chat architect + Ge
 | Phase 2d-lite (heartbeats, cursors; [ADR-0007](adr/0007-heartbeats-and-read-cursors.md)) | Done. Merged (PR #7). Presence and typing deferred. |
 | Phase 3 (reliable delivery and recovery; plan with the user's amendments in `~/.claude/plans/majestic-seeking-wreath.md`) | In progress on branch `phase-3`. Step 1 catch-up APIs (`?after=`, `heads`, `lastSeq`): done. Step 2 reference-client building blocks in test sources (`client/Backoff` full jitter, `client/Outbox` bounded with stable clientMsgId and ack timeouts, `client/ErrorClass`): done. Step 3 reference client (`client/ReferenceClient`: event loop, subscribe-first sync, dedupe, gap fetch, jittered anti-entropy via /heads, ack-timeout resend on the same socket, close-code table, single-flight refresh) + 17 targeted tests: done. Step 4 fault injector + ConvergenceTest (3 seeds; 15/15 in 5 consecutive runs; negative variants reported in the commit) + slow-consumer close total in logs: done. Step 5 ADR-0008 + README client guide: done. All 5 steps done. Merged (PR #8); its follow-up commit `66cf3e5` missed the merge and rides on `phase-5`. |
 | Phase 5-lite (metrics, load harness, one measured bottleneck; [ADR-0009](adr/0009-observability-and-measurement.md); plan with the user's amendments in `~/.claude/plans/majestic-seeking-wreath.md`) | In progress on branch `phase-5`. Step 1 secured metrics endpoint: done. Step 2 custom metrics (`ChatMetrics`, `RealtimeMetrics`; close codes 1000 and 1001 counted by name, beyond the plan's list, so normal closes do not fill `other`): done. Step 3 harness (`backend/src/test/java/com/chatplatform/load/`, `./gradlew loadTest`, `bench` profile, `deploy/bench/` dedicated DB on 55432) + [BENCHMARKS.md](BENCHMARKS.md) template: done; smoke runs of A, B, C and a deliberately overloaded A (SATURATED, invariants held). Step 4a predictions committed before measuring (`0592d3f`). Step 4 measured 2026-11-05: 68 runs, 0 invariant violations; attempt 1 aborted when Docker stopped, kept apart and excluded. Labels at run time: 63 VALID, 4 SATURATED, 1 INVALID (retried). After the P5-1 classifier fix and a relabel of the recorded fields (no re-run): 63 VALID, 5 SATURATED. Results and analysis are in [BENCHMARKS.md](BENCHMARKS.md) sections 6 and 7; a compact summary per run is in `docs/benchmarks/`, and raw samples stay git-ignored (decided by the user). **Finding:** one hot conversation held through 200/s and was unstable at 300/s on this laptop (SATURATED in 1 of 3 runs at pool 10, 3 of 3 at pool 30). The 10-group control kept up at 300/s, and row-lock waits dominate. **PR #9 into main is open; nothing is merged.** P5-1 is done, P5-2 is deferred (optional overnight run), and P5-3 is documented (section 5). |
+| Phase 6 (browser UI + auto-deploy, single instance; [ADR-0011](adr/0011-deployment-and-pre-deploy-hardening.md); plan with the user's amendments in `~/.claude/plans/majestic-seeking-wreath.md`) | In progress on branch `phase-6-ui-deploy` (from `main` after PR #9 merged Phase 5-lite). Five steps, one commit each: **1 pre-deploy hardening: done**:
+  - in-memory bounded rate limits for register, login (IP, and IP + username), tickets and failed handshakes, all before BCrypt or ticket use;
+  - invite-only registration checked before the conflict checks;
+  - socket cap 10 per user with close code `4007`;
+  - the demo seeder;
+  - the `prod` profile and `ProfileGuard`.
+  **2 cookie refresh token: done** (ADR-0010): the refresh token is only in an HttpOnly/Secure/SameSite=Strict cookie `chat_rt` with Path=/api/auth; refresh and logout need an allowed Origin; ConvergenceTest and a tiny load-harness smoke (A 20/s, C 2/s, both VALID) were re-run after the change.
+  **3 UI: done** (`frontend/`: Vite + React + TS; the sync client is a TypeScript port of the ReferenceClient; Vitest 36 tests with negative forms; ESLint bans HTML rendering).
+  **4 compose stack: done**:
+  - images: app with `-PprodJar`/`verifyProdJar` and `MaxRAMPercentage`; web = Caddy + UI;
+  - `deploy/compose.yml`, plus `compose.build.yml` for local builds;
+  - the Caddyfile (headers, actuator 404, ticket-free logs);
+  - `deploy/smoke.sh`: SMOKE OK, and the XFF check was shown to fail when Caddy trusts all proxies;
+  - Playwright e2e: 1 passed, 0 retries.
+  **STOPPED after step 4 (2026-11-06), as the user asked.**
+  **5 deploy: built and tested locally (2026-11-08)**:
+  - target: EC2 `t3.small` in ap-southeast-2 (Mumbai blocked by the Free plan), `dox.work.gd`;
+  - server prep done per runbook section 4 (with the user's approval for each sudo group);
+  - four repository secrets set;
+  - `ci.yml` gained the frontend and e2e jobs; `deploy.yml` is manual only;
+  - `deploy/prod/` scripts: the post-deploy check, rollback, backup and restore drill;
+  - `ACME_MODE=staging` on the server.
+  **NEXT (user): the GitHub clicks in runbook 7.0, then the first manual deploy, then the 7.2 staging→production certificate switch (record the issuing CA).** Automatic deploys stay off (runbook 9). |
 | Last full local run | See the latest commit message on `phase-2b-ii`; counts are read from the XML there. |
 
 ## 1. First task: verify and tidy git (before any feature work)
@@ -76,6 +99,15 @@ Cause: `revokeFamily` rewrote every row of the family. Concurrent replays of one
   - **Relabel:** all 68 summaries relabelled from their recorded fields (`deploy/bench/relabel.py`; no re-run). The run-time label is kept as `labelAtRun`. 2 outcomes changed (BENCHMARKS.md, "Relabelling").
 - **P5-2. Next experiment: NOT NOW.** Kept as an **optional overnight run:** scenario A with `synchronous_commit=off` **on the bench DB only**, to test whether the commit flush dominates the lock hold. The other two options are recorded in BENCHMARKS.md section 7: more sender sockets, and B at 400–600/s.
 - **P5-3. The hot-row limit: DOCUMENT ONLY.** See ADR-0009 Decision 5 and architecture.md, "Per-conversation serialization". No code.
+
+**Phase 6 hand checklist (the user, before step 5):**
+1. Buy or point a domain; create an A (and AAAA) record to the VPS.
+2. Create the VPS: 2 vCPU / 2 GB RAM recommended (ADR-0011 Decision 6), Ubuntu LTS, Docker Engine + compose plugin. Create a `deploy` user in the `docker` group. The firewall allows only 22, 80 and 443.
+3. Create an SSH key pair for deploys. Put the public key in `~deploy/.ssh/authorized_keys`, and add the private key and the `ssh-keyscan <host>` output as GitHub secrets (`DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_HOST`, `DEPLOY_USER`).
+4. Create `/opt/chat/.env` from `deploy/.env.example` (mode 600), with fresh secrets (`openssl rand -base64 48`).
+5. After the first image push in step 5: make the GHCR packages `dox-app` and `dox-web` public.
+6. Add a free external uptime monitor on `https://<domain>/actuator/health`.
+7. Optionally, an off-site copy of the backups.
 
 ## 6. Remaining Phase 2 plan (each step small enough to test and review)
 - **2b-ii: connection registry + real handler** (design: [ADR-0005](adr/0005-connection-registry-and-after-commit-socket-closing.md); plan approved 2026-11-04). Three steps, one commit each:

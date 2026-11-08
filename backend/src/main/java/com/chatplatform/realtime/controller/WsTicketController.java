@@ -22,9 +22,11 @@ import java.util.UUID;
 public class WsTicketController {
 
     private final WsTicketService wsTicketService;
+    private final com.chatplatform.shared.ratelimit.RateLimits rateLimits;
 
-    public WsTicketController(WsTicketService wsTicketService) {
+    public WsTicketController(WsTicketService wsTicketService, com.chatplatform.shared.ratelimit.RateLimits rateLimits) {
         this.wsTicketService = wsTicketService;
+        this.rateLimits = rateLimits;
     }
 
     /**
@@ -35,6 +37,7 @@ public class WsTicketController {
      */
     @PostMapping("/ticket")
     public IssuedTicket issueTicket(@AuthenticationPrincipal UUID currentUserId) {
+        rateLimits.checkTicket(currentUserId);
         return wsTicketService.issue(currentUserId);
     }
 }

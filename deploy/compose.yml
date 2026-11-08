@@ -1,0 +1,82 @@
+# Single-instance deployment (ADR-0011): Postgres, the app, and Caddy (TLS + UI + proxy).
+#
+# Production (the VPS): images come from GHCR; IMAGE_TAG is set by the deploy job.
+#   docker compose -f compose.yml pull && docker compose -f compose.yml up -d
+# Local, built from source (https://localhost, Caddy's local CA):
+#   cp .env.local.example .env
+#   docker compose -f compose.yml -f compose.build.yml up -d --build
+#
+# Phase 4 adds a second app instance and Redis as an OVERRIDE file (compose.phase4.yml) that sets
+# APP_UPSTREAMS="app:8080 app2:8080"; nothing here is rewritten. That's why no service sets container_name.
+#
+# Secrets live only in .env next to this file (mode 600, never committed; see .env.example).
+
+name: chat
+
+services:
+  db:
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: chat
+      POSTGRES_USER: chat
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chat -d chat"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    # No ports: Postgres is reachable only from the app on the compose network.
+
+  app:
+    image: ${APP_IMAGE:-ghcr.io/sanidhya284/dox-app}:${IMAGE_TAG:-main}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/chat
+      SPRING_DATASOURCE_USERNAME: chat
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      WS_ALLOWED_ORIGINS: ${PUBLIC_ORIGIN:-https://${DOMAIN}}
+    depends_on:
+      db:
+        condition: service_healthy
+    # The JVM heap is 75% of this (MaxRAMPercentage in the image). Flyway migrates at startup.
+    mem_limit: 768m
+    # Graceful shutdown: in-flight requests finish, sockets close with 1001 (application-prod.yml).
+    stop_grace_period: 30s
+    healthcheck:
+      # bash, not /bin/sh (dash has no /dev/tcp); the JRE image has no curl or wget.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /actuator/health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    # No ports: only Caddy reaches the app.
+
+  web:
+    image: ${WEB_IMAGE:-ghcr.io/sanidhya284/dox-web}:${IMAGE_TAG:-main}
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+      APP_UPSTREAMS: ${APP_UPSTREAMS:-app:8080}
+      HSTS_SNIPPET: ${HSTS_SNIPPET:-hsts}
+      ACME_MODE: ${ACME_MODE:-default}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    mem_limit: 128m
+
+volumes:
+  db_data:
+  caddy_data:
+  caddy_config:

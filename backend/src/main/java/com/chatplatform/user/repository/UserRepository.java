@@ -59,6 +59,14 @@ public class UserRepository {
         return count == 1;
     }
 
+    /** Replaces the password hash; true if the user exists. */
+    public boolean updatePasswordHash(UUID id, String passwordHash) {
+        return jdbcClient.sql("UPDATE users SET password_hash = :hash, updated_at = now() WHERE id = :id")
+                .param("hash", passwordHash)
+                .param("id", id)
+                .update() == 1;
+    }
+
     public User save(User user) {
         // If ID is null, the DB gen_random_uuid() generates it, but JdbcClient 
         // doesn't easily fetch generated UUIDs without a KeyHolder.

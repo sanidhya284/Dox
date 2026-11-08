@@ -29,7 +29,7 @@ public class ChatMetrics {
     public enum CursorOutcome { ADVANCED, STALE }
 
     /** Close codes counted individually; anything else is "other". */
-    static final Set<Integer> NAMED_CLOSE_CODES = Set.of(1000, 1001, 1007, 1009, 4001, 4002, 4003, 4005, 4006);
+    static final Set<Integer> NAMED_CLOSE_CODES = Set.of(1000, 1001, 1007, 1009, 4001, 4002, 4003, 4005, 4006, 4007);
 
     private final Map<String, Counter> sent;
     private final Map<TicketOutcome, Counter> tickets;

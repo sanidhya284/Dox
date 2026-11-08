@@ -65,6 +65,8 @@ logging:
 # reconnects with a fresh ticket. Env override: WS_SESSION_MAX_LIFETIME (ISO-8601,
 # e.g. PT15M). Startup refuses zero or negative values. See ADR-0005.
 ws:
+  # Open sockets per user; the next one is closed with 4007 (ADR-0006). Env: WS_MAX_SOCKETS_PER_USER.
+  max-sockets-per-user: ${WS_MAX_SOCKETS_PER_USER:10}
   session:
     max-lifetime: PT15M
   # Heartbeats (ADR-0007): ping every interval; close (4006) after timeout with no pong or frame.
@@ -73,3 +75,33 @@ ws:
     interval: PT25S
     timeout: PT60S
 
+
+# ── Phase 6 hardening (ADR-0011) ──────────────────────────────────────────
+# Behind Caddy: Tomcat's RemoteIpValve takes the client IP from X-Forwarded-For, but only when the
+# request comes from a trusted proxy (private or loopback address). The app has no public port.
+server:
+  forward-headers-strategy: native
+
+# Who may register. 'invite' (default): the request needs REGISTRATION_INVITE_CODE; with no code
+# configured, registration is closed (403). 'open' only in dev, tests and bench.
+registration:
+  mode: invite
+  invite-code: ${REGISTRATION_INVITE_CODE:}
+
+# In-memory, per instance (Phase 4 moves them to Redis). Heuristics; NAT users share the per-IP limits.
+ratelimit:
+  register-per-ip-per-hour: 5
+  login-per-ip-per-minute: 20
+  login-per-ip-and-user-per-minute: 5
+  ticket-per-user-per-minute: 30
+  failed-handshakes-per-ip-per-minute: 20
+  max-keys: 100000
+
+# Demo accounts demo1..demo3 + "Demo room", seeded at startup when DEMO_PASSWORD is set. Public data only.
+demo:
+  password: ${DEMO_PASSWORD:}
+
+# Refresh-token cookie (ADR-0010). Secure (HTTPS only) everywhere except the dev profile.
+auth:
+  refresh-cookie:
+    secure: true

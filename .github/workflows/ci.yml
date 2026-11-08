@@ -5,17 +5,24 @@ on:
     branches: [ "main", "develop" ]
     paths:
       - "backend/**"
+      - "frontend/**"
+      - "deploy/**"
       - ".github/workflows/**"
   pull_request:
     branches: [ "main", "develop" ]
     paths:
       - "backend/**"
+      - "frontend/**"
+      - "deploy/**"
       - ".github/workflows/**"
 
 # Cancel superseded runs on the same branch to save CI minutes.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   build-and-test:
@@ -66,10 +73,132 @@ jobs:
         run: ./gradlew integrationTest --no-daemon
         working-directory: backend
 
+      - name: Production jar has no dev/bench profiles
+        run: ./gradlew -PprodJar bootJar verifyProdJar --no-daemon
+        working-directory: backend
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results
           path: backend/build/reports/tests/
+          retention-days: 7
+
+  frontend:
+    name: Frontend (lint, typecheck, Vitest, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.11.0'
+      # node_modules itself is cached (keyed on the lockfile); npm ci runs only on a cache miss.
+      - name: Cache node_modules
+        id: nm
+        uses: actions/cache@v4
+        with:
+          path: frontend/node_modules
+          key: ${{ runner.os }}-node22-nm-${{ hashFiles('frontend/package-lock.json') }}
+      - name: npm ci
+        if: steps.nm.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run typecheck
+      - name: Vitest
+        run: npm run test:report
+      - run: npm run build
+      - name: Upload Vitest report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitest-report
+          path: frontend/test-results/vitest.json
+          retention-days: 7
+
+  e2e:
+    name: Stack smoke + e2e (compose, Caddy, Playwright)
+    needs: [build-and-test, frontend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      # Docker layer cache in the GitHub Actions cache (both images), so unchanged layers aren't rebuilt.
+      - name: Build app image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          load: true
+          tags: chat-app:local
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,mode=max,scope=app
+      - name: Build web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/web.Dockerfile
+          load: true
+          tags: chat-web:local
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+      - name: Start the stack (local-only values)
+        working-directory: deploy
+        run: |
+          cp .env.local.example .env
+          docker compose -f compose.yml up -d --wait --wait-timeout 180
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.11.0'
+      - name: Cache node_modules
+        id: nm
+        uses: actions/cache@v4
+        with:
+          path: frontend/node_modules
+          key: ${{ runner.os }}-node22-nm-${{ hashFiles('frontend/package-lock.json') }}
+      - name: npm ci
+        if: steps.nm.outputs.cache-hit != 'true'
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+      - name: Playwright browser
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      # e2e runs before smoke.sh: smoke's last check spends this machine's per-IP login budget.
+      - name: e2e (Playwright; at most 1 retry, recorded)
+        working-directory: frontend
+        run: npm run e2e
+      - name: Record e2e attempts and retries
+        if: always()
+        working-directory: frontend
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+          p = 'test-results/e2e.json'
+          if not os.path.exists(p):
+              print('### e2e: no report (the run did not start)'); raise SystemExit
+          d = json.load(open(p)); s = d['stats']
+          print(f"### e2e: {s['expected']} passed, {s['unexpected']} failed, {s['flaky']} flaky (passed on retry)")
+          for su in d['suites']:
+              for sp in su.get('specs', []):
+                  for t in sp['tests']:
+                      print(f"- {sp['title']}: {t['status']}, attempts {len(t['results'])}")
+          EOF
+      - name: Smoke checks
+        run: deploy/smoke.sh https://localhost chat-app:local
+      - name: Stack logs on failure
+        if: failure()
+        working-directory: deploy
+        run: docker compose -f compose.yml logs --tail 200
+      - name: Upload e2e report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: |
+            frontend/test-results/
+            frontend/playwright-report/
           retention-days: 7

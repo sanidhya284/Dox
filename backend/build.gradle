@@ -140,3 +140,29 @@ tasks.register('benchRelabel', JavaExec) {
     mainClass = 'com.chatplatform.load.Relabel'
     args = [(project.findProperty('relabel.dir') ?: '../docs/benchmarks').toString()]
 }
+
+// ── Production jar (ADR-0011) ────────────────────────────────────────────────
+// `./gradlew -PprodJar bootJar verifyProdJar` (used by the Docker image) leaves the dev and bench profiles,
+// with their dev-only secrets and relaxed limits, out of the jar. A plain `bootJar` (bench runner) keeps them.
+if (project.hasProperty('prodJar')) {
+    tasks.named('bootJar') {
+        exclude '**/application-dev.yml', '**/application-bench.yml'
+    }
+}
+
+tasks.register('verifyProdJar') {
+    description = 'Fails if the boot jar contains application-dev.yml or application-bench.yml, or lacks the prod profile.'
+    dependsOn tasks.named('bootJar')
+    doLast {
+        def jar = tasks.named('bootJar').get().archiveFile.get().asFile
+        def names = new java.util.zip.ZipFile(jar).withCloseable { z -> z.entries().collect { it.name } }
+        def forbidden = names.findAll { it ==~ /BOOT-INF\/classes\/application-(dev|bench)\.yml/ }
+        if (!forbidden.isEmpty()) {
+            throw new GradleException("Production jar contains dev-only config: ${forbidden}")
+        }
+        if (!names.contains('BOOT-INF/classes/application-prod.yml')) {
+            throw new GradleException('Production jar lacks application-prod.yml')
+        }
+        println "verifyProdJar: OK (${jar.name} has no dev/bench profile files)"
+    }
+}

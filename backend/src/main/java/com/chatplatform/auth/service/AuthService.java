@@ -1,6 +1,6 @@
 package com.chatplatform.auth.service;
 
-import com.chatplatform.auth.dto.AuthResponse;
+import com.chatplatform.auth.dto.Registration;
 import com.chatplatform.auth.dto.LoginRequest;
 import com.chatplatform.auth.dto.RegisterRequest;
 import com.chatplatform.auth.dto.TokenPair;
@@ -20,14 +20,20 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final TokenService tokenService;
 
-    public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder, TokenService tokenService) {
+    private final RegistrationPolicy registrationPolicy;
+
+    public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder, TokenService tokenService,
+                       RegistrationPolicy registrationPolicy) {
+        this.registrationPolicy = registrationPolicy;
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.tokenService = tokenService;
     }
 
     @Transactional
-    public AuthResponse register(RegisterRequest request) {
+    public Registration register(RegisterRequest request) {
+        // First: without the invite code, nobody learns whether a username or email exists (ADR-0011).
+        registrationPolicy.check(request.inviteCode());
         if (userRepository.existsByUsername(request.username())) {
             throw new ApiException(ErrorCode.USERNAME_TAKEN);
         }
@@ -56,7 +62,7 @@ public class AuthService {
         }
         TokenPair tokenPair = tokenService.generateTokenPair(savedUser.id());
 
-        return new AuthResponse(UserResponse.from(savedUser), tokenPair.accessToken(), tokenPair.refreshToken());
+        return new Registration(UserResponse.from(savedUser), tokenPair);
     }
 
     @Transactional

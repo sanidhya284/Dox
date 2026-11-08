@@ -1,0 +1,10 @@
+# Local override: build both images from source instead of pulling them from GHCR.
+#   docker compose -f compose.yml -f compose.build.yml up -d --build
+services:
+  app:
+    build:
+      context: ../backend
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/web.Dockerfile

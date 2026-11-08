@@ -1,0 +1,12 @@
+.git
+.claude
+**/node_modules
+**/dist
+**/build
+**/.gradle
+**/test-results
+**/playwright-report
+bench-results
+docs
+deploy/.env
+deploy/*.env

@@ -1,0 +1,13 @@
+# Production profile (ADR-0011). Never combine with 'dev' or 'bench' (ProfileGuard refuses startup);
+# the production image doesn't contain those profile files at all.
+# Required environment: JWT_SECRET, WS_ALLOWED_ORIGINS, REGISTRATION_INVITE_CODE, SPRING_DATASOURCE_URL,
+# SPRING_DATASOURCE_USERNAME, SPRING_DATASOURCE_PASSWORD. Optional: METRICS_PASSWORD, DEMO_PASSWORD.
+server:
+  # Finish in-flight requests on SIGTERM (docker stop) before exiting; sockets close with 1001.
+  shutdown: graceful
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+logging:
+  level:
+    com.chatplatform: INFO
