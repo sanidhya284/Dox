@@ -157,7 +157,8 @@ def main():
     password = env.get("DEMO_PASSWORD", "")
     if not password:
         fail("DEMO_PASSWORD is not set in the env file; the check logs in as demo users")
-    c = Check(base, a.insecure or env.get("ACME_MODE") == "staging")
+    # Unverified TLS only for the staging CA, or a LOCAL stack (Caddy's own CA) that sets CHECK_INSECURE_TLS=1.
+    c = Check(base, a.insecure or env.get("ACME_MODE") == "staging" or env.get("CHECK_INSECURE_TLS") == "1")
 
     c.wait_healthy(a.wait)
     print("ok  health UP", flush=True)

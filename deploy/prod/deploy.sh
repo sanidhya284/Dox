@@ -17,8 +17,11 @@ PREV="$(cat .deployed-tag 2>/dev/null || true)"
 echo "== deploying $TAG (previous good: ${PREV:-none})"
 
 export IMAGE_TAG="$TAG"
-compose pull --quiet
-compose up -d --remove-orphans
+# A failed pull changes nothing (the old containers keep running): fail without touching the stack.
+[ "${SKIP_PULL:-0}" = "1" ] || compose pull --quiet
+# `up -d` itself fails when the new app never becomes healthy (web waits for it). That must NOT end the
+# script before the rollback below, so its result is only logged; the post-deploy check decides.
+compose up -d --remove-orphans || echo "== compose up reported a failure for $TAG; the check decides"
 
 if check "$TAG"; then
   [ -n "$PREV" ] && [ "$PREV" != "$TAG" ] && echo "$PREV" > .deployed-tag.prev
@@ -36,7 +39,7 @@ if [ -z "$PREV" ]; then
 fi
 echo "== ROLLING BACK to $PREV"
 export IMAGE_TAG="$PREV"
-compose up -d --remove-orphans
+compose up -d --remove-orphans || echo "== compose up reported a failure for $PREV; the check decides"
 if check "$PREV"; then
   echo "== ROLLED BACK: $PREV is serving again"
 else
