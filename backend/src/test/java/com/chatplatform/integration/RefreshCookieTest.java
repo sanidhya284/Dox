@@ -38,7 +38,9 @@ class RefreshCookieTest extends AbstractIntegrationTest {
     private static void assertRefreshCookie(String setCookie) {
         assertThat(setCookie).as("Set-Cookie for " + AuthCookies.NAME).isNotNull();
         assertThat(setCookie).contains("HttpOnly").contains("Secure").contains("SameSite=Strict")
-                .contains("Path=/api/auth").contains("Max-Age=" + SEVEN_DAYS);
+                .contains("Path=/api/auth").contains("Max-Age=" + SEVEN_DAYS)
+                // host-only: no Domain attribute, so the cookie is never sent to other *.work.gd hosts (ADR-0010)
+                .doesNotContainIgnoringCase("Domain=");
     }
 
     @Test

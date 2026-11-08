@@ -15,7 +15,7 @@ A real-time chat backend built as a learning project for backend engineering: a 
 | 2e: React UI (presence and typing deferred) | Minimal UI done in Phase 6 (`frontend/`) |
 | 3: reliable delivery and recovery (catch-up APIs, reference client, convergence under faults) | Done (PR open) |
 | 5-lite: metrics, load harness, one measured bottleneck ([ADR-0009](docs/adr/0009-observability-and-measurement.md)) | Done (PR open): metrics, load harness, measured on one laptop (below) |
-| 6: browser UI + auto-deploy (single instance; [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md)) | In progress: steps 1 (pre-deploy hardening), 2 (refresh token in an HttpOnly cookie) 3 (browser UI) and 4 (compose stack + Caddy, smoke and e2e) done; 5 (deploy pipeline) next |
+| 6: browser UI + auto-deploy (single instance; [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md)) | In progress: steps 1 (pre-deploy hardening), 2 (refresh token in an HttpOnly cookie) 3 (browser UI), 4 (compose stack + Caddy, smoke and e2e) and 5 (server prepared, deploy pipeline built) done; first deploy pending |
 | 4, 7 onward: multi-instance, outbox, ... | Not started |
 
 Details and the next steps: [docs/HANDOFF.md](docs/HANDOFF.md).
@@ -67,6 +67,18 @@ cd frontend && npx playwright install chromium && npm run e2e   # demo1 sends, d
 ```
 
 Log in as `demo1` / `local-demo-password`. Stop the stack with `docker compose -f compose.yml down` (add `-v` to wipe its database). It needs ports 80 and 443 free. How it's put together: [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md).
+
+### How deploys work (single instance; not production-grade)
+The demo target is one AWS EC2 `t3.small` in Sydney behind `dox.work.gd`. Details: [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md); step by step: [docs/AWS-DEPLOY-RUNBOOK.md](docs/AWS-DEPLOY-RUNBOOK.md).
+- **CI** (every PR and push touching code): backend unit + integration, the prod-jar check, frontend lint, typecheck, Vitest and build, then the whole stack in compose with Playwright and `smoke.sh`.
+- **Deploy** (**manual for now**: Actions → Deploy → Run workflow on `main`):
+  1. a gate checks that CI is green for that commit;
+  2. images are pushed to GHCR (`sha-<short>`);
+  3. after your approval in the `production` environment, the job SSHes in with a pinned host key and runs `deploy.sh`.
+- **`deploy.sh`:** pulls, restarts, then checks health, a demo login, a ticket, a socket, and a message send, ack and read-back through Caddy. It rolls back to the previous tag if any of that fails.
+- **During a deploy,** every WebSocket closes once and clients reconnect and catch up.
+- **Backups:** daily `pg_dump` on the server (keeps 7), plus a restore drill script. Copy backups off the server yourself.
+- **Not covered:** high availability, zero-downtime deploys, and any capacity claim.
 
 ### The browser UI (development)
 Prerequisites: Node 22 (npm 10). With the backend running as above (`dev` profile on :8080):

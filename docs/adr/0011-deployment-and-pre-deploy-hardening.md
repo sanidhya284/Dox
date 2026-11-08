@@ -1,7 +1,6 @@
 # ADR-0011 — Deployment and Pre-Deploy Hardening (single instance)
 
-**Status:** Accepted (hardening; images, compose and proxy)  **Date:** 2026-11-06  **Phase:** 6
-The deploy pipeline, rollback and backups (Phase 6 step 5) are added later.
+**Status:** Accepted  **Date:** 2026-11-06 (amended 2026-11-08: deployment target, ACME staging, pipeline, backups)  **Phase:** 6
 
 ## Context
 Phase 6 puts the app on the public internet: a browser UI and one VPS that redeploys on every merge to `main`. Until now, nothing limited how often anyone could register, log in or ask for WebSocket tickets, registration was open to anyone, and nothing stopped a production process from running with the dev profile's secrets. This ADR records the controls added **before** the first deploy. It makes no capacity or "production-grade" claims.
@@ -99,6 +98,49 @@ Internet ──443/80──▶ web (Caddy: TLS, UI files, proxy) ──▶ app:8
 - **What happens:** with one app instance, a deploy restarts it, so every WebSocket closes. Graceful shutdown (`server.shutdown: graceful`, 30 s `stop_grace_period`) lets in-flight requests finish, and the sockets close with `1001`.
 - **How clients recover:** they reconnect with full-jitter backoff, then subscribe-then-fetch, and resend unacked outbox entries with the same `clientMsgId`. No message is lost or duplicated; the user sees "Reconnecting…" for the restart time (the app needed about 20 s to start in the local stack).
 - **No zero-downtime claim:** two instances in Phase 4 make rolling deploys possible.
+
+## Decision 8: the deployment target (amended 2026-11-08)
+- **The machine:** AWS EC2 `t3.small` (x86, 2 vCPU, 2 GB) with Ubuntu 24.04 LTS and 20 GB gp3, in **ap-southeast-2 (Sydney)**, with Elastic IP `3.24.141.155`.
+  - **Why Sydney:** Mumbai (ap-south-1) was the first choice because it's closer to India, but the AWS Free plan blocked it.
+  - **Cost of Sydney:** higher latency from India, and slightly higher prices.
+- **Server preparation** (runbook section 4):
+  - Docker Engine and the compose plugin from Docker's apt repository;
+  - json-file logs capped at 10 MB × 3;
+  - 2 GB swap with `vm.swappiness=10`;
+  - fail2ban on sshd; password login is off;
+  - a `deploy` user with no sudo and a key-only login, in the `docker` group (root-equivalent, accepted for a single-purpose demo server).
+- **Secrets:** the app secrets were generated **on the server** with `openssl` into `/opt/chat/.env` (mode 600, owner `deploy`) and never left it.
+- **Hostname `dox.work.gd`:** a free DNSExit name on a **shared domain that isn't on the Public Suffix List**. Two consequences:
+  1. **Let's Encrypt rate limits are shared** with every other `*.work.gd` user, so issuance can fail for reasons outside our control. Mitigations:
+     - the first start uses the **Let's Encrypt staging CA** (`ACME_MODE=staging`; untrusted by browsers, no production limits) until DNS and ports are confirmed;
+     - `ACME_MODE=default` then uses Caddy's normal issuers;
+     - a ZeroSSL fallback is acceptable;
+     - the CA that actually issued the certificate is recorded from the Caddy logs at the switch.
+     - If issuance keeps failing, buy a cheap domain.
+  2. **Browsers treat every `*.work.gd` site as same-site**, so `SameSite=Strict` doesn't stop requests coming from another `*.work.gd` site. The protections that still hold:
+     - the **exact `Origin` checks** on refresh, logout and the WebSocket handshake;
+     - the **host-only** refresh cookie (no `Domain` attribute, asserted by `RefreshCookieTest`), so it's never sent to other `*.work.gd` hosts (ADR-0010).
+
+## Decision 9: the deploy pipeline, rollback and backups (amended 2026-11-08)
+- **CI** (`.github/workflows/ci.yml`): `backend` (unit, integration, `verifyProdJar`), `frontend` (lint, typecheck, Vitest, build) and `e2e`.
+  - **The e2e job:** it builds both images with the Docker layer cache, starts the compose stack, runs Playwright (at most 1 retry; attempts and flaky passes are written to the job summary), then runs `smoke.sh`.
+  - **Path filters:** `backend/**`, `frontend/**`, `deploy/**`, `.github/workflows/**`.
+  - **Caching:** Gradle, `node_modules` (keyed on the lockfile) and Docker layers.
+- **Deploy** (`.github/workflows/deploy.yml`), **manual (`workflow_dispatch`) only** for now; it turns automatic after CI on `main` only after several clean manual deploys (runbook section 9).
+  1. **gate:** the ref is `main`, and all three CI checks passed for this exact commit.
+  2. **images:** build both images and push them to GHCR as `sha-<short>` and `main`.
+  3. **deploy:** runs in the GitHub environment `production` (a required reviewer). It uses plain `ssh`/`scp` with the **pinned host key** (`DEPLOY_KNOWN_HOSTS`, `StrictHostKeyChecking yes`), copies `compose.yml` and the scripts to `/opt/chat`, and runs `deploy.sh <tag>`.
+- **`deploy.sh`:** `compose pull`, then `up -d` (Flyway migrates at startup), then `postdeploy_check.py` through Caddy:
+  - health is UP;
+  - demo1 logs in;
+  - a ticket is issued and the WebSocket opens with the site's Origin;
+  - a message is **sent and acked**;
+  - the same message is read back over REST.
+  - **On any failure:** redeploy the previous good tag, check it again, and fail the job. The check posts into its own "Deploy checks" group (demo1 + demo2), not the Demo room.
+  - **Migrations:** rolling back across one works only for additive (expand/contract) migrations.
+- **Backups:** the `deploy` user's crontab (installed by the deploy job) runs `backup.sh` daily at 03:15 UTC: `pg_dump -Fc`, keep 7, mode 600. `restore.sh <dump>` is a **drill**: it restores into a throwaway Postgres container, prints row counts and never touches the live database.
+  - **Copy them off-box:** backups on the same server don't survive losing it, so copy them off AWS (runbook section 8.3).
+- **Teardown and live restore:** in [the runbook](../AWS-DEPLOY-RUNBOOK.md).
 
 ## Consequences
 - Abuse limits exist but are per instance, approximate (fixed window) and keyed by IP behind a trusted proxy. They're not a defence against a distributed attacker.

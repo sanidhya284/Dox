@@ -11,6 +11,19 @@
 (nohsts) {
 }
 
+# ACME_MODE (ADR-0011): "staging" uses the Let's Encrypt STAGING CA (browsers distrust it, but it has no
+# production rate limits), for the first start on a new host until DNS and ports are confirmed.
+# "default" uses Caddy's normal issuers (Let's Encrypt, with ZeroSSL as Caddy's fallback). For "localhost"
+# Caddy always uses its own local CA.
+(tls_staging) {
+	tls {
+		ca https://acme-staging-v02.api.letsencrypt.org/directory
+	}
+}
+
+(tls_default) {
+}
+
 {$DOMAIN} {
 	encode zstd gzip
 
@@ -32,6 +45,7 @@
 	}
 
 	import {$HSTS_SNIPPET:hsts}
+	import tls_{$ACME_MODE:default}
 
 	header {
 		X-Content-Type-Options nosniff

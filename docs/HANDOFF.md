@@ -30,7 +30,15 @@ Written 2026-11-03 for Claude Code taking over from a Claude-chat architect + Ge
   - the Caddyfile (headers, actuator 404, ticket-free logs);
   - `deploy/smoke.sh`: SMOKE OK, and the XFF check was shown to fail when Caddy trusts all proxies;
   - Playwright e2e: 1 passed, 0 retries.
-  **STOPPED after step 4 (2026-11-06), as the user asked.** The user now completes the hand checklist below; then step 5 (the deploy pipeline). |
+  **STOPPED after step 4 (2026-11-06), as the user asked.**
+  **5 deploy: built and tested locally (2026-11-08)**:
+  - target: EC2 `t3.small` in ap-southeast-2 (Mumbai blocked by the Free plan), `dox.work.gd`;
+  - server prep done per runbook section 4 (with the user's approval for each sudo group);
+  - four repository secrets set;
+  - `ci.yml` gained the frontend and e2e jobs; `deploy.yml` is manual only;
+  - `deploy/prod/` scripts: the post-deploy check, rollback, backup and restore drill;
+  - `ACME_MODE=staging` on the server.
+  **NEXT (user): the GitHub clicks in runbook 7.0, then the first manual deploy, then the 7.2 staging→production certificate switch (record the issuing CA).** Automatic deploys stay off (runbook 9). |
 | Last full local run | See the latest commit message on `phase-2b-ii`; counts are read from the XML there. |
 
 ## 1. First task: verify and tidy git (before any feature work)

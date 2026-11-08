@@ -24,6 +24,11 @@ Phase 6 adds a browser UI. Until now the refresh token (7 days) was returned in 
   - logout revokes the token if one is present and always clears the cookie.
 - **Multi-tab:** all tabs share one cookie. If two tabs refresh at once, the second sends a token the first already rotated: that looks exactly like theft, and revokes the family. The UI therefore serializes refresh **across tabs** with the Web Locks API (`navigator.locks`), as well as within a tab (single flight, ADR-0008).
 
+- **Host-only cookie:** the cookie has **no `Domain` attribute**, so it's sent only to the exact host that set it (asserted in `RefreshCookieTest`).
+- **Shared-domain caveat (amended 2026-11-08):** the demo runs on `dox.work.gd`, a shared domain that isn't on the Public Suffix List. Browsers therefore treat every `*.work.gd` site as **same-site** with ours, and `SameSite=Strict` doesn't stop a request coming from another `*.work.gd` site.
+  - **What still holds:** the exact `Origin` check (refresh, logout, WebSocket handshake) and the host-only cookie.
+  - **The fix:** a domain of our own (or one on the Public Suffix List) restores SameSite as a real boundary.
+
 ## Alternatives
 | | HttpOnly cookie (chosen) | Both tokens in memory only |
 |---|---|---|
