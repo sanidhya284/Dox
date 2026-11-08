@@ -61,6 +61,12 @@ if [ "$(sed -E 's#https://([^/:]+).*#\1#' <<<"$BASE")" = "localhost" ]; then
 else
   grep -qi '^strict-transport-security: max-age=31536000$' <<<"$headers" && pass "HSTS (no preload)" || fail "HSTS (no preload)"
 fi
+# Alternative names (REDIRECT_HOSTS; default www.<host>) must 308 to the canonical origin, path and query kept.
+HOST="$(sed -E 's#https://([^/:]+).*#\1#' <<<"$BASE")"
+for h in ${REDIRECT_HOSTS:-www.$HOST}; do
+  r=$(curl -sk -o /dev/null -w '%{http_code} %{redirect_url}' --connect-to "$h:443:$HOST:443" "https://$h/some/path?x=1")
+  check "https://$h redirects (308) to $BASE" "$r" "308 $BASE/some/path?x=1"
+done
 check "plain http redirects to https" "$(curl -s -o /dev/null -w '%{http_code}' "${BASE/https:/http:}/")" 308
 
 echo "== login, ticket, socket =="

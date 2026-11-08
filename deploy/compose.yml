@@ -61,6 +61,8 @@ services:
     restart: unless-stopped
     environment:
       DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+      # Names that 308-redirect to https://DOMAIN (space-separated), e.g. "www.dox-chat.in dox.work.gd".
+      REDIRECT_HOSTS: ${REDIRECT_HOSTS:-www.${DOMAIN}}
       APP_UPSTREAMS: ${APP_UPSTREAMS:-app:8080}
       HSTS_SNIPPET: ${HSTS_SNIPPET:-hsts}
       ACME_MODE: ${ACME_MODE:-default}

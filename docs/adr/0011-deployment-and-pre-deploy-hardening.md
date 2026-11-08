@@ -1,6 +1,6 @@
 # ADR-0011 — Deployment and Pre-Deploy Hardening (single instance)
 
-**Status:** Accepted  **Date:** 2026-11-06 (amended 2026-11-08: deployment target, ACME staging, pipeline, backups)  **Phase:** 6
+**Status:** Accepted  **Date:** 2026-11-06 (amended 2026-11-08: deployment target, ACME staging, pipeline, backups, own domain)  **Phase:** 6
 
 ## Context
 Phase 6 puts the app on the public internet: a browser UI and one VPS that redeploys on every merge to `main`. Until now, nothing limited how often anyone could register, log in or ask for WebSocket tickets, registration was open to anyone, and nothing stopped a production process from running with the dev profile's secrets. This ADR records the controls added **before** the first deploy. It makes no capacity or "production-grade" claims.
@@ -110,16 +110,14 @@ Internet ──443/80──▶ web (Caddy: TLS, UI files, proxy) ──▶ app:8
   - fail2ban on sshd; password login is off;
   - a `deploy` user with no sudo and a key-only login, in the `docker` group (root-equivalent, accepted for a single-purpose demo server).
 - **Secrets:** the app secrets were generated **on the server** with `openssl` into `/opt/chat/.env` (mode 600, owner `deploy`) and never left it.
-- **Hostname `dox.work.gd`:** a free DNSExit name on a **shared domain that isn't on the Public Suffix List**. Two consequences:
-  1. **Let's Encrypt rate limits are shared** with every other `*.work.gd` user, so issuance can fail for reasons outside our control. Mitigations:
-     - the first start uses the **Let's Encrypt staging CA** (`ACME_MODE=staging`; untrusted by browsers, no production limits) until DNS and ports are confirmed;
-     - `ACME_MODE=default` then uses Caddy's normal issuers;
-     - a ZeroSSL fallback is acceptable;
-     - the CA that actually issued the certificate is recorded from the Caddy logs at the switch.
-     - If issuance keeps failing, buy a cheap domain.
-  2. **Browsers treat every `*.work.gd` site as same-site**, so `SameSite=Strict` doesn't stop requests coming from another `*.work.gd` site. The protections that still hold:
-     - the **exact `Origin` checks** on refresh, logout and the WebSocket handshake;
-     - the **host-only** refresh cookie (no `Domain` attribute, asserted by `RefreshCookieTest`), so it's never sent to other `*.work.gd` hosts (ADR-0010).
+- **Hostname, first `dox.work.gd`, now `dox-chat.in`.**
+  - **What went wrong with `dox.work.gd`:** it's a free DNSExit name on a **shared domain that isn't on the Public Suffix List**, and that caused three problems:
+    1. **Let's Encrypt rate limits are shared** with every other `*.work.gd` user. Mitigation: the first start used the **staging CA** (`ACME_MODE=staging`), switched to `default` once DNS and ports were confirmed, and recorded the issuing CA (Let's Encrypt `YE2`).
+    2. **Browsers treat every `*.work.gd` site as same-site,** so `SameSite=Strict` doesn't stop requests from other `*.work.gd` sites. The exact Origin checks and the host-only cookie still held (ADR-0010).
+    3. **A large ISP resolver failed DNSSEC validation for the whole `work.gd` zone** (SERVFAIL, while it resolved with checking disabled, and Google and Cloudflare resolved it). Visitors on that ISP couldn't reach the site at all. Found on 2026-11-08 from the author's own connection.
+  - **Resolved 2026-11-08 by our own domain `dox-chat.in`:** our own rate-limit budget, a real same-site boundary, and it resolves on that ISP's resolver.
+  - **The redirects:** `www.dox-chat.in` and the old `dox.work.gd` get certificates and a **308** to `https://dox-chat.in` (path and query kept), so old links keep working until `work.gd` is dropped. The app's only allowed Origin stays the canonical one.
+  - **Mechanism:** `REDIRECT_HOSTS` in the Caddyfile; compose defaults it to `www.<DOMAIN>`, and `smoke.sh` checks it.
 
 ## Decision 9: the deploy pipeline, rollback and backups (amended 2026-11-08)
 - **CI** (`.github/workflows/ci.yml`): `backend` (unit, integration, `verifyProdJar`), `frontend` (lint, typecheck, Vitest, build) and `e2e`.
