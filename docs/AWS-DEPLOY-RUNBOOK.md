@@ -320,10 +320,16 @@ sudo grep -c 'ticket=' <caddy access log path>      # must be 0
 ## 8. Drills (do each once; record the date in the runbook)
 
 1. **Backup and restore:** run the backup script, restore into a scratch container, check row counts. An untested backup is only a hope.
-2. **Rollback:** dispatch a deploy of a deliberately bad tag; the job must fail and the previous version must be serving. Then do the migration-aware variant described in the repo's runbook (what you can test only on the real server).
+2. **Rollback:** **Actions → Deploy → Run workflow**, branch `main`, tick **drill**. The workflow builds `dox-app:drill-broken-<sha>` (the real image with an entrypoint that exits at once; never tagged `main`) and deploys it. The check must fail, `deploy.sh` must roll back to `.deployed-tag`, the check must pass on that, and the job must fail. Expect a few minutes of downtime: the 180 s health wait, then the restart. Then do the migration-aware variant described in the repo's runbook (what you can test only on the real server).
 3. **Off-AWS copy:** from your laptop, `scp deploy@<hostname>:/opt/chat/backups/<latest>.dump ~/backups/`. The Free plan account closes at the end of the plan, and data in it is kept only for 90 days.
 4. **Fail-closed check:** on a scratch container, start the image with a missing secret and confirm it refuses to start.
 5. **Uptime monitor:** register a free external monitor on `https://<hostname>/actuator/health` (check the current free limits first), alert to your email.
+
+### Drill log
+| Drill | Date (UTC) | Result |
+|---|---|---|
+| 8.1 Backup and restore | 2026-11-08 16:40 | **Pass.** `backup.sh` → `chat-20261108T164018Z.dump` (19,622 bytes), restored into a scratch `postgres:16.4-alpine` with `pg_restore` exit 0. Row counts for all 7 public tables were equal to the live DB (`conversation_participants` 5, `conversations` 2, `flyway_schema_history` 6, `messages` 5, `refresh_tokens` 11, `users` 3, `ws_tickets` 0). The scratch container was removed, and the live DB was only read. |
+| 8.2 Rollback | | **Prerequisite found and fixed first:** `deploy.sh` ran `compose up -d` under `set -e`. When the new app never becomes healthy, `up` itself fails (web waits for a healthy app), so the script ended **before** the rollback. Shown locally: `main`'s `deploy.sh` left the broken image running. The fixed script logs the `up` failure and lets the post-deploy check decide; locally it rolled back and the check passed on the old tag. |
 
 ---
 

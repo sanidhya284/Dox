@@ -5,6 +5,11 @@ name: Deploy
 # `production`: waits for a required reviewer; SSH with a pinned host key; deploy.sh health-gates and rolls back).
 on:
   workflow_dispatch:
+    inputs:
+      drill:
+        description: "Rollback drill (runbook 8.2): deploy a deliberately BROKEN app image. The job must fail and roll back."
+        type: boolean
+        default: false
 
 concurrency:
   group: deploy-production
@@ -26,6 +31,7 @@ jobs:
       contents: read
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      deploy_tag: ${{ steps.tag.outputs.deploy_tag }}
     steps:
       - name: Only main deploys
         if: github.ref != 'refs/heads/main'
@@ -44,7 +50,9 @@ jobs:
             [ "$c" = "success" ] || { echo "CI check '$name' is '$c' for this commit: not deploying."; exit 1; }
           done
       - id: tag
-        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "deploy_tag=${{ inputs.drill && 'drill-broken-' || 'sha-' }}${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
   images:
     name: Build and push images
@@ -80,6 +88,20 @@ jobs:
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
+      # Rollback drill only: a broken app image (exits at once) and the unchanged web image, under one drill tag.
+      # Never tagged `main`, so nothing but this drill run can deploy it.
+      - name: drill - broken app image
+        if: inputs.drill
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/drill
+          file: deploy/drill/broken-app.Dockerfile
+          build-args: BASE=${{ env.APP_IMAGE }}:${{ needs.gate.outputs.tag }}
+          push: true
+          tags: ${{ env.APP_IMAGE }}:${{ needs.gate.outputs.deploy_tag }}
+      - name: drill - web image under the drill tag
+        if: inputs.drill
+        run: docker buildx imagetools create -t ${{ env.WEB_IMAGE }}:${{ needs.gate.outputs.deploy_tag }} ${{ env.WEB_IMAGE }}:${{ needs.gate.outputs.tag }}
 
   deploy:
     name: Deploy to production
@@ -111,8 +133,8 @@ jobs:
         run: |
           scp deploy/compose.yml deploy/prod/deploy.sh deploy/prod/backup.sh deploy/prod/restore.sh \
               deploy/prod/postdeploy_check.py deploy-target:/opt/chat/
-      - name: Deploy ${{ needs.gate.outputs.tag }} (health-gated, rolls back on failure)
-        run: ssh deploy-target "chmod +x /opt/chat/*.sh && /opt/chat/deploy.sh ${{ needs.gate.outputs.tag }}"
+      - name: Deploy ${{ needs.gate.outputs.deploy_tag }} (health-gated, rolls back on failure${{ inputs.drill && '; DRILL - expected to fail' || '' }})
+        run: ssh deploy-target "chmod +x /opt/chat/*.sh && /opt/chat/deploy.sh ${{ needs.gate.outputs.deploy_tag }}"
       - name: Install the daily backup cron (idempotent; deploy user's own crontab)
         run: |
           ssh deploy-target '(crontab -l 2>/dev/null | grep -v "/opt/chat/backup.sh"; echo "15 3 * * * /opt/chat/backup.sh >> /opt/chat/backups/backup.log 2>&1") | crontab - && crontab -l | grep backup.sh'
