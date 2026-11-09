@@ -8,6 +8,7 @@ on:
       - "frontend/**"
       - "deploy/**"
       - ".github/workflows/**"
+      - ".github/scripts/**"
   pull_request:
     branches: [ "main", "develop" ]
     paths:
@@ -15,6 +16,7 @@ on:
       - "frontend/**"
       - "deploy/**"
       - ".github/workflows/**"
+      - ".github/scripts/**"
 
 # Cancel superseded runs on the same branch to save CI minutes.
 concurrency:
@@ -84,6 +86,23 @@ jobs:
           name: test-results
           path: backend/build/reports/tests/
           retention-days: 7
+
+  migrations:
+    name: Migrations are additive (expand/contract)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The check first proves it can fail (destructive samples must be flagged), then checks the real files:
+      # no existing migration changed since the base, and new migrations above V6 are additive (ADR-0011 D10).
+      - name: Self-test
+        run: python3 .github/scripts/check_migrations.py --self-test
+      - name: Check
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: python3 .github/scripts/check_migrations.py --base "$BASE"
 
   frontend:
     name: Frontend (lint, typecheck, Vitest, build)
