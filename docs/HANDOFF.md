@@ -39,7 +39,7 @@ Written 2026-11-03 for Claude Code taking over from a Claude-chat architect + Ge
   - `deploy/prod/` scripts: the post-deploy check, rollback, backup and restore drill;
   - `ACME_MODE=staging` on the server.
   **Drills 8.1–8.4 passed (2026-11-08/09; runbook drill log).** Drill 8.2 found and fixed a `deploy.sh` bug (a failed `compose up` skipped the rollback).
-  **Automatic deploys:** on push to `main` after CI passes (runbook 9, ADR-0011 Decision 10). Migrations must be additive (enforced in CI). The `production` environment must have no required reviewer. |
+  **Automatic deploys:** on push to `main` after CI passes (runbook 9, ADR-0011 Decision 10). Migrations must be additive (enforced in CI). The `production` environment must have no required reviewer. The first automatic deploy (`4270fd8`, 2026-11-09) was cancelled because the reviewer rule was removed while that deploy was waiting for approval. `GET /api/version` and the UI footer show the live commit. |
 | Last full local run | See the latest commit message on `phase-2b-ii`; counts are read from the XML there. |
 
 ## 1. First task: verify and tidy git (before any feature work)

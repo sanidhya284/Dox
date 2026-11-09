@@ -250,6 +250,7 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 | GET (upgrade) | `/ws?ticket=...` | ticket + allowed `Origin` | Open a WebSocket (see Realtime above) |
 | POST | `/api/conversations/{id}/cursor` | yes | Move my delivered/read cursor forward: `{kind, seq}` → `{lastDeliveredSeq, lastReadSeq}` (ADR-0007) |
 | GET | `/actuator/health` | no | Health check (status only, no details) |
+| GET | `/api/version` | no | `{commit, shortCommit}` of the running image (the `GIT_SHA` build arg; `unknown` locally). The UI footer shows it. |
 | GET | `/actuator/prometheus`, `/actuator/metrics` | `metrics` user (HTTP Basic) | Micrometer metrics; never public (ADR-0009) |
 
 ---
