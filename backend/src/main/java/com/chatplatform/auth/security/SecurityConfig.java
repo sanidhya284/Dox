@@ -40,6 +40,7 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/version").permitAll()
                 // Only the exact handshake endpoint; it authenticates with a one-time ticket instead of a JWT.
                 .requestMatchers("/ws").permitAll()
                 .anyRequest().authenticated()

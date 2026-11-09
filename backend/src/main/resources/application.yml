@@ -110,3 +110,7 @@ demo:
 auth:
   refresh-cookie:
     secure: true
+
+# The commit the image was built from, for GET /api/version (ADR-0011). Set by the image (GIT_SHA build arg).
+app:
+  git-sha: ${APP_GIT_SHA:unknown}

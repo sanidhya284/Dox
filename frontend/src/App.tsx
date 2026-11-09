@@ -3,6 +3,7 @@ import { AuthSession } from './api/auth';
 import { createApi } from './api/http';
 import { LoginForm } from './ui/LoginForm';
 import { ChatView } from './ui/ChatView';
+import { BuildInfo } from './ui/BuildInfo';
 
 type Phase = 'checking' | 'anonymous' | 'authenticated';
 
@@ -24,17 +25,18 @@ export function App() {
     };
   }, [auth]);
 
+  let view;
   if (phase === 'checking') {
-    return <main className="center">Loading…</main>;
-  }
-  if (phase === 'anonymous') {
-    return <LoginForm auth={auth} onAuthenticated={() => setPhase('authenticated')} />;
+    view = <main className="center">Loading…</main>;
+  } else if (phase === 'anonymous') {
+    view = <LoginForm auth={auth} onAuthenticated={() => setPhase('authenticated')} />;
+  } else {
+    view = <ChatView auth={auth} api={api} onLoggedOut={() => setPhase('anonymous')} />;
   }
   return (
-    <ChatView
-      auth={auth}
-      api={api}
-      onLoggedOut={() => setPhase('anonymous')}
-    />
+    <>
+      {view}
+      <BuildInfo />
+    </>
   );
 }

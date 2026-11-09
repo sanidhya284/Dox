@@ -50,6 +50,7 @@ for p in /actuator /actuator/prometheus /actuator/env /actuator/metrics /actuato
   check "GET $p is 404 at the proxy" "$(status "$BASE$p")" 404
 done
 check "GET / (UI) is 200" "$(status "$BASE/")" 200
+curl -sk "$BASE/api/version" | grep -q '"shortCommit"' && pass "GET /api/version (public) reports the build" || fail "GET /api/version (public) reports the build"
 curl -sk "$BASE/" | grep -q '<div id="root">' && pass "UI index.html served" || fail "UI index.html served"
 
 headers=$(curl -sk -D - -o /dev/null "$BASE/")

@@ -20,5 +20,8 @@ COPY --from=build /src/build/libs/chatplatform-backend-0.1.0-SNAPSHOT.jar /app/a
 USER 10001
 # Heap as a share of the container's memory limit (compose sets mem_limit), not of the host's RAM.
 ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
+# The commit this image was built from (deploy.yml passes it); reported by GET /api/version.
+ARG GIT_SHA=unknown
+ENV APP_GIT_SHA=${GIT_SHA}
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
