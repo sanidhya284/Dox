@@ -71,10 +71,11 @@ Log in as `demo1` / `local-demo-password`. Stop the stack with `docker compose -
 ### How deploys work (single instance; not production-grade)
 **Live demo: https://dox-chat.in** (temporary; one small server, demo data is public). It runs on one AWS EC2 `t3.small` in Sydney; `www.dox-chat.in` and the old `dox.work.gd` redirect there. Details: [ADR-0011](docs/adr/0011-deployment-and-pre-deploy-hardening.md); step by step: [docs/AWS-DEPLOY-RUNBOOK.md](docs/AWS-DEPLOY-RUNBOOK.md).
 - **CI** (every PR and push touching code): backend unit + integration, the prod-jar check, frontend lint, typecheck, Vitest and build, then the whole stack in compose with Playwright and `smoke.sh`.
-- **Deploy** (**manual for now**: Actions → Deploy → Run workflow on `main`):
-  1. a gate checks that CI is green for that commit;
+- **Deploy** (**automatic**: every push to `main` whose CI passes; docs-only pushes don't deploy):
+  1. a gate checks that CI is green for that exact commit;
   2. images are pushed to GHCR (`sha-<short>`);
-  3. after your approval in the `production` environment, the job SSHes in with a pinned host key and runs `deploy.sh`.
+  3. the job SSHes in with a pinned host key and runs `deploy.sh`. One deploy runs at a time, and none is ever cancelled.
+- **Migrations are additive only** (expand/contract), enforced in CI, so a rollback still works against a newer schema.
 - **`deploy.sh`:** pulls, restarts, then checks health, a demo login, a ticket, a socket, and a message send, ack and read-back through Caddy. It rolls back to the previous tag if any of that fails.
 - **During a deploy,** every WebSocket closes once and clients reconnect and catch up.
 - **Backups:** daily `pg_dump` on the server (keeps 7), plus a restore drill script. Copy backups off the server yourself.

@@ -123,12 +123,13 @@ Internet ──443/80──▶ web (Caddy: TLS, UI files, proxy) ──▶ app:8
 ## Decision 9: the deploy pipeline, rollback and backups (amended 2026-11-08)
 - **CI** (`.github/workflows/ci.yml`): `backend` (unit, integration, `verifyProdJar`), `frontend` (lint, typecheck, Vitest, build) and `e2e`.
   - **The e2e job:** it builds both images with the Docker layer cache, starts the compose stack, runs Playwright (at most 1 retry; attempts and flaky passes are written to the job summary), then runs `smoke.sh`.
-  - **Path filters:** `backend/**`, `frontend/**`, `deploy/**`, `.github/workflows/**`.
+  - **Path filters:** `backend/**`, `frontend/**`, `deploy/**`, `.github/workflows/**`, `.github/scripts/**`.
+  - **The `migrations` job:** the additive-only rule (Decision 10).
   - **Caching:** Gradle, `node_modules` (keyed on the lockfile) and Docker layers.
-- **Deploy** (`.github/workflows/deploy.yml`), **manual (`workflow_dispatch`) only** for now; it turns automatic after CI on `main` only after several clean manual deploys (runbook section 9).
-  1. **gate:** the ref is `main`, and all three CI checks passed for this exact commit.
+- **Deploy** (`.github/workflows/deploy.yml`). **Automatic since 2026-11-09:** `workflow_run` after a successful CI run for a push to `main` deploys that exact commit (`head_sha`); docs-only pushes run no CI and so never deploy. Manual dispatch remains for a redeploy and the rollback drill.
+  1. **gate:** `main` only, and all four CI checks passed for this exact commit.
   2. **images:** build both images and push them to GHCR as `sha-<short>` and `main`.
-  3. **deploy:** runs in the GitHub environment `production` (a required reviewer). It uses plain `ssh`/`scp` with the **pinned host key** (`DEPLOY_KNOWN_HOSTS`, `StrictHostKeyChecking yes`), copies `compose.yml` and the scripts to `/opt/chat`, and runs `deploy.sh <tag>`.
+  3. **deploy:** runs in the GitHub environment `production`, kept for history and its `main`-only rule, with **no required reviewer** since automatic deploys. One deploy at a time (`concurrency: deploy-production`, never cancelled). It uses plain `ssh`/`scp` with the **pinned host key** (`DEPLOY_KNOWN_HOSTS`, `StrictHostKeyChecking yes`), copies `compose.yml` and the scripts to `/opt/chat`, and runs `deploy.sh <tag>`.
 - **`deploy.sh`:** `compose pull`, then `up -d` (Flyway migrates at startup), then `postdeploy_check.py` through Caddy:
   - health is UP;
   - demo1 logs in;
@@ -136,10 +137,25 @@ Internet ──443/80──▶ web (Caddy: TLS, UI files, proxy) ──▶ app:8
   - a message is **sent and acked**;
   - the same message is read back over REST.
   - **On any failure:** redeploy the previous good tag, check it again, and fail the job. The check posts into its own "Deploy checks" group (demo1 + demo2), not the Demo room.
-  - **Migrations:** rolling back across one works only for additive (expand/contract) migrations.
+  - **Migrations:** rolling back across one works only for additive (expand/contract) migrations (Decision 10).
+  - **`compose up` failures are logged, not fatal** (fixed 2026-11-08): when the new app never becomes healthy, `up` fails because web waits for it. Under `set -e` that used to end the script before the rollback. The post-deploy check now decides.
 - **Backups:** the `deploy` user's crontab (installed by the deploy job) runs `backup.sh` daily at 03:15 UTC: `pg_dump -Fc`, keep 7, mode 600. `restore.sh <dump>` is a **drill**: it restores into a throwaway Postgres container, prints row counts and never touches the live database.
   - **Copy them off-box:** backups on the same server don't survive losing it, so copy them off AWS (runbook section 8.3).
 - **Teardown and live restore:** in [the runbook](../AWS-DEPLOY-RUNBOOK.md).
+
+## Decision 10: automatic deploys require additive (expand/contract) migrations (2026-11-09)
+- **Why:** with automatic deploys and an automatic rollback, the previous release must be able to run against the schema a newer release just migrated, because Flyway can't undo.
+- **The rule:** migrations are **additive only**; destructive changes happen in a later **contract** step, after no deployed or rollback-target release uses the object.
+- **Enforcement:**
+  - **CI job "Migrations are additive (expand/contract)"** (`.github/scripts/check_migrations.py`; it runs a self-test proving it flags destructive samples):
+    - no existing migration may be modified, deleted or renamed;
+    - new migrations above V6 may not DROP, RENAME, change a column type, SET NOT NULL, TRUNCATE or DELETE, or add a NOT NULL column without a DEFAULT;
+    - a deliberate contract migration must carry `-- contract: <why it's safe>`.
+  - **`FutureMigrationToleranceTest`:** an older release still validates against a schema that has a migration it doesn't know. Flyway's `ignore-migration-patterns: "*:future"` is set explicitly. The negative form shows validation fails without it.
+- **Limits:**
+  - the check is pattern-based (SQL strings, not a parser): it can be fooled, and a clever destructive statement could slip through review;
+  - data-level incompatibilities (for example a new unique index the old code violates) aren't detected;
+  - the contract step's timing is a human decision, recorded in the marker.
 
 ## Consequences
 - Abuse limits exist but are per instance, approximate (fixed window) and keyed by IP behind a trusted proxy. They're not a defence against a distributed attacker.

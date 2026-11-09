@@ -10,8 +10,11 @@ cleanup() { docker rm -f "$NAME" > /dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 docker run -d --name "$NAME" -e POSTGRES_PASSWORD=drill-only postgres:16.4-alpine > /dev/null
-for _ in $(seq 1 30); do
-  docker exec "$NAME" pg_isready -U postgres > /dev/null 2>&1 && break
+# The image runs a TEMPORARY server during first-time init, then restarts it: pg_isready alone can pass
+# against the temporary one and createdb then hits the restart. Wait for init to finish, then for readiness.
+for _ in $(seq 1 60); do
+  docker logs "$NAME" 2>&1 | grep -q "PostgreSQL init process complete" \
+    && docker exec "$NAME" pg_isready -U postgres > /dev/null 2>&1 && break
   sleep 1
 done
 docker exec "$NAME" createdb -U postgres chat

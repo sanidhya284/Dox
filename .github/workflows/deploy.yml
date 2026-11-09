@@ -1,9 +1,15 @@
 name: Deploy
 
-# Manual only for now (runbook section 9 turns on deploys after CI on main, later).
-# Flow: gate (CI passed for this exact commit) -> images (build + push to GHCR) -> deploy (environment
-# `production`: waits for a required reviewer; SSH with a pinned host key; deploy.sh health-gates and rolls back).
+# Automatic: every push to main whose CI run succeeds deploys that exact commit (runbook section 9).
+# Docs-only pushes don't run CI (ci.yml path filters), so they never deploy. Manual dispatch stays available
+# (redeploy main, or the rollback drill).
+# Flow: gate (CI green for this exact commit) -> images (build + push to GHCR) -> deploy (SSH with a pinned host
+# key; deploy.sh pulls, restarts, runs the real-path post-deploy check, and rolls back on failure).
 on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       drill:
@@ -11,6 +17,10 @@ on:
         type: boolean
         default: false
 
+# One deploy at a time, and a running deploy is never cancelled. GitHub keeps at most one PENDING run per
+# group: a newer pending deploy replaces an older pending one, which is fine because main's newer commit
+# contains the older one. (CI itself cancels superseded runs per ref, so an older commit's CI rarely finishes
+# after a newer one's.)
 concurrency:
   group: deploy-production
   cancel-in-progress: false
@@ -25,34 +35,45 @@ env:
 jobs:
   gate:
     name: Gate (main, and CI green for this commit)
+    # Automatic runs only for a SUCCESSFUL CI run triggered by a PUSH to main (never a PR, never a failed CI).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     permissions:
       checks: read
       contents: read
     outputs:
+      sha: ${{ steps.tag.outputs.sha }}
       tag: ${{ steps.tag.outputs.tag }}
       deploy_tag: ${{ steps.tag.outputs.deploy_tag }}
     steps:
       - name: Only main deploys
-        if: github.ref != 'refs/heads/main'
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
         run: |
           echo "Deploys run from main only (got ${{ github.ref }})."
           exit 1
-      - name: CI must have passed for ${{ github.sha }}
+      - id: tag
+        env:
+          SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "tag=sha-${SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "deploy_tag=${{ inputs.drill && 'drill-broken-' || 'sha-' }}${SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "Deploying commit $SHA (event: ${{ github.event_name }})"
+      - name: CI must have passed for this commit
         env:
           GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.tag.outputs.sha }}
         run: |
-          required=("Build & Test (Java 21)" "Frontend (lint, typecheck, Vitest, build)" "Stack smoke + e2e (compose, Caddy, Playwright)")
-          runs=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?per_page=100")
+          required=("Build & Test (Java 21)" "Frontend (lint, typecheck, Vitest, build)" "Stack smoke + e2e (compose, Caddy, Playwright)" "Migrations are additive (expand/contract)")
+          runs=$(gh api "repos/${{ github.repository }}/commits/$SHA/check-runs?per_page=100")
           for name in "${required[@]}"; do
             c=$(jq -r --arg n "$name" '[.check_runs[] | select(.name == $n)] | sort_by(.completed_at) | last | .conclusion // "missing"' <<<"$runs")
             echo "$name: $c"
             [ "$c" = "success" ] || { echo "CI check '$name' is '$c' for this commit: not deploying."; exit 1; }
           done
-      - id: tag
-        run: |
-          echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          echo "deploy_tag=${{ inputs.drill && 'drill-broken-' || 'sha-' }}${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
   images:
     name: Build and push images
@@ -63,6 +84,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -74,6 +97,7 @@ jobs:
         with:
           context: backend
           push: true
+          build-args: GIT_SHA=${{ needs.gate.outputs.sha }}
           tags: ${{ env.APP_IMAGE }}:${{ needs.gate.outputs.tag }},${{ env.APP_IMAGE }}:main
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha,scope=app
@@ -107,10 +131,16 @@ jobs:
     name: Deploy to production
     needs: [gate, images]
     runs-on: ubuntu-latest
-    environment: production
+    # Kept for the deployment history and the main-only branch rule. It must have NO required reviewers,
+    # or automatic deploys wait for approval (runbook section 9).
+    environment:
+      name: production
+      url: https://dox-chat.in
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
       - name: SSH key and pinned host key (no host-key prompts, no StrictHostKeyChecking=no)
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}

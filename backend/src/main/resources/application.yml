@@ -39,6 +39,11 @@ spring:
     enabled: true
     locations: classpath:db/migration
     baseline-on-migrate: false
+    # Rollback safety (ADR-0011 Decision 10): an OLDER release must still start against a database that a newer
+    # release already migrated. Flyway then sees applied migrations it doesn't know ("future") and must not
+    # refuse to start. This is Flyway's default; set explicitly so it's never changed by accident
+    # (FutureMigrationToleranceTest).
+    ignore-migration-patterns: "*:future"
 
 # ── Actuator ──────────────────────────────────────────────────────────────
 # Expose health endpoint only.  We will expose more endpoints selectively

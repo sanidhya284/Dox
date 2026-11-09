@@ -329,13 +329,28 @@ sudo grep -c 'ticket=' <caddy access log path>      # must be 0
 | Drill | Date (UTC) | Result |
 |---|---|---|
 | 8.1 Backup and restore | 2026-11-08 16:40 | **Pass.** `backup.sh` → `chat-20261108T164018Z.dump` (19,622 bytes), restored into a scratch `postgres:16.4-alpine` with `pg_restore` exit 0. Row counts for all 7 public tables were equal to the live DB (`conversation_participants` 5, `conversations` 2, `flyway_schema_history` 6, `messages` 5, `refresh_tokens` 11, `users` 3, `ws_tickets` 0). The scratch container was removed, and the live DB was only read. |
-| 8.2 Rollback | | **Prerequisite found and fixed first:** `deploy.sh` ran `compose up -d` under `set -e`. When the new app never becomes healthy, `up` itself fails (web waits for a healthy app), so the script ended **before** the rollback. Shown locally: `main`'s `deploy.sh` left the broken image running. The fixed script logs the `up` failure and lets the post-deploy check decide; locally it rolled back and the check passed on the old tag. |
+| 8.2 Rollback | 2026-11-08 17:10–17:14 | **Pass.** Run 42503224914 deployed `drill-broken-012b6b6`: `compose up` failure logged, check failed after the 180 s health wait, rolled back to `sha-31bfc4d`, and the check passed on it (health, login, socket, send + ack seq 5, read-back). The job failed as intended. Checked independently: app and web on `sha-31bfc4d`, `.deployed-tag` unchanged, public health 200. Downtime about 3 min 20 s. **Migration-aware variant:** not drillable on production, because a real new migration can't be undone. Covered instead in CI by `FutureMigrationToleranceTest` (an older release still validates against a newer schema) and `check_migrations.py` (additive-only rule). **Prerequisite found and fixed first:** `deploy.sh` ran `compose up -d` under `set -e`. When the new app never becomes healthy, `up` itself fails (web waits for a healthy app), so the script ended **before** the rollback. Shown locally: `main`'s `deploy.sh` left the broken image running. The fixed script logs the `up` failure and lets the post-deploy check decide; locally it rolled back and the check passed on the old tag. |
+| 8.3 Off-AWS copy | 2026-11-08 17:49 | **Pass.** `scp` (by the owner) of `chat-20261108T164018Z.dump` to `~/backups/`: 19,622 bytes on both sides, the same SHA-256 (`43d6a42a…c04b543`). It also restored into a local scratch container (users 3, conversations 2, participants 5, messages 5). That restore exposed a race in `restore.sh` (`pg_isready` passing against the image's temporary init server), now fixed: it waits for "init process complete". |
+| 8.4 Uptime monitor | 2026-11-09 | **Pass.** UptimeRobot (free) keyword monitor on `https://dox-chat.in/actuator/health` (`"status":"UP"`, 5 min, email alerts), set up by the owner. Confirmed from our side: 35 `UptimeRobot/2.0` requests in 3 h, about every 5 min, all 200. |
 
 ---
 
-## 9. Turning on automatic deploys
+## 9. Automatic deploys (on since 2026-11-09)
 
-Only after at least three clean manual deploys and the drills above: change the deploy job trigger to run after CI passes on `main`. Keep the `production` environment (with required reviewer) at first, so you still tap "approve". Remove the reviewer later only if you want fully automatic deploys.
+Turned on after the drills above passed (8.1–8.4) and three manual deploys (`sha-c89219d`, `sha-31bfc4d`, and the 8.2 drill).
+- **Trigger:** every **push to `main`** whose **CI run succeeds** (`workflow_run` on `CI`) deploys that exact commit. There's no approval step.
+- **Docs-only pushes:** they don't run CI (path filters), so they never deploy.
+- **Manual dispatch** stays available: a redeploy of `main`, or the 8.2 drill checkbox.
+- **Unchanged safety nets:**
+  - one deploy at a time; a running deploy is never cancelled (a newer pending one replaces an older pending one);
+  - the gate re-checks all four CI checks for that commit;
+  - `deploy.sh` runs the real-path check (health, login, ticket, socket, send + ack, read-back) and rolls back on failure.
+- **One GitHub setting must match:** **Settings → Environments → production → Required reviewers** must be **empty**, or automatic deploys wait for approval. The environment stays, for the deployment history and its `main`-only rule.
+- **Migrations must be additive (expand/contract)** so a rollback still works against a newer schema. CI enforces it (job "Migrations are additive (expand/contract)", `.github/scripts/check_migrations.py`):
+  - no existing migration modified, deleted or renamed;
+  - new migrations above V6 contain no DROP, RENAME, column type change, SET NOT NULL, TRUNCATE or DELETE, and no NOT NULL column without a DEFAULT.
+- **A deliberate contract step** (removing something no deployed or rollback-target release uses) needs a line `-- contract: <why it's safe>` in the migration. Ship it only one release after the code stopped using the object.
+- **Turning automatic deploys off again:** in `deploy.yml`, remove the `workflow_run` trigger (or add a required reviewer back).
 
 ---
 
