@@ -27,3 +27,4 @@ ratelimit:
   login-per-ip-and-user-per-minute: 100000
   ticket-per-user-per-minute: 100000
   failed-handshakes-per-ip-per-minute: 100000
+  search-per-user-per-minute: 100000

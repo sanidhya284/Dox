@@ -61,6 +61,37 @@ public class ConversationRepository {
                 .single();
     }
 
+    /**
+     * The newest message of each given conversation, for the list preview (ADR-0012). Joins on
+     * {@code m.seq = c.last_seq}: an exact lookup on the unique (conversation_id, seq) index, no sort or scan of
+     * the conversation's history. Conversations with no message are absent from the map.
+     */
+    public java.util.Map<UUID, com.chatplatform.conversation.dto.LastMessage> lastMessages(
+            java.util.Collection<UUID> conversationIds) {
+        java.util.Map<UUID, com.chatplatform.conversation.dto.LastMessage> out = new java.util.HashMap<>();
+        if (conversationIds.isEmpty()) {
+            return out;
+        }
+        jdbcClient.sql("""
+                        SELECT c.id AS conversation_id, m.sender_id, m.body, m.created_at, m.seq
+                        FROM conversations c
+                        JOIN messages m ON m.conversation_id = c.id AND m.seq = c.last_seq
+                        WHERE c.id IN (:ids)
+                        """)
+                .param("ids", conversationIds)
+                .query((rs, n) -> {
+                    out.put(rs.getObject("conversation_id", UUID.class),
+                            new com.chatplatform.conversation.dto.LastMessage(
+                                    rs.getObject("sender_id", UUID.class),
+                                    com.chatplatform.conversation.dto.LastMessage.preview(rs.getString("body")),
+                                    rs.getTimestamp("created_at").toInstant(),
+                                    rs.getLong("seq")));
+                    return null;
+                })
+                .list();
+        return out;
+    }
+
     public Optional<Conversation> findById(UUID id) {
         return jdbcClient.sql("SELECT * FROM conversations WHERE id = :id")
                 .param("id", id)

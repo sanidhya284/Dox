@@ -48,6 +48,27 @@ public class ParticipantRepository {
         }
     }
 
+    /** One membership row: who ever joined, and whether they have left. */
+    public record Membership(UUID conversationId, UUID userId, boolean left) {
+    }
+
+    /** Every member who ever joined the given conversations (including those who left), in one query. */
+    public List<Membership> findAllMembers(java.util.Collection<UUID> conversationIds) {
+        if (conversationIds.isEmpty()) {
+            return List.of();
+        }
+        return jdbcClient.sql("""
+                        SELECT conversation_id, user_id, left_at IS NOT NULL AS has_left
+                        FROM conversation_participants
+                        WHERE conversation_id IN (:ids)
+                        ORDER BY joined_at, user_id
+                        """)
+                .param("ids", conversationIds)
+                .query((rs, n) -> new Membership(rs.getObject("conversation_id", UUID.class),
+                        rs.getObject("user_id", UUID.class), rs.getBoolean("has_left")))
+                .list();
+    }
+
     public List<UUID> findParticipantIdsByConversation(UUID conversationId) {
         return jdbcClient.sql("""
                 SELECT user_id FROM conversation_participants

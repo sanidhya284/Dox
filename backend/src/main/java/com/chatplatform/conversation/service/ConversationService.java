@@ -4,6 +4,9 @@ import com.chatplatform.conversation.dto.ConversationResponse;
 import com.chatplatform.conversation.dto.ParticipantCursor;
 import com.chatplatform.conversation.dto.ConversationHead;
 import com.chatplatform.conversation.dto.CursorResult;
+import com.chatplatform.conversation.dto.LastMessage;
+import com.chatplatform.conversation.dto.ParticipantInfo;
+import com.chatplatform.user.dto.UserSummary;
 import com.chatplatform.conversation.event.CursorAdvancedEvent;
 import org.springframework.context.ApplicationEventPublisher;
 import com.chatplatform.conversation.dto.CreateDirectRequest;
@@ -104,16 +107,22 @@ public class ConversationService {
                 .map(p -> new ParticipantCursor(p.userId(), p.lastDeliveredSeq(), p.lastReadSeq()))
                 .toList();
 
+        List<UUID> one = List.of(conversationId);
         return new ConversationResponse(
                 conv.id(), conv.type(), conv.title(), participants,
                 unreadCount, conv.lastMessageAt(), conv.createdAt(),
-                me.lastReadSeq(), cursors, conv.lastSeq());
+                me.lastReadSeq(), cursors, conv.lastSeq(),
+                memberInfo(one).getOrDefault(conversationId, List.of()),
+                conversationRepository.lastMessages(one).get(conversationId));
     }
 
     @Transactional(readOnly = true)
     public List<ConversationResponse> getUserConversations(UUID userId) {
         List<Conversation> conversations = conversationRepository.findByUserId(userId);
         Map<UUID, Long> unread = participantRepository.unreadCountsForUser(userId); // one grouped query
+        List<UUID> ids = conversations.stream().map(Conversation::id).toList();
+        Map<UUID, List<ParticipantInfo>> members = memberInfo(ids);                // two queries for all
+        Map<UUID, LastMessage> last = conversationRepository.lastMessages(ids);   // one query for all
         return conversations.stream().map(conv -> {
             long lastReadSeq = participantRepository.find(conv.id(), userId)
                     .map(ConversationParticipant::lastReadSeq)
@@ -123,8 +132,30 @@ public class ConversationService {
             return new ConversationResponse(
                     conv.id(), conv.type(), conv.title(), participants,
                     unreadCount, conv.lastMessageAt(), conv.createdAt(),
-                    lastReadSeq, null, conv.lastSeq());
+                    lastReadSeq, null, conv.lastSeq(),
+                    members.getOrDefault(conv.id(), List.of()), last.get(conv.id()));
         }).toList();
+    }
+
+    /**
+     * Every member who ever joined each conversation, with public names (ADR-0012). Names come from UserService
+     * (one batched query), never from the user repository: a domain doesn't read another domain's tables.
+     */
+    private Map<UUID, List<ParticipantInfo>> memberInfo(List<UUID> conversationIds) {
+        List<ParticipantRepository.Membership> rows = participantRepository.findAllMembers(conversationIds);
+        Map<UUID, UserSummary> users = userService.summaries(
+                rows.stream().map(ParticipantRepository.Membership::userId).collect(java.util.stream.Collectors.toSet()));
+        Map<UUID, List<ParticipantInfo>> out = new java.util.HashMap<>();
+        for (ParticipantRepository.Membership row : rows) {
+            UserSummary u = users.get(row.userId());
+            if (u == null) {
+                continue;
+            }
+            out.computeIfAbsent(row.conversationId(), k -> new java.util.ArrayList<>())
+                    .add(new ParticipantInfo(u.id(), u.username(), u.displayName(), u.isGuest(), u.isBot(),
+                            u.isDeleted(), row.left()));
+        }
+        return out;
     }
     
     public void requireParticipant(UUID conversationId, UUID userId) {

@@ -77,6 +77,21 @@ class RateLimitTest extends HardeningTestSupport {
     }
 
     @Test
+    void userSearchIsLimitedPerUser() {
+        String token = newUser()[1];
+        org.springframework.http.HttpHeaders h = new org.springframework.http.HttpHeaders();
+        h.setBearerAuth(token);
+        org.springframework.http.HttpEntity<Void> req = new org.springframework.http.HttpEntity<>(h);
+        for (int i = 0; i < 3; i++) {
+            assertThat(http().exchange("/api/users/search?q=ab", org.springframework.http.HttpMethod.GET, req,
+                    String.class).getStatusCode()).isEqualTo(HttpStatus.OK);
+        }
+        ResponseEntity<String> fourth = http().exchange("/api/users/search?q=ab",
+                org.springframework.http.HttpMethod.GET, req, String.class);
+        assertThat(fourth.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+    }
+
+    @Test
     void ticketsAreLimitedPerUser() {
         String token = newUser()[1];
         for (int i = 0; i < 4; i++) {

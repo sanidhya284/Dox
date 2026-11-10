@@ -20,5 +20,8 @@ public record ConversationResponse(
         Instant createdAt,
         long myLastReadSeq,
         List<ParticipantCursor> participantCursors,
-        long lastSeq
+        long lastSeq,
+        // Additive (ADR-0012): names for every member who ever joined, and the list preview.
+        List<ParticipantInfo> participants,
+        LastMessage lastMessage
 ) {}

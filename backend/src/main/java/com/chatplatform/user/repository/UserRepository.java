@@ -22,8 +22,51 @@ public class UserRepository {
             rs.getTimestamp("updated_at").toInstant()
     );
 
+    /**
+     * Username prefix search (ADR-0012). {@code :pattern} is the already escaped, lower-cased prefix plus '%'.
+     * {@code lower(username::text) LIKE ...} matches the index idx_users_username_prefix (text_pattern_ops).
+     * Excludes the searcher, anonymized accounts, bots, and users who blocked the searcher. Never selects email.
+     */
+    public static final String SEARCH_SQL = """
+            SELECT u.id, u.username, u.display_name, u.is_guest
+            FROM users u
+            WHERE lower(u.username::text) LIKE :pattern ESCAPE '\\'
+              AND u.id <> :me
+              AND u.deleted_at IS NULL
+              AND NOT u.is_bot
+              AND NOT EXISTS (SELECT 1 FROM user_blocks b WHERE b.blocker_id = u.id AND b.blocked_id = :me)
+            ORDER BY lower(u.username::text)
+            LIMIT :limit
+            """;
+
     public UserRepository(JdbcClient jdbcClient) {
         this.jdbcClient = jdbcClient;
+    }
+
+    /** @param pattern escaped, lower-cased prefix followed by '%' (see {@link #SEARCH_SQL}) */
+    public java.util.List<com.chatplatform.user.dto.UserSearchResult> search(String pattern, UUID me, int limit) {
+        return jdbcClient.sql(SEARCH_SQL)
+                .param("pattern", pattern).param("me", me).param("limit", limit)
+                .query((rs, n) -> new com.chatplatform.user.dto.UserSearchResult(
+                        rs.getObject("id", UUID.class), rs.getString("username"),
+                        rs.getString("display_name"), rs.getBoolean("is_guest")))
+                .list();
+    }
+
+    /** Public summaries (no email) for the given ids, in one query. Unknown ids are simply absent. */
+    public java.util.List<com.chatplatform.user.dto.UserSummary> summaries(java.util.Collection<UUID> ids) {
+        if (ids.isEmpty()) {
+            return java.util.List.of();
+        }
+        return jdbcClient.sql("""
+                        SELECT id, username, display_name, is_guest, is_bot, deleted_at IS NOT NULL AS deleted
+                        FROM users WHERE id IN (:ids)
+                        """)
+                .param("ids", ids)
+                .query((rs, n) -> new com.chatplatform.user.dto.UserSummary(
+                        rs.getObject("id", UUID.class), rs.getString("username"), rs.getString("display_name"),
+                        rs.getBoolean("is_guest"), rs.getBoolean("is_bot"), rs.getBoolean("deleted")))
+                .list();
     }
 
     public Optional<User> findById(UUID id) {

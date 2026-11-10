@@ -100,6 +100,7 @@ ratelimit:
   login-per-ip-and-user-per-minute: 5
   ticket-per-user-per-minute: 30
   failed-handshakes-per-ip-per-minute: 20
+  search-per-user-per-minute: 30
   max-keys: 100000
 
 # Demo accounts demo1..demo3 + "Demo room", seeded at startup when DEMO_PASSWORD is set. Public data only.

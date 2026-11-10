@@ -45,8 +45,7 @@ public class WsAuthHandshakeInterceptor implements HandshakeInterceptor {
 
     /** Unit tests: origin validation only, with no effective handshake limit. */
     WsAuthHandshakeInterceptor(WsTicketService wsTicketService, List<String> allowedOrigins) {
-        this(wsTicketService, allowedOrigins, new com.chatplatform.shared.ratelimit.RateLimits(
-                Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE, 1000));
+        this(wsTicketService, allowedOrigins, com.chatplatform.shared.ratelimit.RateLimits.unlimited());
     }
 
     /**
