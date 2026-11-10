@@ -158,6 +158,10 @@ public class FrameCodec {
         if (t instanceof ApiException api) {
             ErrorCode code = api.getErrorCode();
             String message = (code == ErrorCode.VALIDATION_ERROR) ? api.getMessage() : code.defaultMessage;
+            if (api instanceof com.chatplatform.shared.exception.RateLimitedException limited) {
+                return write(new ErrorFrame(Frames.VERSION, "error", clientMsgId, code.name(), message,
+                        Math.max(1, limited.retryAfterSeconds()) * 1000));
+            }
             return write(ErrorFrame.of(clientMsgId, code.name(), message));
         }
         return write(ErrorFrame.of(clientMsgId, INTERNAL_ERROR, INTERNAL_ERROR_MESSAGE));

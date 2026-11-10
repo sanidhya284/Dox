@@ -102,6 +102,60 @@ public class UserRepository {
                 .optional();
     }
 
+    /** Idempotent. */
+    public void block(UUID blocker, UUID blocked) {
+        jdbcClient.sql("""
+                        INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (:blocker, :blocked)
+                        ON CONFLICT DO NOTHING
+                        """)
+                .param("blocker", blocker).param("blocked", blocked).update();
+    }
+
+    public void unblock(UUID blocker, UUID blocked) {
+        jdbcClient.sql("DELETE FROM user_blocks WHERE blocker_id = :blocker AND blocked_id = :blocked")
+                .param("blocker", blocker).param("blocked", blocked).update();
+    }
+
+    public java.util.List<com.chatplatform.user.dto.UserSearchResult> blockedBy(UUID blocker) {
+        return jdbcClient.sql("""
+                        SELECT u.id, u.username, u.display_name, u.is_guest
+                        FROM user_blocks b JOIN users u ON u.id = b.blocked_id
+                        WHERE b.blocker_id = :blocker
+                        ORDER BY b.created_at
+                        """)
+                .param("blocker", blocker)
+                .query((rs, n) -> new com.chatplatform.user.dto.UserSearchResult(
+                        rs.getObject("id", UUID.class), rs.getString("username"),
+                        rs.getString("display_name"), rs.getBoolean("is_guest")))
+                .list();
+    }
+
+    /** True if either user blocked the other. */
+    public boolean blockedEitherWay(UUID a, UUID b) {
+        return jdbcClient.sql("""
+                        SELECT EXISTS (SELECT 1 FROM user_blocks
+                                       WHERE (blocker_id = :a AND blocked_id = :b)
+                                          OR (blocker_id = :b AND blocked_id = :a))
+                        """)
+                .param("a", a).param("b", b).query(Boolean.class).single();
+    }
+
+    /** One query for a DM send: the peer was removed, or either side blocked the other. */
+    public boolean directPeerUnavailable(UUID sender, UUID peer) {
+        return jdbcClient.sql("""
+                        SELECT EXISTS (SELECT 1 FROM users WHERE id = :peer AND deleted_at IS NOT NULL)
+                            OR EXISTS (SELECT 1 FROM user_blocks
+                                       WHERE (blocker_id = :sender AND blocked_id = :peer)
+                                          OR (blocker_id = :peer AND blocked_id = :sender))
+                        """)
+                .param("sender", sender).param("peer", peer).query(Boolean.class).single();
+    }
+
+    public boolean isGuest(UUID id) {
+        return jdbcClient.sql("SELECT is_guest FROM users WHERE id = :id").param("id", id)
+                .query(Boolean.class).optional().orElse(false);
+    }
+
     public long countLiveGuests() {
         return jdbcClient.sql("SELECT count(*) FROM users WHERE is_guest AND deleted_at IS NULL")
                 .query(Long.class).single();

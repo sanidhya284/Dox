@@ -1,6 +1,6 @@
 # ADR-0012 — Open Sign-Up, Guest Accounts and the Product UI's Read Model
 
-**Status:** In progress (Phase 6b; steps 1 and 2 of 5 written)  **Date:** 2026-11-11  **Phase:** 6b
+**Status:** In progress (Phase 6b; steps 1 to 3 of 5 written)  **Date:** 2026-11-11  **Phase:** 6b
 
 ## Context
 dox-chat.in is the first thing a visitor sees. Until now it was invite-only, and the UI could show neither sender names nor a conversation list with previews, nor start a DM. Phase 6b opens sign-up, adds a one-click guest demo, and gives the UI what it needs, with the abuse controls an open demo requires. This ADR is written step by step; later steps add the sign-up, guest and abuse-limit decisions.
@@ -68,8 +68,20 @@ Login looks up only accounts that are not guests, not bots and not removed. Ever
 - **Admin mode** (`application-admin.yml`, `AdminFlywayConfig`): no web server, the cleanup job and demo seeding are not created, the bot isn't seeded, heartbeats aren't scheduled, a 2-connection pool, and **Flyway validates instead of migrating**, so an image that doesn't match the live schema refuses to start (exit `1`). It exits on its own: `0` removed, `3` no such live account.
 - **Limitation:** it's a separate process, so it **can't close the user's sockets** on the live app (that needs the Phase 4 cross-instance "close user" path or an admin endpoint). The sockets end within about 30 minutes (lifetime `4001`, and the access token can't be refreshed), and meanwhile the account is in no conversation.
 
+## Decision 10: one send budget, a cap on new DMs, and blocks (step 3)
+- **Send limit:** 60 new messages per minute per user, 20 for guests (`ratelimit.send-per-user-per-minute`, `send-per-guest-per-minute`). **One budget for WebSocket and REST**, checked in `MessageService` (both channels call it).
+  - **Only new messages count.** The check sits after the idempotency lookup, inside the send transaction: a resend of a committed `clientMsgId` returns its ack without using budget, so a client recovering after a lost ack is never refused its own message.
+  - Rejected sends get `429 RATE_LIMITED` with `Retry-After` (REST), or an `error` frame with **`retryAfterMs`** (WebSocket; only on `RATE_LIMITED`). Clients wait that long before resending, instead of resending on every ack timeout ([ADR-0008](0008-client-sync-protocol.md)).
+  - The welcome bot's messages (`channel=system`) skip it.
+- **New-DM cap:** 20 per hour per user, 3 for guests (`ratelimit.dm-per-user-per-hour`, `dm-per-guest-per-hour`). Only a DM the call **actually creates** counts (`RETURNING (xmax = 0)` tells an insert from the get-or-create conflict path); reopening an existing DM is free. Past the cap the transaction rolls back, so nothing is stored. A guest's welcome DM doesn't count.
+- **Block:** `POST` / `DELETE /api/users/{id}/block` (idempotent, `204`), `GET /api/users/blocked`. Blocking yourself is `400`; an unknown or removed user is `404`.
+  - **DM creation** with a block in either direction answers `404 USER_NOT_FOUND`, the same as an unknown user, so the blocked user can't probe for it. Search hides the blocker (Decision 1).
+  - **Sending in an existing DM** with a block in either direction, or to a removed account, answers **`403 RECIPIENT_UNAVAILABLE`** (terminal for the client). Here the block **is visible** to the blocked user; hiding it would mean silently dropping messages, which breaks the "acked means stored" rule.
+  - **Groups are unaffected** by blocks.
+- **Cost:** a send now also reads the sender's guest flag and, in a DM, one query for "removed or blocked". Not measured; the Phase 5 numbers predate it.
+
 ## Consequences
 - **V7 is additive:** `users.is_guest`, `users.is_bot`, `users.deleted_at`, the `user_blocks` table, and two indexes. The previous release still runs against it (ADR-0011 Decision 10).
-- **Tests:** `UserSearchTest`, `ConversationReadModelTest`, `GuestAccountTest`, `GuestCleanupTest`, `BotReplyTest`, `LoginEquivalenceTest`, `SignupCapTest`, and the search and guest limits in `RateLimitTest`. Each guarantee has a mutation shown to fail it.
-- **New error codes:** `403 GUEST_NOT_ALLOWED`, `429 DEMO_BUSY`. **New close code:** `4008` ([ADR-0008](0008-client-sync-protocol.md) table).
+- **Tests:** `UserSearchTest`, `ConversationReadModelTest`, `GuestAccountTest`, `GuestCleanupTest`, `BotReplyTest`, `LoginEquivalenceTest`, `SignupCapTest`, `SendLimitAndBlockTest`, and the search and guest limits in `RateLimitTest`. Each guarantee has a mutation shown to fail it.
+- **New error codes:** `403 GUEST_NOT_ALLOWED`, `429 DEMO_BUSY`, `403 RECIPIENT_UNAVAILABLE`. **Protocol:** `retryAfterMs` on the `RATE_LIMITED` error frame. **New close code:** `4008` ([ADR-0008](0008-client-sync-protocol.md) table).
 - **Runbook:** "Remove an abusive account" in [AWS-DEPLOY-RUNBOOK.md](../AWS-DEPLOY-RUNBOOK.md) runs the same removal step (`--remove-account=<username>`).

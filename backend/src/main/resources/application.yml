@@ -103,6 +103,12 @@ ratelimit:
   search-per-user-per-minute: 30
   guest-per-ip-per-hour: 3
   signup-global-per-hour: 200
+  # One send budget per user for WebSocket and REST; only new messages count (ADR-0012).
+  send-per-user-per-minute: 60
+  send-per-guest-per-minute: 20
+  # Only DMs that are actually created count.
+  dm-per-user-per-hour: 20
+  dm-per-guest-per-hour: 3
   max-keys: 100000
 
 # "Try the demo" guests (ADR-0012): at most max-live at once (DEMO_BUSY beyond); removed after ttl by a job

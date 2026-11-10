@@ -32,7 +32,11 @@ public class ConversationRepository {
         this.jdbcClient = jdbcClient;
     }
 
-    public Conversation insertDirect(UUID creatorId, String directKey) {
+    /** The DM row, and whether this call created it (xmax = 0 only for a freshly inserted row). */
+    public record DirectInsert(Conversation conversation, boolean created) {
+    }
+
+    public DirectInsert insertDirect(UUID creatorId, String directKey) {
         // ON CONFLICT … DO UPDATE SET direct_key = EXCLUDED.direct_key is a PostgreSQL trick:
         // DO NOTHING returns 0 rows so RETURNING * would fail, but DO UPDATE (even a no-op)
         // always returns the final row.  The UPDATE is idempotent — setting direct_key to its
@@ -41,11 +45,11 @@ public class ConversationRepository {
                 INSERT INTO conversations (id, type, direct_key, created_by)
                 VALUES (gen_random_uuid(), 'DIRECT', :directKey, :createdBy)
                 ON CONFLICT (direct_key) DO UPDATE SET direct_key = EXCLUDED.direct_key
-                RETURNING *
+                RETURNING *, (xmax = 0) AS created
                 """)
                 .param("directKey", directKey)
                 .param("createdBy", creatorId)
-                .query(MAPPER)
+                .query((rs, n) -> new DirectInsert(MAPPER.mapRow(rs, n), rs.getBoolean("created")))
                 .single();
     }
 

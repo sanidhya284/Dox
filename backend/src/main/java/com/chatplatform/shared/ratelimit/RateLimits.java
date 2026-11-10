@@ -28,6 +28,10 @@ public class RateLimits {
     private final FixedWindowRateLimiter searchPerUser;
     private final FixedWindowRateLimiter guestPerIp;
     private final FixedWindowRateLimiter signupGlobal;
+    private final FixedWindowRateLimiter sendPerUser;
+    private final FixedWindowRateLimiter sendPerGuest;
+    private final FixedWindowRateLimiter dmPerUser;
+    private final FixedWindowRateLimiter dmPerGuest;
 
     public RateLimits(RateLimitProperties p) {
         Duration minute = Duration.ofMinutes(1);
@@ -40,6 +44,10 @@ public class RateLimits {
         this.searchPerUser = limiter(p.searchPerUserPerMinute(), minute, maxKeys);
         this.guestPerIp = limiter(p.guestPerIpPerHour(), Duration.ofHours(1), maxKeys);
         this.signupGlobal = limiter(p.signupGlobalPerHour(), Duration.ofHours(1), 1);
+        this.sendPerUser = limiter(p.sendPerUserPerMinute(), minute, maxKeys);
+        this.sendPerGuest = limiter(p.sendPerGuestPerMinute(), minute, maxKeys);
+        this.dmPerUser = limiter(p.dmPerUserPerHour(), Duration.ofHours(1), maxKeys);
+        this.dmPerGuest = limiter(p.dmPerGuestPerHour(), Duration.ofHours(1), maxKeys);
     }
 
     /** Effectively no limits (unit tests that construct components by hand). */
@@ -57,6 +65,19 @@ public class RateLimits {
      */
     public void checkGlobalSignup() {
         enforce(signupGlobal.tryAcquire("all"));
+    }
+
+    /**
+     * One send budget per user for WebSocket and REST together (ADR-0012). The caller checks it only for a
+     * message that will be NEW: a resend of a committed clientMsgId is acked without using budget.
+     */
+    public void checkSend(UUID userId, boolean guest) {
+        enforce((guest ? sendPerGuest : sendPerUser).tryAcquire(userId.toString()));
+    }
+
+    /** New DMs per user per hour; the caller checks it only when a DM was actually created. */
+    public void checkNewDm(UUID userId, boolean guest) {
+        enforce((guest ? dmPerGuest : dmPerUser).tryAcquire(userId.toString()));
     }
 
     public void checkSearch(UUID userId) {

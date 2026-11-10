@@ -30,12 +30,18 @@ public class MessageService {
     private final ConversationService conversationService;
     private final ApplicationEventPublisher events;
     private final ChatMetrics metrics;
+    private final com.chatplatform.shared.ratelimit.RateLimits rateLimits;
+    private final com.chatplatform.user.service.UserService userService;
 
     public MessageService(MessageRepository messageRepository,
                           ConversationRepository conversationRepository,
                           ConversationService conversationService,
                           ApplicationEventPublisher events,
-                          ChatMetrics metrics) {
+                          ChatMetrics metrics,
+                          com.chatplatform.shared.ratelimit.RateLimits rateLimits,
+                          com.chatplatform.user.service.UserService userService) {
+        this.rateLimits = rateLimits;
+        this.userService = userService;
         this.messageRepository = messageRepository;
         this.conversationRepository = conversationRepository;
         this.conversationService = conversationService;
@@ -108,6 +114,14 @@ public class MessageService {
             } else {
                 throw new ApiException(ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
             }
+        }
+
+        // 3b. Only a NEW message gets here (a resend of a committed one was acked above, free): the DM recipient
+        //     must be available (ADR-0012), and the sender's one budget for WS and REST must allow it.
+        //     System messages (the welcome bot) skip the per-user limit.
+        conversationService.requireRecipientAvailable(conversationId, senderId);
+        if (channel != Channel.SYSTEM) {
+            rateLimits.checkSend(senderId, userService.isGuest(senderId));
         }
 
         // 4. incrementAndGetLastSeq, then insert

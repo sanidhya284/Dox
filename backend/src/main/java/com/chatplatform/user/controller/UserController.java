@@ -25,6 +25,26 @@ public class UserController {
         this.rateLimits = rateLimits;
     }
 
+    /** Block (ADR-0012): idempotent, 204. */
+    @org.springframework.web.bind.annotation.PostMapping("/{id}/block")
+    @org.springframework.web.bind.annotation.ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
+    public void block(@AuthenticationPrincipal UUID currentUserId,
+                      @org.springframework.web.bind.annotation.PathVariable UUID id) {
+        userService.block(currentUserId, id);
+    }
+
+    @org.springframework.web.bind.annotation.DeleteMapping("/{id}/block")
+    @org.springframework.web.bind.annotation.ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
+    public void unblock(@AuthenticationPrincipal UUID currentUserId,
+                        @org.springframework.web.bind.annotation.PathVariable UUID id) {
+        userService.unblock(currentUserId, id);
+    }
+
+    @GetMapping("/blocked")
+    public List<UserSearchResult> blocked(@AuthenticationPrincipal UUID currentUserId) {
+        return userService.blocked(currentUserId);
+    }
+
     @GetMapping("/search")
     public List<UserSearchResult> search(@AuthenticationPrincipal UUID currentUserId,
                                          @RequestParam(name = "q", required = false) String q) {

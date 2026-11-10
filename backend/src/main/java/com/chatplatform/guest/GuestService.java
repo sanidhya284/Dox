@@ -58,7 +58,7 @@ public class GuestService {
         UUID botId = bot.id();
         User guest = userService.createGuest();
 
-        ConversationResponse dm = conversationService.createDirect(guest.id(), new CreateDirectRequest(botId));
+        ConversationResponse dm = conversationService.createDirectAsSystem(guest.id(), new CreateDirectRequest(botId));
         messageService.sendAsSystem(dm.id(), botId, WelcomeBot.WELCOME);
         ConversationResponse group = conversationService.createGroup(botId,
                 new CreateGroupRequest(WelcomeBot.GROUP_TITLE, List.of(guest.id())));

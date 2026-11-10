@@ -18,8 +18,9 @@ Pushes are best effort by design ([ADR-0006](0006-websocket-frame-protocol-v1.md
    - An entry is resent when no ack arrives within the **ack timeout**, on the **same socket**, and again after every reconnect.
    - The ack also records the client's own message locally (the body comes from the outbox entry), so `contiguousSeq` advances without waiting for a push. A sender's own socket never gets a push for its message.
 2. **Errors.**
-   - Terminal, so the entry is dropped and reported: `VALIDATION_ERROR`, `CONVERSATION_NOT_FOUND`, `IDEMPOTENCY_KEY_CONFLICT`.
+   - Terminal, so the entry is dropped and reported: `VALIDATION_ERROR`, `CONVERSATION_NOT_FOUND`, `IDEMPOTENCY_KEY_CONFLICT`, `RECIPIENT_UNAVAILABLE` (added 2026-11-11, [ADR-0012](0012-open-signup-and-guest-accounts.md)).
    - Retryable: `INTERNAL_ERROR` (for example a failed commit), an ack timeout, and any unknown code.
+   - `RATE_LIMITED` (added 2026-11-11): retryable, but only after the frame's `retryAfterMs` (REST: `Retry-After`); the entry keeps its `clientMsgId`, and the server never charges budget for a resend of a committed message.
 3. **Reconnect.** A fresh ticket and **exponential backoff with full jitter**: `delay = random[0, min(cap, base × 2^attempt))` (base 100 ms, cap 10 s), reset after a successful connect. Full jitter spreads clients that were dropped together.
 
    | Close | Action |

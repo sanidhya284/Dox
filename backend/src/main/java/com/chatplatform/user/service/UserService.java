@@ -53,6 +53,41 @@ public class UserService {
                 true, false, null));
     }
 
+    /**
+     * Blocks another user (ADR-0012): idempotent; yourself is 400; an unknown or removed account is 404.
+     * The blocked user is not told: DM creation answers 404 as for an unknown user, search hides the blocker.
+     */
+    public void block(UUID me, UUID other) {
+        if (me.equals(other)) {
+            throw new ApiException(ErrorCode.VALIDATION_ERROR, "You can't block yourself");
+        }
+        if (getUserById(other).deletedAt() != null) {
+            throw new ApiException(ErrorCode.USER_NOT_FOUND);
+        }
+        userRepository.block(me, other);
+    }
+
+    public void unblock(UUID me, UUID other) {
+        userRepository.unblock(me, other);
+    }
+
+    public java.util.List<com.chatplatform.user.dto.UserSearchResult> blocked(UUID me) {
+        return userRepository.blockedBy(me);
+    }
+
+    public boolean blockedEitherWay(UUID a, UUID b) {
+        return userRepository.blockedEitherWay(a, b);
+    }
+
+    /** For sends in a DM: the peer was removed, or either side blocked the other (ADR-0012). */
+    public boolean directPeerUnavailable(UUID sender, UUID peer) {
+        return userRepository.directPeerUnavailable(sender, peer);
+    }
+
+    public boolean isGuest(UUID id) {
+        return userRepository.isGuest(id);
+    }
+
     public long countLiveGuests() {
         return userRepository.countLiveGuests();
     }

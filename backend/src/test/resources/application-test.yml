@@ -30,6 +30,10 @@ ratelimit:
   search-per-user-per-minute: 100000
   guest-per-ip-per-hour: 100000
   signup-global-per-hour: 100000
+  send-per-user-per-minute: 100000
+  send-per-guest-per-minute: 100000
+  dm-per-user-per-hour: 100000
+  dm-per-guest-per-hour: 100000
 
 # The H2 database here has no schema: don't seed the welcome bot at startup (ADR-0012).
 guest:

@@ -167,6 +167,11 @@ class GuestCleanupTest extends AbstractIntegrationTest {
         assertThat(guestInfo.get("left").asBoolean()).isTrue();
         assertThat(guestInfo.get("displayName").asText()).isEqualTo("Deleted guest");
         assertThat(conversationIdsOf(guest[1])).as("the guest is in no conversation any more").isEmpty();
+        ResponseEntity<String> toDeleted = restTemplate.exchange("/api/conversations/" + dmId + "/messages",
+                HttpMethod.POST, new HttpEntity<>(Map.of("clientMsgId", UUID.randomUUID(), "body", "hello?"),
+                        bearer(real.accessToken())), String.class);
+        assertThat(toDeleted.getStatusCode()).as("a DM with a removed account").isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(toDeleted.getBody()).contains("RECIPIENT_UNAVAILABLE");
     }
 
     @Test

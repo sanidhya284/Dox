@@ -24,6 +24,7 @@ public enum ErrorCode {
     // 403
     REGISTRATION_CLOSED(HttpStatus.FORBIDDEN, "Registration requires a valid invite code"),
     ORIGIN_NOT_ALLOWED(HttpStatus.FORBIDDEN, "Request origin is not allowed"),
+    RECIPIENT_UNAVAILABLE(HttpStatus.FORBIDDEN, "This person can't receive your messages"),
     GUEST_NOT_ALLOWED(HttpStatus.FORBIDDEN, "Guest accounts can't do this; sign up for a full account"),
 
     // 404

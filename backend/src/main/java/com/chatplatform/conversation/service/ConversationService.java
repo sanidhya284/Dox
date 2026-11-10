@@ -35,12 +35,15 @@ public class ConversationService {
     private final ApplicationEventPublisher events;
     private final UserService userService;
     private final ChatMetrics metrics;
+    private final com.chatplatform.shared.ratelimit.RateLimits rateLimits;
 
     public ConversationService(ConversationRepository conversationRepository,
                                ParticipantRepository participantRepository,
                                UserService userService,
                                ApplicationEventPublisher events,
-                               ChatMetrics metrics) {
+                               ChatMetrics metrics,
+                               com.chatplatform.shared.ratelimit.RateLimits rateLimits) {
+        this.rateLimits = rateLimits;
         this.conversationRepository = conversationRepository;
         this.participantRepository = participantRepository;
         this.userService = userService;
@@ -48,8 +51,23 @@ public class ConversationService {
         this.metrics = metrics;
     }
 
+    /**
+     * Creates or returns the DM (ADR-0012): a removed account, or a block in either direction, looks like an
+     * unknown user (404). Only a DM this call actually creates counts towards the hourly new-DM cap; past the cap
+     * the transaction rolls back (429), so nothing is stored.
+     */
     @Transactional
     public ConversationResponse createDirect(UUID currentUserId, CreateDirectRequest request) {
+        return createDirect(currentUserId, request, true);
+    }
+
+    /** The guest's welcome DM (ADR-0012): the same code, not counted towards the guest's DM cap. */
+    @Transactional
+    public ConversationResponse createDirectAsSystem(UUID userId, CreateDirectRequest request) {
+        return createDirect(userId, request, false);
+    }
+
+    private ConversationResponse createDirect(UUID currentUserId, CreateDirectRequest request, boolean capped) {
         if (currentUserId.equals(request.otherUserId())) {
             throw new ApiException(ErrorCode.CANNOT_DM_SELF);
         }
@@ -58,11 +76,18 @@ public class ConversationService {
         if (userService.getUserById(request.otherUserId()).deletedAt() != null) {
             throw new ApiException(ErrorCode.USER_NOT_FOUND);
         }
+        if (userService.blockedEitherWay(currentUserId, request.otherUserId())) {
+            throw new ApiException(ErrorCode.USER_NOT_FOUND); // the blocked user can't probe for the block
+        }
 
         // Canonical direct_key
         String directKey = generateDirectKey(currentUserId, request.otherUserId());
 
-        Conversation conversation = conversationRepository.insertDirect(currentUserId, directKey);
+        ConversationRepository.DirectInsert insert = conversationRepository.insertDirect(currentUserId, directKey);
+        Conversation conversation = insert.conversation();
+        if (capped && insert.created()) {
+            rateLimits.checkNewDm(currentUserId, userService.isGuest(currentUserId));
+        }
 
         participantRepository.insert(conversation.id(), currentUserId, "MEMBER");
         participantRepository.insert(conversation.id(), request.otherUserId(), "MEMBER");
@@ -190,6 +215,25 @@ public class ConversationService {
     @Transactional
     public void deleteConversations(java.util.Collection<UUID> conversationIds) {
         conversationRepository.deleteByIds(conversationIds);
+    }
+
+    /**
+     * Sends in a DM (ADR-0012): 403 RECIPIENT_UNAVAILABLE if the other member was removed or either side blocked
+     * the other. The block is visible to the blocked user here (unlike DM creation, which answers 404).
+     * Groups are never affected.
+     */
+    public void requireRecipientAvailable(UUID conversationId, UUID senderId) {
+        Conversation conv = conversationRepository.findById(conversationId)
+                .orElseThrow(() -> new ApiException(ErrorCode.CONVERSATION_NOT_FOUND));
+        if (!"DIRECT".equals(conv.type()) || conv.directKey() == null) {
+            return;
+        }
+        for (String part : conv.directKey().split(":")) {
+            UUID peer = UUID.fromString(part);
+            if (!peer.equals(senderId) && userService.directPeerUnavailable(senderId, peer)) {
+                throw new ApiException(ErrorCode.RECIPIENT_UNAVAILABLE);
+            }
+        }
     }
 
     public void requireParticipant(UUID conversationId, UUID userId) {
