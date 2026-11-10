@@ -351,6 +351,22 @@ Turned on after the drills above passed (8.1–8.4) and three manual deploys (`s
   - new migrations above V6 contain no DROP, RENAME, column type change, SET NOT NULL, TRUNCATE or DELETE, and no NOT NULL column without a DEFAULT.
 - **A deliberate contract step** (removing something no deployed or rollback-target release uses) needs a line `-- contract: <why it's safe>` in the migration. Ship it only one release after the code stopped using the object.
 - **Turning automatic deploys off again:** in `deploy.yml`, remove the `workflow_run` trigger (or add a required reviewer back).
+- **Check what's live:** `curl -s https://dox-chat.in/api/version`, or the "build <commit>" line at the bottom of every page.
+
+### 9.1 Proof (2026-11-09)
+- **The first automatic deploy (`4270fd8`, PR #14) was cancelled:** it started while the `production` environment still had a required reviewer, and removing that rule cancelled the waiting approval. Remove the reviewer **before** merging the PR that turns automatic deploys on.
+- **PR #15 (`GET /api/version` + footer) went live with no manual step**, measured from outside by polling `/api/version`:
+
+| Time (UTC) | Step | Duration |
+|---|---|---|
+| 19:27:41 | Merged (`6e92930`) | |
+| 19:27:45 → 19:35:11 | CI on `main` (4 checks) | 7 min 26 s |
+| 19:35:16 | Deploy started (`workflow_run`, 0 approvals) | |
+| 19:35:20 → 19:36:47 | Gate 5 s, images 37 s, deploy and post-deploy check 37 s | about 1.5 min |
+| 19:36:51 | `/api/version` reports `6e92930` | **merge to live: 9 min 10 s** (±10 s polling) |
+
+- **Where the time goes:** CI is about 81% of it; the e2e job waits for the backend job. Running them in parallel is the main lever if it ever needs to be faster; that hasn't been done.
+- **Check of the docs-only rule:** this runbook update is a docs-only merge, so it must not start CI or a deploy.
 
 ---
 
