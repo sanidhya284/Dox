@@ -49,6 +49,14 @@ public class RefreshTokenRepository {
                 .optional();
     }
 
+    /** Revokes every still-active refresh token of the user (account removal, ADR-0012). */
+    public void revokeAllForUser(UUID userId) {
+        jdbcClient.sql("UPDATE refresh_tokens SET revoked_at = :now WHERE user_id = :userId AND revoked_at IS NULL")
+                .param("now", java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC))
+                .param("userId", userId)
+                .update();
+    }
+
     public void revoke(String tokenHash) {
         jdbcClient.sql("UPDATE refresh_tokens SET revoked_at = :now WHERE token_hash = :tokenHash")
                 .param("now", OffsetDateTime.ofInstant(Instant.now(), ZoneOffset.UTC))

@@ -24,6 +24,7 @@ public enum ErrorCode {
     // 403
     REGISTRATION_CLOSED(HttpStatus.FORBIDDEN, "Registration requires a valid invite code"),
     ORIGIN_NOT_ALLOWED(HttpStatus.FORBIDDEN, "Request origin is not allowed"),
+    GUEST_NOT_ALLOWED(HttpStatus.FORBIDDEN, "Guest accounts can't do this; sign up for a full account"),
 
     // 404
     USER_NOT_FOUND(HttpStatus.NOT_FOUND, "User not found"),
@@ -35,7 +36,8 @@ public enum ErrorCode {
     EMAIL_TAKEN(HttpStatus.CONFLICT, "Email is already registered"),
 
     // 429
-    RATE_LIMITED(HttpStatus.TOO_MANY_REQUESTS, "Too many requests; retry later");
+    RATE_LIMITED(HttpStatus.TOO_MANY_REQUESTS, "Too many requests; retry later"),
+    DEMO_BUSY(HttpStatus.TOO_MANY_REQUESTS, "The demo is full right now; sign up for a free account instead");
 
     public final HttpStatus status;
     public final String defaultMessage;

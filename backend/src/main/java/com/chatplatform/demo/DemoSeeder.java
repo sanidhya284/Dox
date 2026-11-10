@@ -25,7 +25,7 @@ import java.util.List;
 public class DemoSeeder implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(DemoSeeder.class);
-    static final List<String> USERS = List.of("demo1", "demo2", "demo3");
+    public static final List<String> USERS = List.of("demo1", "demo2", "demo3");
     static final String ROOM = "Demo room";
 
     private final UserService userService;

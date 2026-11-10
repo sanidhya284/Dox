@@ -92,6 +92,25 @@ class RateLimitTest extends HardeningTestSupport {
     }
 
     @Test
+    void guestCreationIsLimitedPerIp() {
+        String ip = uniqueIp();
+        org.springframework.http.HttpHeaders h = from(ip);
+        h.setOrigin(AuthCookies.ORIGIN);
+        org.springframework.http.HttpEntity<Void> req = new org.springframework.http.HttpEntity<>(null, h);
+        for (int i = 0; i < 2; i++) {
+            assertThat(http().postForEntity("/api/auth/guest", req, String.class).getStatusCode())
+                    .isEqualTo(HttpStatus.CREATED);
+        }
+        ResponseEntity<String> third = http().postForEntity("/api/auth/guest", req, String.class);
+        assertThat(third.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        assertThat(third.getBody()).contains("RATE_LIMITED");
+        org.springframework.http.HttpHeaders other = from(uniqueIp());
+        other.setOrigin(AuthCookies.ORIGIN);
+        assertThat(http().postForEntity("/api/auth/guest", new org.springframework.http.HttpEntity<>(null, other),
+                String.class).getStatusCode()).as("another IP").isEqualTo(HttpStatus.CREATED);
+    }
+
+    @Test
     void ticketsAreLimitedPerUser() {
         String token = newUser()[1];
         for (int i = 0; i < 4; i++) {

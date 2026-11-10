@@ -221,7 +221,9 @@ All environment-specific configuration comes from environment variables.
 | `WS_HEARTBEAT_TIMEOUT` | `PT60S` (`ws.heartbeat.timeout`) | A socket with no pong or frame for this long is closed with `4006`. Startup requires it to be at least twice the interval. |
 | `WS_SESSION_MAX_LIFETIME` | `PT15M` (`ws.session.max-lifetime`) | How long a WebSocket may stay open after its handshake; then the server closes it with `4001`. ISO-8601 duration. Startup refuses zero or negative values. |
 | `auth.refresh-cookie.secure` | `true` (`false` in `dev` only) | The `Secure` attribute of the `chat_rt` refresh cookie (ADR-0010). |
-| `REGISTRATION_INVITE_CODE` | none (`registration.invite-code`) | With `registration.mode=invite` (the default), `POST /api/auth/register` needs this code; unset means registration is closed (`403`). `dev`, the test profiles and `bench` set `registration.mode=open` (ADR-0011). |
+| `REGISTRATION_MODE` | `open` (`registration.mode`) | `open`: anyone may register, behind the per-IP limit and `ratelimit.signup-global-per-hour` (200). `invite`: see the next row (ADR-0011, amended by ADR-0012). |
+| `REGISTRATION_INVITE_CODE` | none (`registration.invite-code`) | With `registration.mode=invite`, `POST /api/auth/register` needs this code; unset means registration is closed (`403`). |
+| (none) | `guest.max-live` 1000, `guest.ttl` PT24H, `guest.cleanup-interval` PT15M | Guest cap, lifetime and cleanup period (ADR-0012). |
 | `DEMO_PASSWORD` | none (`demo.password`) | When set (at least 8 characters), seeds `demo1`..`demo3` and a "Demo room" at startup; a changed value resets their password hashes. Public data only. |
 | `WS_MAX_SOCKETS_PER_USER` | `10` (`ws.max-sockets-per-user`) | Open sockets per user; the next one is closed with `4007` (ADR-0006 Decision 2a). |
 | `ratelimit.*` | register 5/h per IP; login 20/min per IP and 5/min per (IP, username); ticket 30/min per user; failed handshakes 20/min per IP; `max-keys` 100000 | In-memory fixed-window limits, per instance (ADR-0011). |
@@ -235,12 +237,13 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/api/auth/register` | no | Register (`inviteCode` required in invite mode; checked before conflicts); returns `{user, accessToken}` and sets the `chat_rt` refresh cookie. Rate-limited per IP. |
+| POST | `/api/auth/register` | no | Register (open by default; `inviteCode` required in invite mode, checked before conflicts); returns `{user, accessToken}` and sets the `chat_rt` refresh cookie. Rate-limited per IP and by a global hourly cap; `guest-*`, `deleted-*` and `dox-bot` are reserved (`400`). |
+| POST | `/api/auth/guest` | allowed `Origin` | "Try the demo": creates a 24-hour guest with a welcome DM and a private group with the bot; returns `{user, accessToken}` (`user.isGuest = true`) and sets the cookie. 3/h per IP; `429 DEMO_BUSY` at 1000 live guests (ADR-0012). |
 | POST | `/api/auth/login` | no | Login; returns `{accessToken}` and sets the `chat_rt` cookie. Rate-limited per IP and per (IP, username), before BCrypt. |
 | POST | `/api/auth/refresh` | `chat_rt` cookie + allowed `Origin` | Rotate the refresh token; returns `{accessToken}` and a new cookie. A failed refresh clears the cookie (ADR-0010). |
 | POST | `/api/auth/logout` | `chat_rt` cookie + allowed `Origin` | Revoke the refresh token and clear the cookie (`204`). |
 | POST | `/api/conversations/direct` | yes | Create or get direct conversation |
-| POST | `/api/conversations/group` | yes | Create group conversation |
+| POST | `/api/conversations/group` | yes | Create group conversation (`403 GUEST_NOT_ALLOWED` for guests) |
 | GET | `/api/conversations` | yes | List user's conversations |
 | GET | `/api/conversations/{id}` | yes | Get one conversation |
 | POST | `/api/conversations/{id}/messages` | yes | Send message (idempotent) |
@@ -284,6 +287,10 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 - **Conversation read model (ADR-0012):** `participants` lists every member who ever joined (with `left` and `isDeleted`) and no emails; `lastMessage` is the message at `last_seq` (or null), its preview cut at 120 code points without splitting a surrogate pair (`ConversationReadModelTest`).
 - **User search (ADR-0012):** case-insensitive prefix match; no email; 2-char minimum; ≤ 20 results; `%`, `_` matched literally; excludes me, deleted accounts, bots and users who blocked me; the exact query can use `idx_users_username_prefix` (EXPLAIN in `UserSearchTest`).
 - **Rate limits (ADR-0011):** the limit-plus-one register, login, ticket or failed-handshake attempt gets `429` with `Retry-After`; another IP, pair or user is unaffected; a limited login never reaches BCrypt; a blocked handshake doesn't consume the ticket; the limiter's memory stays bounded (`FixedWindowRateLimiterTest`, `RateLimitTest`).
+- **Sign-up and guests (ADR-0012):** the global sign-up cap refuses the next sign-up from a new IP and counts `chat.signups{outcome}`; reserved usernames get `400`; a guest gets the cookie, a welcome DM and a private group with only the bot; 25 guests in a row each get their DM and demo1's list is unchanged; guests can't log in by password or create groups; guest creation needs an allowed `Origin`, is limited per IP, and beyond `guest.max-live` gets `DEMO_BUSY` (`GuestAccountTest`, `SignupCapTest`, `RateLimitTest`).
+- **Account removal (ADR-0012):** an expired guest's bot-only conversations are deleted with their messages; where a real user took part the guest leaves, is shown as deleted, and history keeps seq 1..n; the row is anonymized; the refresh token stops working; sockets close with `4008`; a row locked by another transaction is skipped, not waited on; an abusive account is removed by the same step (`GuestCleanupTest`).
+- **Login equivalence (ADR-0012):** an unknown name, a guest, the bot and a removed account each cost exactly one BCrypt comparison against the same dummy hash and get the same 401 (`LoginEquivalenceTest`).
+- **Welcome bot (ADR-0012):** reads and replies after commit, at most once per 10 s per conversation (`BotReplyTest`).
 - **Registration policy:** without the right invite code, registration gets `403` and stores nothing, and a taken username or email isn't revealed (`RegistrationPolicyTest`, `RegistrationPolicyUnitTest`).
 - **Socket cap:** the socket over `ws.max-sockets-per-user` is closed with `4007`, the others stay open, and the cap is per user (`SocketCapTest`).
 - **Demo seed and profiles:** seeding is idempotent and a changed demo password replaces the old one (`DemoSeedTest`); `prod` with `dev` or `bench` refuses startup (`ProfileGuardTest`).
@@ -327,6 +334,8 @@ A socket authenticates once, at the handshake, so it could otherwise outlive the
 - **VPS sizing is derived from memory limits** (2 GB recommended for Phase 6, 4 GB for Phase 4), not measured.
 - **The browser UI:** unsent messages live in memory, so a reload loses the outbox (sends that were already acked are safe). It doesn't create conversations, and it shows senders as "You" or a short id (there's no user lookup endpoint). Its sync code is unit-tested, but the convergence-under-faults test covers only the Java reference client.
 - **The demo is public data**, and a changed `DEMO_PASSWORD` doesn't revoke existing demo sessions.
+- **Open sign-up has no email verification or CAPTCHA** (ADR-0012): distributed sign-up spam is bounded only by the global hourly cap, which then blocks real sign-ups too (fails closed). The live-guest cap is checked, not locked, so concurrent requests can overshoot it slightly.
+- **Removed accounts:** access tokens issued before removal stay valid until they expire (≤ 15 min), but the account is in no conversation; a guest-to-guest conversation is deleted when the first guest expires.
 
 - **Metrics use HTTP Basic:** the password travels with every scrape, so production needs TLS in front (Phase 9).
 - **Measurements are single-laptop:** the load harness runs on the same machine as the app, and Postgres runs in Docker Desktop's VM. Results describe that setup only ([BENCHMARKS.md](BENCHMARKS.md)). The `bench` profile also exposes `/actuator/env` (values shown to the metrics user only); never use that profile outside local measurement.

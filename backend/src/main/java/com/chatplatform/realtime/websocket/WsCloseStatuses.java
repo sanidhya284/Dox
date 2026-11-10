@@ -20,6 +20,9 @@ public final class WsCloseStatuses {
     /** The user already has ws.max-sockets-per-user open sockets: this new one is refused. Don't auto-reconnect. */
     public static final CloseStatus TOO_MANY_SOCKETS = new CloseStatus(4007, "too many sockets");
 
+    /** The guest account expired and was removed (ADR-0012). Don't auto-reconnect; offer a new demo or sign-up. */
+    public static final CloseStatus GUEST_EXPIRED = new CloseStatus(4008, "guest expired");
+
     /** The frame's "v" is not a protocol version this server speaks. */
     public static final CloseStatus UNSUPPORTED_PROTOCOL_VERSION = new CloseStatus(4004, "unsupported protocol version");
 

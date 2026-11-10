@@ -51,6 +51,12 @@ public class WsTicketService {
      * @param userId the authenticated user who will use this ticket
      * @return the raw base64url ticket and its TTL in seconds
      */
+    /** Unused tickets of a removed account can't open a socket (ADR-0012). */
+    @org.springframework.transaction.annotation.Transactional
+    public void revokeAllForUser(UUID userId) {
+        wsTicketRepository.deleteForUser(userId);
+    }
+
     public IssuedTicket issue(UUID userId) {
         byte[] bytes = new byte[32];
         secureRandom.nextBytes(bytes);

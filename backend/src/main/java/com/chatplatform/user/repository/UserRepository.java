@@ -19,7 +19,10 @@ public class UserRepository {
             rs.getString("password_hash"),
             rs.getString("display_name"),
             rs.getTimestamp("created_at").toInstant(),
-            rs.getTimestamp("updated_at").toInstant()
+            rs.getTimestamp("updated_at").toInstant(),
+            rs.getBoolean("is_guest"),
+            rs.getBoolean("is_bot"),
+            rs.getTimestamp("deleted_at") != null ? rs.getTimestamp("deleted_at").toInstant() : null
     );
 
     /**
@@ -84,6 +87,74 @@ public class UserRepository {
                 .optional();
     }
 
+    /**
+     * The only accounts that may log in with a password (ADR-0012): not a guest, not a bot, not removed.
+     * Everything else looks exactly like an unknown username to login.
+     */
+    public Optional<User> findLoginCandidate(String username) {
+        return jdbcClient.sql("""
+                        SELECT * FROM users
+                        WHERE username = CAST(:username AS citext)
+                          AND NOT is_guest AND NOT is_bot AND deleted_at IS NULL
+                        """)
+                .param("username", username)
+                .query(USER_ROW_MAPPER)
+                .optional();
+    }
+
+    public long countLiveGuests() {
+        return jdbcClient.sql("SELECT count(*) FROM users WHERE is_guest AND deleted_at IS NULL")
+                .query(Long.class).single();
+    }
+
+    /**
+     * Claims the oldest live guest created before {@code cutoff}, row-locked until the caller's transaction ends.
+     * SKIP LOCKED: a row another instance (or a concurrent run) is already removing is skipped, never waited on.
+     */
+    public Optional<UUID> lockNextExpiredGuest(java.time.Instant cutoff) {
+        return jdbcClient.sql("""
+                        SELECT id FROM users
+                        WHERE is_guest AND deleted_at IS NULL AND created_at < :cutoff
+                        ORDER BY created_at
+                        LIMIT 1
+                        FOR UPDATE SKIP LOCKED
+                        """)
+                .param("cutoff", java.time.OffsetDateTime.ofInstant(cutoff, java.time.ZoneOffset.UTC))
+                .query(UUID.class)
+                .optional();
+    }
+
+    /** Locks the account row (waits if another transaction holds it). Empty if absent or already removed. */
+    public Optional<UUID> lockLiveByUsername(String username) {
+        return jdbcClient.sql("""
+                        SELECT id FROM users
+                        WHERE username = CAST(:username AS citext) AND deleted_at IS NULL
+                        FOR UPDATE
+                        """)
+                .param("username", username)
+                .query(UUID.class)
+                .optional();
+    }
+
+    /**
+     * Scrubs personal data (ADR-0012). The username and email are derived from the id, so they are unique; they
+     * use the reserved "deleted-" prefix. The password hash becomes a value BCrypt never matches.
+     */
+    public void anonymize(UUID id, String displayName) {
+        String hex = id.toString().replace("-", "");
+        jdbcClient.sql("""
+                        UPDATE users
+                        SET username = :username, email = :email, display_name = :displayName,
+                            password_hash = '!removed', deleted_at = now(), updated_at = now()
+                        WHERE id = :id AND deleted_at IS NULL
+                        """)
+                .param("username", "deleted-" + hex)
+                .param("email", "deleted-" + hex + "@deleted.invalid")
+                .param("displayName", displayName)
+                .param("id", id)
+                .update();
+    }
+
     public boolean existsByUsername(String username) {
         Integer count = jdbcClient.sql("SELECT 1 FROM users WHERE username = CAST(:username AS citext)")
                 .param("username", username)
@@ -116,8 +187,9 @@ public class UserRepository {
         // For simplicity, if id is null, we can generate it in code, or we can use RETURNING.
         // Using RETURNING is best practice in PostgreSQL.
         return jdbcClient.sql("""
-                INSERT INTO users (id, username, email, password_hash, display_name)
-                VALUES (COALESCE(:id, gen_random_uuid()), :username, :email, :passwordHash, :displayName)
+                INSERT INTO users (id, username, email, password_hash, display_name, is_guest, is_bot)
+                VALUES (COALESCE(:id, gen_random_uuid()), :username, :email, :passwordHash, :displayName,
+                        :isGuest, :isBot)
                 RETURNING *
                 """)
                 .param("id", user.id())
@@ -125,6 +197,8 @@ public class UserRepository {
                 .param("email", user.email())
                 .param("passwordHash", user.passwordHash())
                 .param("displayName", user.displayName())
+                .param("isGuest", user.isGuest())
+                .param("isBot", user.isBot())
                 .query(USER_ROW_MAPPER)
                 .single();
     }

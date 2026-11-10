@@ -43,10 +43,10 @@ public class ChatMetricsTest extends AbstractIntegrationTest {
 
     /** The only tag keys and values any chat.* meter may carry. */
     static final Map<String, Set<String>> ALLOWED_TAGS = Map.of(
-            "channel", Set.of("rest", "ws"),
-            "outcome", Set.of("created", "duplicate", "rejected", "issued", "consumed", "advanced", "stale"),
+            "channel", Set.of("rest", "ws", "system"),
+            "outcome", Set.of("created", "duplicate", "rejected", "issued", "consumed", "advanced", "stale", "capped"),
             "reason", Set.of("queue_full"),
-            "code", Set.of("1000", "1001", "1007", "1009", "4001", "4002", "4003", "4005", "4006", "4007", "other"));
+            "code", Set.of("1000", "1001", "1007", "1009", "4001", "4002", "4003", "4005", "4006", "4007", "4008", "other"));
 
     @LocalServerPort
     private int port;

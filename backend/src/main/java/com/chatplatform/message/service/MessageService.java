@@ -68,6 +68,21 @@ public class MessageService {
         }
     }
 
+    /**
+     * A message the server sends itself (the welcome bot; ADR-0012). The same transaction, lock and seq code as
+     * a user's send; it skips only the per-user limits (step 3). Counted under channel "system".
+     */
+    @Transactional
+    public MessageResponse sendAsSystem(UUID conversationId, UUID senderId, String body) {
+        return send(conversationId, senderId, new SendMessageRequest(UUID.randomUUID(), body), null, Channel.SYSTEM);
+    }
+
+    /** Account removal (ADR-0012): deletes every message of conversations that are about to be deleted. */
+    @Transactional
+    public void deleteAllInConversations(java.util.Collection<UUID> conversationIds) {
+        messageRepository.deleteInConversations(conversationIds);
+    }
+
     private MessageResponse send(UUID conversationId, UUID senderId, SendMessageRequest request,
                                  String originSessionId, Channel channel) {
         // 0. Body length: enforced here too, so callers without REST validation (WebSocket, 2c) share it.

@@ -49,6 +49,21 @@ public class ParticipantRepository {
     }
 
     /** One membership row: who ever joined, and whether they have left. */
+    /** Every conversation the user ever joined (left or not). */
+    public List<UUID> conversationIdsOf(UUID userId) {
+        return jdbcClient.sql("SELECT conversation_id FROM conversation_participants WHERE user_id = :userId")
+                .param("userId", userId).query(UUID.class).list();
+    }
+
+    /** Leaves every conversation the user is still in (account removal, ADR-0012). */
+    public void leaveAll(UUID userId) {
+        jdbcClient.sql("""
+                        UPDATE conversation_participants SET left_at = now()
+                        WHERE user_id = :userId AND left_at IS NULL
+                        """)
+                .param("userId", userId).update();
+    }
+
     public record Membership(UUID conversationId, UUID userId, boolean left) {
     }
 

@@ -26,6 +26,8 @@ public class RateLimits {
     private final FixedWindowRateLimiter ticketPerUser;
     private final FixedWindowRateLimiter failedHandshakesPerIp;
     private final FixedWindowRateLimiter searchPerUser;
+    private final FixedWindowRateLimiter guestPerIp;
+    private final FixedWindowRateLimiter signupGlobal;
 
     public RateLimits(RateLimitProperties p) {
         Duration minute = Duration.ofMinutes(1);
@@ -36,11 +38,25 @@ public class RateLimits {
         this.ticketPerUser = limiter(p.ticketPerUserPerMinute(), minute, maxKeys);
         this.failedHandshakesPerIp = limiter(p.failedHandshakesPerIpPerMinute(), minute, maxKeys);
         this.searchPerUser = limiter(p.searchPerUserPerMinute(), minute, maxKeys);
+        this.guestPerIp = limiter(p.guestPerIpPerHour(), Duration.ofHours(1), maxKeys);
+        this.signupGlobal = limiter(p.signupGlobalPerHour(), Duration.ofHours(1), 1);
     }
 
     /** Effectively no limits (unit tests that construct components by hand). */
     public static RateLimits unlimited() {
         return new RateLimits(RateLimitProperties.unlimited());
+    }
+
+    public void checkGuest(String ip) {
+        enforce(guestPerIp.tryAcquire(ip));
+    }
+
+    /**
+     * One counter for ALL sign-ups, whatever the IP (ADR-0012): bounds account creation from many IPs.
+     * Fails closed: past the cap, registration answers 429 until the hour's window ends.
+     */
+    public void checkGlobalSignup() {
+        enforce(signupGlobal.tryAcquire("all"));
     }
 
     public void checkSearch(UUID userId) {

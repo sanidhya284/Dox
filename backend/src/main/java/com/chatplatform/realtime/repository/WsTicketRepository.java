@@ -42,6 +42,10 @@ public class WsTicketRepository {
      * Deletes all rows whose {@code expires_at} is before {@code now}.
      * Called opportunistically on every {@code issue()} to avoid unbounded growth.
      */
+    public void deleteForUser(UUID userId) {
+        jdbcClient.sql("DELETE FROM ws_tickets WHERE user_id = :userId").param("userId", userId).update();
+    }
+
     public void deleteExpired(OffsetDateTime now) {
         jdbcClient.sql("DELETE FROM ws_tickets WHERE expires_at <= :now")
                 .param("now", now)

@@ -27,9 +27,51 @@ public class UserService {
                     userRepository.updatePasswordHash(existing.id(), passwordHash);
                     return existing;
                 })
-                .orElseGet(() -> userRepository.save(
-                        new User(null, username, email, passwordHash, displayName, null, null)));
+                .orElseGet(() -> userRepository.save(User.newAccount(username, email, passwordHash, displayName)));
     }
+
+    /** The welcome bot (ADR-0012): created once, never able to log in (its hash is not a BCrypt hash). */
+    public User ensureBot(String username, String displayName) {
+        return userRepository.findByUsername(username).orElseGet(() -> userRepository.save(new User(
+                null, username, username + "@bot.invalid", NO_LOGIN_HASH, displayName, null, null, false, true,
+                null)));
+    }
+
+    public java.util.Optional<User> findByUsername(String username) {
+        return userRepository.findByUsername(username);
+    }
+
+    /**
+     * A "Try the demo" guest (ADR-0012): {@code guest-<10 hex>}, no usable password, labelled everywhere by
+     * {@code isGuest}. The reserved "guest-" prefix can't be registered, so the name never collides with a
+     * real account (a collision between two guests is a unique-key error, astronomically unlikely).
+     */
+    public User createGuest() {
+        String hex = UUID.randomUUID().toString().replace("-", "");
+        return userRepository.save(new User(null, "guest-" + hex.substring(0, 10), "guest-" + hex + "@guest.invalid",
+                NO_LOGIN_HASH, "Guest " + hex.substring(0, 4).toUpperCase(java.util.Locale.ROOT), null, null,
+                true, false, null));
+    }
+
+    public long countLiveGuests() {
+        return userRepository.countLiveGuests();
+    }
+
+    /** See {@link UserRepository#lockNextExpiredGuest}; must run inside the caller's transaction. */
+    public java.util.Optional<UUID> lockNextExpiredGuest(java.time.Instant cutoff) {
+        return userRepository.lockNextExpiredGuest(cutoff);
+    }
+
+    public java.util.Optional<UUID> lockLiveByUsername(String username) {
+        return userRepository.lockLiveByUsername(username);
+    }
+
+    public void anonymize(UUID id, String displayName) {
+        userRepository.anonymize(id, displayName);
+    }
+
+    /** Not a BCrypt hash: BCrypt never matches it. Accounts with it can't log in by password. */
+    static final String NO_LOGIN_HASH = "!no-password-login";
 
     static final int SEARCH_MIN_CHARS = 2;
     static final int SEARCH_MAX_CHARS = 50;

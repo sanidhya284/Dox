@@ -37,7 +37,7 @@ The `dev` profile supplies a development-only JWT secret and the local frontend 
 - `JWT_SECRET`: at least 32 bytes.
 - `WS_ALLOWED_ORIGINS`: comma-separated exact origins allowed to open WebSockets, e.g. `https://app.example.com`. A blank entry or `*` is refused.
 
-**Registration is invite-only by default:** `POST /api/auth/register` needs `"inviteCode"` equal to `REGISTRATION_INVITE_CODE`. With no code configured, registration is closed (`403 REGISTRATION_CLOSED`). The `dev` profile keeps registration open. `DEMO_PASSWORD` (optional, at least 8 characters) seeds `demo1`, `demo2`, `demo3` and a "Demo room"; **demo data is public**, so never put real data there.
+**Registration is open** (since Phase 6b), behind a per-IP limit and a global hourly cap. `REGISTRATION_MODE=invite` switches back to invite-only: then `POST /api/auth/register` needs `"inviteCode"` equal to `REGISTRATION_INVITE_CODE`, and with no code configured registration is closed (`403 REGISTRATION_CLOSED`). **Try the demo:** `POST /api/auth/guest` creates a 24-hour guest account with a welcome DM from a bot ([ADR-0012](docs/adr/0012-open-signup-and-guest-accounts.md)). `DEMO_PASSWORD` (optional, at least 8 characters) seeds `demo1`, `demo2`, `demo3` and a "Demo room"; **demo data is public**, so never put real data there.
 
 **Rate limits** (in memory, per instance; `429 RATE_LIMITED` with `Retry-After`):
 - register: 5 per hour per IP;
@@ -118,7 +118,7 @@ echo "api.version=1.44" > ~/.docker-java.properties
 **Load harness** (on demand, never in CI): `./gradlew loadTest` against a separately started app (`bench` profile) and a dedicated benchmark database (`deploy/bench/bench-db.sh`). Method, scenarios, every run and the analysis: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## API and WebSocket
-The REST endpoints are `/api/auth/*` (register, login, refresh, logout; the refresh token is set and read **only as an HttpOnly, Secure, SameSite=Strict cookie `chat_rt` scoped to `/api/auth`**, never in a body; refresh and logout need an allowed `Origin`: [ADR-0010](docs/adr/0010-refresh-token-cookie.md)), `/api/conversations/*` (direct and group conversations, sending and paging messages; a message body is at most 4,000 characters, longer bodies get `400 VALIDATION_ERROR`), `GET /api/conversations/{id}/messages?after={seq}&limit={n}` (catch up: messages after a seq, oldest first, exact `hasMore`; `?before=` pages backwards), `GET /api/conversations/heads` (`[{conversationId, lastSeq}]` for your conversations: a cheap "am I behind?" check), `POST /api/conversations/{id}/cursor` (`{"kind":"read"|"delivered","seq":42}`: moves your cursor forward, never back; read implies delivered), `POST /api/ws/ticket`, `GET /api/users/search?q=` (username prefix search for starting DMs; never returns email), `GET /api/version` (public: the commit the running image was built from, also shown as "build abc1234" in the UI footer) and `/actuator/health`. A conversation's `unreadCount` counts messages after your read cursor that *others* sent; `GET /api/conversations/{id}` also returns every participant's `lastReadSeq` / `lastDeliveredSeq`, and the list returns `myLastReadSeq`. Both also return `lastSeq`, the conversation's newest seq. Full table: [architecture.md, API Surface](docs/architecture.md#api-surface).
+The REST endpoints are `/api/auth/*` (register, login, guest, refresh, logout; the refresh token is set and read **only as an HttpOnly, Secure, SameSite=Strict cookie `chat_rt` scoped to `/api/auth`**, never in a body; refresh and logout need an allowed `Origin`: [ADR-0010](docs/adr/0010-refresh-token-cookie.md)), `/api/conversations/*` (direct and group conversations, sending and paging messages; a message body is at most 4,000 characters, longer bodies get `400 VALIDATION_ERROR`), `GET /api/conversations/{id}/messages?after={seq}&limit={n}` (catch up: messages after a seq, oldest first, exact `hasMore`; `?before=` pages backwards), `GET /api/conversations/heads` (`[{conversationId, lastSeq}]` for your conversations: a cheap "am I behind?" check), `POST /api/conversations/{id}/cursor` (`{"kind":"read"|"delivered","seq":42}`: moves your cursor forward, never back; read implies delivered), `POST /api/ws/ticket`, `GET /api/users/search?q=` (username prefix search for starting DMs; never returns email), `GET /api/version` (public: the commit the running image was built from, also shown as "build abc1234" in the UI footer) and `/actuator/health`. A conversation's `unreadCount` counts messages after your read cursor that *others* sent; `GET /api/conversations/{id}` also returns every participant's `lastReadSeq` / `lastDeliveredSeq`, and the list returns `myLastReadSeq`. Both also return `lastSeq`, the conversation's newest seq. Full table: [architecture.md, API Surface](docs/architecture.md#api-surface).
 
 Connecting a WebSocket:
 1. `POST /api/ws/ticket` with `Authorization: Bearer <access token>` returns `{"ticket": "...", "expiresInSeconds": 30}`.
@@ -138,6 +138,7 @@ Close codes sent by the server:
 | `4003` | Slow consumer: the socket fell behind the send-time or buffer limit | Reconnect and recover missed messages from history |
 | `4006` | Idle timeout: no pong or frame within `WS_HEARTBEAT_TIMEOUT` | Reconnect; recover from history |
 | `4007` | Too many sockets: the user already has `WS_MAX_SOCKETS_PER_USER` open | Don't reconnect automatically; close a tab or device |
+| `4008` | Guest expired: the guest account was removed after 24 hours | Don't reconnect; offer a new demo or sign-up |
 | `4004` | Unsupported protocol version (`v` is not 1) | Fix the client |
 | `4005` | Unknown frame `type` | Fix the client |
 | `1007` | Frame is not valid protocol JSON (envelope, or a `clientMsgId` that is not a UUID) | Fix the client |
@@ -148,7 +149,7 @@ Close codes sent by the server:
 ## Writing a client
 Pushes are an optimisation; PostgreSQL is the truth. A correct client (full algorithm and reasoning: [ADR-0008](docs/adr/0008-client-sync-protocol.md); a working reference implementation is in `backend/src/test/java/com/chatplatform/client/ReferenceClient.java`):
 1. Give each send a `clientMsgId` once and keep it for every retry; resend if no ack arrives within a timeout and after every reconnect. Treat the ack as your own copy of the message.
-2. Reconnect with a fresh ticket and exponential backoff with full jitter. On `4002` log in again; on `4007` stop (too many open sockets); on `1007`/`4004`/`4005` stop (it is a client bug); otherwise reconnect.
+2. Reconnect with a fresh ticket and exponential backoff with full jitter. On `4002` log in again; on `4007` stop (too many open sockets); on `4008` stop (guest expired); on `1007`/`4004`/`4005` stop (it is a client bug); otherwise reconnect.
 3. **Subscribe first, then fetch:** open the socket, then page `GET .../messages?after=<your contiguous seq>` where `GET /api/conversations/heads` says you are behind.
 4. Deduplicate by message id, order by `seq`; if a push skips ahead of your contiguous seq, fetch the gap.
 5. Every ~30 s (jittered) compare `heads` with your contiguous seq and fetch if behind: this is the only way to notice that the *last* push was lost.
@@ -159,7 +160,7 @@ Pushes are an optimisation; PostgreSQL is the truth. A correct client (full algo
 `ConvergenceTest` checks this end to end: 8 clients under seeded faults (dropped connections, pushes and acks, duplicated and delayed sends, failed commits) all end with exactly the database's history.
 
 ## What is guaranteed (each covered by tests)
-Per-conversation ordering without gaps, idempotent sends (`client_msg_id`), a 4,000-character body limit, atomic refresh-token rotation with theft detection, `404` for non-members, one-time WebSocket tickets, exact origin checks, per-user socket tracking, acks only after commit, pushes only after commit and exactly once per message per socket, socket lifetime, and closing a user's sockets after a refresh-token replay (only once the revocation has committed). The precise list, with test names: [architecture.md, Behaviour Guarantees](docs/architecture.md#behaviour-guarantees-each-covered-by-an-integration-or-unit-test).
+Per-conversation ordering without gaps, idempotent sends (`client_msg_id`), a 4,000-character body limit, atomic refresh-token rotation with theft detection, `404` for non-members, one-time WebSocket tickets, exact origin checks, per-user socket tracking, acks only after commit, pushes only after commit and exactly once per message per socket, socket lifetime, closing a user's sockets after a refresh-token replay (only once the revocation has committed), open sign-up with a global cap, guest accounts that are removed after 24 hours without leaving gaps in anyone's history, and login that can't tell a guest, the bot or a removed account from an unknown name. The precise list, with test names: [architecture.md, Behaviour Guarantees](docs/architecture.md#behaviour-guarantees-each-covered-by-an-integration-or-unit-test).
 
 Under seeded faults, reference clients converge to exactly the stored history (one instance, bounded workload; [ADR-0008](docs/adr/0008-client-sync-protocol.md)). Tests that run on a laptop are correctness checks, not benchmarks. The load measurements are below.
 
@@ -196,6 +197,7 @@ The main ones:
 - No per-socket send rate limit yet. The auth and ticket rate limits are in memory and per instance.
 - `GET` requests and message sends aren't rate-limited.
 - The 401 from the security filter has an empty body.
+- Open sign-up has no email verification or CAPTCHA; a global hourly cap bounds it ([ADR-0012](docs/adr/0012-open-signup-and-guest-accounts.md)).
 - If a refresh response is lost after the server rotated the token, the next refresh looks like a replay: the user is logged out everywhere ([ADR-0010](docs/adr/0010-refresh-token-cookie.md)).
 - Read receipts are visible to every participant (no privacy toggle); "delivered" is reported by the client.
 

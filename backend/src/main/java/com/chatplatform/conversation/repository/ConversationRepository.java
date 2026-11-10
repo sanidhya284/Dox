@@ -92,6 +92,13 @@ public class ConversationRepository {
         return out;
     }
 
+    /** Deletes conversations (participants cascade). The caller deletes their messages first (no cascade). */
+    public void deleteByIds(java.util.Collection<UUID> ids) {
+        if (!ids.isEmpty()) {
+            jdbcClient.sql("DELETE FROM conversations WHERE id IN (:ids)").param("ids", ids).update();
+        }
+    }
+
     public Optional<Conversation> findById(UUID id) {
         return jdbcClient.sql("SELECT * FROM conversations WHERE id = :id")
                 .param("id", id)

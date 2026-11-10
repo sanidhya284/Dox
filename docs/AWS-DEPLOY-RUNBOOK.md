@@ -370,6 +370,21 @@ Turned on after the drills above passed (8.1–8.4) and three manual deploys (`s
 
 ---
 
+## 9a. Remove an abusive account (ADR-0012)
+
+The same removal step the guest cleanup uses: conversations with only system accounts or guests are deleted, every other conversation is left (messages stay, shown as "Deleted user"), the account is anonymized, its refresh tokens and tickets are revoked, and its sockets close with `4002`. It can't be undone, so take a backup first.
+
+```bash
+cd /opt/chat
+./backup.sh                                   # or check that today's 03:15 backup exists
+TAG=$(curl -s https://dox-chat.in/api/version | sed -E 's/.*"shortCommit":"([0-9a-f]+)".*/sha-\1/')
+IMAGE_TAG=$TAG docker compose run --rm --no-deps app --remove-account=<username>
+```
+
+- It starts a second, short-lived app process (same image and `.env`, no published port), removes the account, logs `Removed account <username> (runbook)` and exits with `0`; with no such live account it logs `Not removed` and exits with `1`.
+- It needs about as much memory as the app itself for a minute; on the 2 GB server, run it when the swap isn't already in use.
+- Check afterwards: the username can't log in (401), and `docker compose ps` still shows the real app healthy.
+
 ## 10. Operating until April
 
 - **Weekly (5 minutes):** Billing, Credits (burn rate vs the estimate); `df -h /`; `docker compose ps`; the monitor's history; `sudo apt list --upgradable`.

@@ -54,8 +54,10 @@ public class ConversationService {
             throw new ApiException(ErrorCode.CANNOT_DM_SELF);
         }
 
-        // Verify user exists (throws if not found)
-        userService.getUserById(request.otherUserId());
+        // The other user must exist and not be removed (a removed account looks unknown; ADR-0012).
+        if (userService.getUserById(request.otherUserId()).deletedAt() != null) {
+            throw new ApiException(ErrorCode.USER_NOT_FOUND);
+        }
 
         // Canonical direct_key
         String directKey = generateDirectKey(currentUserId, request.otherUserId());
@@ -70,6 +72,9 @@ public class ConversationService {
 
     @Transactional
     public ConversationResponse createGroup(UUID currentUserId, CreateGroupRequest request) {
+        if (userService.getUserById(currentUserId).isGuest()) {
+            throw new ApiException(ErrorCode.GUEST_NOT_ALLOWED); // guests can't create groups (ADR-0012)
+        }
         // Verify all members exist
         for (UUID memberId : request.memberIds()) {
             userService.getUserById(memberId);
@@ -158,6 +163,31 @@ public class ConversationService {
         return out;
     }
     
+    /**
+     * For account removal (ADR-0012): every conversation the user ever joined, with all its members ever.
+     */
+    @Transactional(readOnly = true)
+    public Map<UUID, java.util.Set<UUID>> membersOfConversationsOf(UUID userId) {
+        Map<UUID, java.util.Set<UUID>> out = new java.util.HashMap<>();
+        for (ParticipantRepository.Membership m
+                : participantRepository.findAllMembers(participantRepository.conversationIdsOf(userId))) {
+            out.computeIfAbsent(m.conversationId(), k -> new java.util.HashSet<>()).add(m.userId());
+        }
+        return out;
+    }
+
+    /** The user leaves every conversation; their messages stay (ADR-0012). */
+    @Transactional
+    public void leaveAll(UUID userId) {
+        participantRepository.leaveAll(userId);
+    }
+
+    /** Deletes conversations; the caller (account removal) deleted their messages first. */
+    @Transactional
+    public void deleteConversations(java.util.Collection<UUID> conversationIds) {
+        conversationRepository.deleteByIds(conversationIds);
+    }
+
     public void requireParticipant(UUID conversationId, UUID userId) {
         if (!participantRepository.isParticipant(conversationId, userId)) {
             throw new ApiException(ErrorCode.CONVERSATION_NOT_FOUND);
