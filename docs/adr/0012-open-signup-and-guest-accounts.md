@@ -53,15 +53,20 @@ dox-chat.in is the first thing a visitor sees. Until now it was invite-only, and
 ## Decision 7: guest cleanup and account removal: anonymize, don't delete history (step 2)
 - **Every 15 minutes** (`guest.cleanup-interval`, own thread), guests older than 24 h (`guest.ttl`) are removed, **one transaction per guest**, claimed with `SELECT ... FOR UPDATE SKIP LOCKED`: two instances never remove the same guest and never wait on each other (tested by holding a row lock from another connection).
 - **The removal step** (`AccountRemovalService.remove`, shared with the runbook's "remove an abusive account"):
-  1. conversations whose other members (ever) are only the bot, demo accounts or guests are **deleted** (messages first; participants cascade);
+  1. a conversation is **deleted** (messages first; participants cascade) only when **no other active human remains** in it: every other member who hasn't left is the bot, a demo account, or an already removed account. A live guest counts as a human (amended 2026-11-11 after review; the first rule also deleted DMs with live guests);
   2. every other conversation is **left**, and its messages **stay**, attributed to the removed account. Deleting them would leave seq gaps and break every other member's gap detection and history ([ADR-0008](0008-client-sync-protocol.md)); `messages.sender_id` also references the user;
   3. the user row is **anonymized**: username `deleted-<32 hex of the id>` (unique, since it's derived from the id; the prefix is reserved), email `deleted-<hex>@deleted.invalid`, display name "Deleted guest" or "Deleted user", a password hash BCrypt never matches, `deleted_at` set;
-  4. refresh tokens and WebSocket tickets are revoked, and after commit realtime closes the user's sockets through **one "close user" path** (`SessionRevocationListener.closeUser`, which Phase 4 routes to every instance): **`4008 guest expired`** for guests, `4002` for an operator removal.
+  4. refresh tokens and WebSocket tickets are revoked, and after commit realtime closes the user's sockets through **one "close user" path** (`SessionRevocationListener.closeUser`, which Phase 4 routes to every instance): **`4008 guest expired`** for guests. (An operator removal runs in a separate process and can't close sockets: Decision 9.)
 - **Access tokens** already issued stay valid until they expire (up to 15 minutes), but the account is in no conversation any more, so they can read and send nothing.
-- **A conversation between two guests** is deleted when the first of them expires.
+- **A DM between two guests:** when the first expires, the second is still a live human, so the DM is kept and the first guest is anonymized there; it's deleted when the second expires too.
 
 ## Decision 8: login can't tell guests, the bot or removed accounts from unknown names (step 2)
 Login looks up only accounts that are not guests, not bots and not removed. Every other username takes the unknown-user path, which now runs **one BCrypt comparison against a dummy hash** (a real BCrypt(12) hash made at startup), so a refusal costs the same whether the name is unknown, a guest, the bot, removed, or a real account with a wrong password, and the 401 body is identical (`LoginEquivalenceTest` spies on the encoder: exactly one comparison, the same dummy hash, the same error).
+
+## Decision 9: removing an abusive account is an explicit one-off admin process (amended 2026-11-11 after review)
+- **How:** `--remove-account=<username>` with profiles `prod,admin` (runbook 9a). Without the admin profile, `main()` refuses with exit `2` before Spring starts, so the live app can never be told to do it by accident.
+- **Admin mode** (`application-admin.yml`, `AdminFlywayConfig`): no web server, the cleanup job and demo seeding are not created, the bot isn't seeded, heartbeats aren't scheduled, a 2-connection pool, and **Flyway validates instead of migrating**, so an image that doesn't match the live schema refuses to start (exit `1`). It exits on its own: `0` removed, `3` no such live account.
+- **Limitation:** it's a separate process, so it **can't close the user's sockets** on the live app (that needs the Phase 4 cross-instance "close user" path or an admin endpoint). The sockets end within about 30 minutes (lifetime `4001`, and the access token can't be refreshed), and meanwhile the account is in no conversation.
 
 ## Consequences
 - **V7 is additive:** `users.is_guest`, `users.is_bot`, `users.deleted_at`, the `user_blocks` table, and two indexes. The previous release still runs against it (ADR-0011 Decision 10).

@@ -31,8 +31,9 @@ import java.util.UUID;
  * Removes accounts (ADR-0012): expired guests (the cleanup job) and abusive accounts (the runbook). Both use
  * the same step, {@link #remove}, in one transaction per account:
  * <ol>
- *   <li>conversations whose other members (ever) are only system accounts (bot, demo) or guests are deleted,
- *       messages first;</li>
+ *   <li>a conversation is deleted (messages first) only when no other active human remains in it: every other
+ *       member who hasn't left is a system account (bot, demo) or an already removed account. A live guest
+ *       counts as a human, so a DM with a guest who is still live is kept;</li>
  *   <li>every other conversation is left: its messages stay, with contiguous seq, attributed to the removed
  *       account, because deleting them would leave seq gaps that break every other member's sync;</li>
  *   <li>the user row is anonymized (unique "deleted-" username and email, no usable password);</li>
@@ -53,13 +54,12 @@ public class AccountRemovalService {
     private final TokenService tokenService;
     private final WsTicketService wsTicketService;
     private final ApplicationEventPublisher events;
-    private final WelcomeBot bot;
     private final TransactionTemplate tx;
     private final Duration guestTtl;
 
     public AccountRemovalService(UserService userService, ConversationService conversationService,
                                  MessageService messageService, TokenService tokenService,
-                                 WsTicketService wsTicketService, ApplicationEventPublisher events, WelcomeBot bot,
+                                 WsTicketService wsTicketService, ApplicationEventPublisher events,
                                  PlatformTransactionManager transactionManager,
                                  @Value("${guest.ttl:PT24H}") Duration guestTtl) {
         this.userService = userService;
@@ -68,7 +68,6 @@ public class AccountRemovalService {
         this.tokenService = tokenService;
         this.wsTicketService = wsTicketService;
         this.events = events;
-        this.bot = bot;
         this.tx = new TransactionTemplate(transactionManager);
         this.guestTtl = guestTtl;
     }
@@ -99,7 +98,7 @@ public class AccountRemovalService {
         tx.executeWithoutResult(status -> {
             UUID id = userService.lockLiveByUsername(username)
                     .orElseThrow(() -> new IllegalArgumentException("No live account with that username"));
-            if (id.equals(bot.id())) {
+            if (userService.summaries(java.util.Set.of(id)).get(id).isBot()) {
                 throw new IllegalArgumentException("The bot account can't be removed");
             }
             remove(id, Reason.ACCOUNT_REMOVED, "Deleted user");
@@ -109,17 +108,17 @@ public class AccountRemovalService {
 
     /** The one removal step; runs inside the caller's transaction with the user row locked. */
     private void remove(UUID userId, Reason reason, String displayName) {
-        Map<UUID, Set<UUID>> conversations = conversationService.membersOfConversationsOf(userId);
+        Map<UUID, Set<UUID>> conversations = conversationService.activeMembersOfConversationsOf(userId);
         Set<UUID> everyone = new HashSet<>();
         conversations.values().forEach(everyone::addAll);
         Map<UUID, UserSummary> users = userService.summaries(everyone);
 
         List<UUID> toDelete = new ArrayList<>();
         for (Map.Entry<UUID, Set<UUID>> c : conversations.entrySet()) {
-            boolean onlySystemOrGuests = c.getValue().stream()
+            boolean noOtherActiveHuman = c.getValue().stream()
                     .filter(m -> !m.equals(userId))
-                    .allMatch(m -> isSystemOrGuest(users.get(m)));
-            if (onlySystemOrGuests) {
+                    .noneMatch(m -> isActiveHuman(users.get(m)));
+            if (noOtherActiveHuman) {
                 toDelete.add(c.getKey());
             }
         }
@@ -132,7 +131,8 @@ public class AccountRemovalService {
         events.publishEvent(new UserSessionsEndedEvent(userId, reason));
     }
 
-    private static boolean isSystemOrGuest(UserSummary u) {
-        return u == null || u.isBot() || u.isGuest() || DemoSeeder.USERS.contains(u.username());
+    /** A person who can still read the conversation: not the bot, not a demo account, not removed. */
+    private static boolean isActiveHuman(UserSummary u) {
+        return u != null && !u.isBot() && !u.isDeleted() && !DemoSeeder.USERS.contains(u.username());
     }
 }

@@ -370,20 +370,42 @@ Turned on after the drills above passed (8.1–8.4) and three manual deploys (`s
 
 ---
 
-## 9a. Remove an abusive account (ADR-0012)
+## 9a. Remove an abusive account (ADR-0012 Decision 9)
 
-The same removal step the guest cleanup uses: conversations with only system accounts or guests are deleted, every other conversation is left (messages stay, shown as "Deleted user"), the account is anonymized, its refresh tokens and tickets are revoked, and its sockets close with `4002`. It can't be undone, so take a backup first.
+The same removal step the guest cleanup uses: conversations where no other active human remains are deleted, every other conversation is left (its messages stay, shown as "Deleted user"), the account is anonymized, and its refresh tokens and WebSocket tickets are revoked. It can't be undone, so take a backup first.
+
+It runs as a **separate, short-lived process** in the explicit admin mode (profiles `prod,admin`): no web server, nothing scheduled, nothing seeded, a 256 MB heap, and **Flyway validates only** (it never migrates; if the image doesn't match the live schema it refuses to start). Use the image tag that is live now.
 
 ```bash
 cd /opt/chat
 ./backup.sh                                   # or check that today's 03:15 backup exists
 TAG=$(curl -s https://dox-chat.in/api/version | sed -E 's/.*"shortCommit":"([0-9a-f]+)".*/sha-\1/')
-IMAGE_TAG=$TAG docker compose run --rm --no-deps app --remove-account=<username>
+IMAGE_TAG=$TAG docker compose run --rm --no-deps \
+  -e SPRING_PROFILES_ACTIVE=prod,admin \
+  -e JAVA_TOOL_OPTIONS="-Xmx256m -XX:+ExitOnOutOfMemoryError" \
+  app --remove-account=<username>
+echo "exit=$?"
 ```
 
-- It starts a second, short-lived app process (same image and `.env`, no published port), removes the account, logs `Removed account <username> (runbook)` and exits with `0`; with no such live account it logs `Not removed` and exits with `1`.
-- It needs about as much memory as the app itself for a minute; on the 2 GB server, run it when the swap isn't already in use.
-- Check afterwards: the username can't log in (401), and `docker compose ps` still shows the real app healthy.
+Exit codes: `0` removed; `3` no live account with that username (nothing changed); `2` usage error (`--remove-account` without the admin profile, refused before Spring starts, or not exactly one username); `1` startup failed (database unreachable, or the schema doesn't validate against this image).
+
+**It can't close the user's open sockets**, because those live in the app process, not in this one. What the removed user can still do:
+- Their open sockets stay up until their 15-minute lifetime ends (`4001`).
+- Their access token (up to 15 minutes) can still get a ticket and reconnect, but it can't be refreshed (refresh tokens are revoked). So the last socket closes at most about 30 minutes after the removal.
+- Meanwhile they are in no conversation: they receive no pushes, and sends and reads get `404`.
+
+Check afterwards: the username can't log in (`401`), and `docker compose ps` still shows the real app healthy.
+
+**Dry run (local compose stack, 2026-11-11)**, against the local stack built from this branch (`chat-app:local`, so `-f compose.build.yml` instead of `IMAGE_TAG`):
+
+| Run | Result |
+|---|---|
+| Database still at V6, image at V7 | `exit=1`: `FlywayValidateException: Validate failed ... pending`; the schema stayed at V6 |
+| `--remove-account=nobody-here` | `exit=3` in 7.0 s: `Not removed: nobody-here (No live account with that username)` |
+| `--remove-account=spammer1` (a fresh local account) | `exit=0` in 7.3 s: `Successfully validated 7 migrations`, `Removed account spammer1 (runbook)`; then login `401`, the row is `deleted-<hex>` / "Deleted user", 0 active refresh tokens, the live app stayed healthy |
+| Same command without `admin` in the profiles | `exit=2` in 1.0 s: `--remove-account needs the admin profile`, before Spring starts |
+
+No run started Tomcat, migrated, scheduled the cleanup, or seeded anything (checked in the logs).
 
 ## 10. Operating until April
 

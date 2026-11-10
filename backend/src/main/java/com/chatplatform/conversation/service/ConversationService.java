@@ -164,14 +164,18 @@ public class ConversationService {
     }
     
     /**
-     * For account removal (ADR-0012): every conversation the user ever joined, with all its members ever.
+     * For account removal (ADR-0012): every conversation the user ever joined, mapped to its members who have
+     * not left (possibly none besides the user).
      */
     @Transactional(readOnly = true)
-    public Map<UUID, java.util.Set<UUID>> membersOfConversationsOf(UUID userId) {
+    public Map<UUID, java.util.Set<UUID>> activeMembersOfConversationsOf(UUID userId) {
         Map<UUID, java.util.Set<UUID>> out = new java.util.HashMap<>();
         for (ParticipantRepository.Membership m
                 : participantRepository.findAllMembers(participantRepository.conversationIdsOf(userId))) {
-            out.computeIfAbsent(m.conversationId(), k -> new java.util.HashSet<>()).add(m.userId());
+            java.util.Set<UUID> members = out.computeIfAbsent(m.conversationId(), k -> new java.util.HashSet<>());
+            if (!m.left()) {
+                members.add(m.userId());
+            }
         }
         return out;
     }

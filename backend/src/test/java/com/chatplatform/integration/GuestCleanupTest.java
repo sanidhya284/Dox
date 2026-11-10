@@ -170,6 +170,37 @@ class GuestCleanupTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void aDmWithAnotherGuestWhoIsStillLiveSurvivesWithSeqIntact() throws Exception {
+        String[] expiring = newGuest();
+        String[] live = newGuest();
+        ResponseEntity<String> dm = restTemplate.exchange("/api/conversations/direct", HttpMethod.POST,
+                new HttpEntity<>(Map.of("otherUserId", expiring[0]), bearer(live[1])), String.class);
+        assertThat(dm.getStatusCode()).as(dm.getBody()).isEqualTo(HttpStatus.CREATED);
+        String dmId = mapper.readTree(dm.getBody()).get("id").asText();
+        send(live[1], dmId, "one");
+        send(expiring[1], dmId, "two");
+        send(live[1], dmId, "three");
+        age(expiring[0]);
+
+        removal.removeExpiredGuests();
+
+        assertThat(deletedAt(expiring[0])).isNotNull();
+        assertThat(deletedAt(live[0])).isNull();
+        JsonNode page = get(live[1], "/api/conversations/" + dmId + "/messages?after=0&limit=10");
+        List<Long> seqs = new ArrayList<>();
+        page.get("messages").forEach(m -> seqs.add(m.get("seq").asLong()));
+        assertThat(seqs).as("the live guest keeps the whole DM").containsExactly(1L, 2L, 3L);
+        JsonNode gone = null;
+        for (JsonNode p : get(live[1], "/api/conversations/" + dmId).get("participants")) {
+            if (p.get("id").asText().equals(expiring[0])) {
+                gone = p;
+            }
+        }
+        assertThat(gone.get("isDeleted").asBoolean()).isTrue();
+        assertThat(gone.get("left").asBoolean()).isTrue();
+    }
+
+    @Test
     void aRowLockedByAnotherInstanceIsSkippedNotWaitedOn() throws Exception {
         String[] locked = newGuest();
         String[] free = newGuest();

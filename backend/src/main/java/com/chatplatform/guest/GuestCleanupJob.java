@@ -16,6 +16,7 @@ import java.time.Instant;
  * startup. Safe on several instances at once (SKIP LOCKED).
  */
 @Component
+@org.springframework.context.annotation.Profile("!admin") // admin mode schedules nothing (runbook 9a)
 public class GuestCleanupJob implements DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(GuestCleanupJob.class);
