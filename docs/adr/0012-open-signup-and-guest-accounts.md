@@ -82,6 +82,12 @@ Login looks up only accounts that are not guests, not bots and not removed. Ever
   - **Groups are unaffected** by blocks.
 - **Cost:** a send now also reads the sender's guest flag and, in a DM, one query for "removed or blocked". Not measured; the Phase 5 numbers predate it.
 
+## Decision 11: the UI's design, "Terminal night" (step 4; chosen 2026-11-11)
+- **What:** dark first (near-black `#0c0f0d`, acid-green accent `#8cff5a`) with a light "paper terminal" variant for `prefers-color-scheme: light`; the system monospace font only; square corners and 1 px rules; an IRC-style log (`[HH:MM] <nick> text`, nick shown once per run of lines from one sender) instead of chat bubbles; channels as `#group` and `@dm`; the composer as a shell prompt (`ana@dox:~$`); ✓ stored and ✓✓ read by, `… sending`, `… waiting (rate limit)`.
+- **Why it replaced the first draft ("quiet paper"):** that draft (rounded bubbles, a deep-teal accent, avatar circles, a list-plus-pane layout) read as a WhatsApp clone in review. The terminal look is distinctive and fits what the project is about: ordered, acknowledged delivery is shown, not hidden. It was picked by the user from three directions (with "Signal" and "Ledger").
+- **Constraints kept:** no UI library and no web font (plain CSS, nothing new to install); **WCAG AA** for every text colour in both themes, including the six per-user nick colours, checked by `contrast.test.ts`, which parses `styles.css` (a mutation that lowers one nick colour fails it); motion only where it carries meaning (a new line slides in, the caret blinks, buttons press), all off under `prefers-reduced-motion`; long unbroken text wraps (`overflow-wrap: anywhere` in a `minmax(0, 1fr)` column), so there's no horizontal scroll.
+- **Tradeoff:** monospace text is less dense to read than a proportional font in long messages, and the look may feel technical to a non-technical visitor. Accepted for a portfolio project whose subject is the delivery machinery.
+
 ## Consequences
 - **V7 is additive:** `users.is_guest`, `users.is_bot`, `users.deleted_at`, the `user_blocks` table, and two indexes. The previous release still runs against it (ADR-0011 Decision 10).
 - **Tests:** `UserSearchTest`, `ConversationReadModelTest`, `GuestAccountTest`, `GuestCleanupTest`, `BotReplyTest`, `LoginEquivalenceTest`, `SignupCapTest`, `SendLimitAndBlockTest`, and the search and guest limits in `RateLimitTest`. Each guarantee has a mutation shown to fail it.

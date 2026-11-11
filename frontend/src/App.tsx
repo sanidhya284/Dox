@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AuthSession } from './api/auth';
 import { createApi } from './api/http';
-import { LoginForm } from './ui/LoginForm';
-import { ChatView } from './ui/ChatView';
+import { AuthScreen } from './ui/AuthScreen';
+import { ChatApp } from './ui/ChatApp';
 import { BuildInfo } from './ui/BuildInfo';
+import { GuestExpired } from './ui/GuestExpired';
 
-type Phase = 'checking' | 'anonymous' | 'authenticated';
+type Phase = 'checking' | 'anonymous' | 'authenticated' | 'guest_expired';
 
 export function App() {
   const auth = useMemo(() => new AuthSession(), []);
@@ -25,13 +26,18 @@ export function App() {
     };
   }, [auth]);
 
+  const loggedOut = useCallback(() => setPhase('anonymous'), []);
+  const guestExpired = useCallback(() => setPhase('guest_expired'), []);
+
   let view;
   if (phase === 'checking') {
-    view = <main className="center">Loading…</main>;
+    view = <main className="splash" aria-busy="true"><p className="dim">dox ▸ connecting<span className="caret">█</span></p></main>;
   } else if (phase === 'anonymous') {
-    view = <LoginForm auth={auth} onAuthenticated={() => setPhase('authenticated')} />;
+    view = <AuthScreen auth={auth} onAuthenticated={() => setPhase('authenticated')} />;
+  } else if (phase === 'guest_expired') {
+    view = <GuestExpired auth={auth} onAuthenticated={() => setPhase('authenticated')} onSignUp={loggedOut} />;
   } else {
-    view = <ChatView auth={auth} api={api} onLoggedOut={() => setPhase('anonymous')} />;
+    view = <ChatApp auth={auth} api={api} onLoggedOut={loggedOut} onGuestExpired={guestExpired} />;
   }
   return (
     <>

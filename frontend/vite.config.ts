@@ -18,5 +18,7 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     include: ['src/**/*.test.{ts,tsx}'],
+    // The contrast test reads styles.css (as ?raw); Vitest stubs CSS as empty unless it's included here.
+    css: { include: [/styles\.css/] },
   },
 });

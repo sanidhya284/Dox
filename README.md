@@ -92,14 +92,16 @@ Vite proxies `/api` and `/ws` to `localhost:8080`, so the UI and the API share o
 
 Frontend checks: `npm run lint` (bans `dangerouslySetInnerHTML`), `npm run typecheck`, `npm test` (Vitest).
 
-The UI covers:
-- register and login;
-- the conversation list with unread counts;
-- the message pane and composer;
-- read cursors;
-- live push with reconnect.
+The UI (Phase 6b, [ADR-0012](docs/adr/0012-open-signup-and-guest-accounts.md) Decision 11) covers:
+- sign up, log in, and **Try the demo** (a 24-hour guest; `DEMO_BUSY` points to sign-up; the `4008` "demo ended" screen);
+- channels (`#group`, `@dm`) with filter, last line, time and unread count;
+- `/dm` by username search (250 ms debounce) and `/group` with a member picker;
+- the log: `[HH:MM] <nick> text`, day separators, per-user nick colours, ✓ stored / ✓✓ read by, `… sending`, `… waiting (rate limit)`, and refused sends with **retry**;
+- block / unblock in a DM, and the "can't send" state;
+- the connection indicator (`● connected`, `◌ reconnecting (attempt n)`);
+- phones: the channel list and the conversation are separate screens (`< 640 px`).
 
-It doesn't create conversations yet (use the seeded "Demo room", or create groups through the API), and it shows senders as "You" or a short user id.
+**Design: "Terminal night".** Dark first (near-black, acid-green accent) with a light "paper terminal" variant, the system monospace font, square corners, an IRC-style log instead of chat bubbles, a shell prompt as the composer. Why: the first draft (rounded bubbles, a teal accent, avatar circles) read as a WhatsApp clone; this look is the app's own and fits what it is about (ordered, acknowledged delivery shown as ✓ / ✓✓). No UI library or web font: plain CSS. Every text colour, including the six nick colours, is checked to WCAG AA in both themes by a test that parses the stylesheet; motion is short and off under `prefers-reduced-motion`.
 
 ## Tests
 ```bash

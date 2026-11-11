@@ -185,6 +185,7 @@ Runs before every request. Extracts `Authorization: Bearer <token>`, validates t
   - jittered `heads` anti-entropy;
   - the close-code table (including `4007`).
   - Socket, API, clock and randomness are injected; the tests use a fake server and fake timers.
+- **Views (Phase 6b):** `src/ui/` holds the screens (`AuthScreen`, `ChatApp`, `Sidebar`, `ConversationPane`, `MessageList`, `NewConversationDialog`, `GuestExpired`); the testable logic lives in `model.ts` (names, channel labels, nick colours, grouping and day separators, read receipts, the phone/desktop switch, the search debounce) and `conversations.ts` (the list store: a `404` drops a conversation for good, an unknown id reloads the list at most once). Design and its reasoning: ADR-0012 Decision 11.
 - **Rendering:** message bodies are React text only. ESLint forbids `dangerouslySetInnerHTML` and `innerHTML`, and a test renders an HTML payload and finds no element.
 - **Not covered:** the fault-injection convergence test (`ConvergenceTest`) runs against the Java reference client, not this one.
 
@@ -337,7 +338,7 @@ A socket authenticates once, at the handshake, so it could otherwise outlive the
 - **Deploys disconnect everyone:** one app instance restarts on every deploy, so sockets close (`1001`) and clients reconnect and catch up. There's no zero-downtime deploy before Phase 4.
 - **Backups live on the same server** until they're copied off by hand; restoring the live database is a manual procedure (runbook 6.2).
 - **VPS sizing is derived from memory limits** (2 GB recommended for Phase 6, 4 GB for Phase 4), not measured.
-- **The browser UI:** unsent messages live in memory, so a reload loses the outbox (sends that were already acked are safe). It doesn't create conversations, and it shows senders as "You" or a short id (there's no user lookup endpoint). Its sync code is unit-tested, but the convergence-under-faults test covers only the Java reference client.
+- **The browser UI:** unsent messages live in memory, so a reload loses the outbox (sends that were already acked are safe). Its sync code is unit-tested, but the convergence-under-faults test covers only the Java reference client.
 - **The demo is public data**, and a changed `DEMO_PASSWORD` doesn't revoke existing demo sessions.
 - **Open sign-up has no email verification or CAPTCHA** (ADR-0012): distributed sign-up spam is bounded only by the global hourly cap, which then blocks real sign-ups too (fails closed). The live-guest cap is checked, not locked, so concurrent requests can overshoot it slightly.
 - **Removed accounts:** access tokens issued before removal stay valid until they expire (≤ 15 min), but get `401` for tickets, new conversations and sends. An operator removal (runbook 9a) runs in a separate process and can't close the user's sockets on the live app: sockets already open stay until their lifetime ends (≤ 15 min) and carry nothing (ADR-0012 Decision 9).

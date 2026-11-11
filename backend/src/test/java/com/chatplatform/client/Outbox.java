@@ -16,7 +16,9 @@ import java.util.UUID;
  */
 public final class Outbox {
 
-    public record Entry(UUID clientMsgId, UUID conversationId, String body, int attempts, long lastSentNanos) {
+    /** {@code notBeforeNanos}: not sent again before this time (RATE_LIMITED's retryAfterMs; ADR-0012). */
+    public record Entry(UUID clientMsgId, UUID conversationId, String body, int attempts, long lastSentNanos,
+                        long notBeforeNanos) {
         boolean neverSent() {
             return attempts == 0;
         }
@@ -33,7 +35,7 @@ public final class Outbox {
         if (pending.size() >= capacity) {
             return Optional.empty();
         }
-        Entry e = new Entry(UUID.randomUUID(), conversationId, body, 0, 0L);
+        Entry e = new Entry(UUID.randomUUID(), conversationId, body, 0, 0L, Long.MIN_VALUE);
         pending.put(e.clientMsgId(), e);
         return Optional.of(e);
     }
@@ -41,13 +43,22 @@ public final class Outbox {
     /** Records a (re)send of the SAME clientMsgId. */
     public synchronized void markSent(UUID clientMsgId, long nowNanos) {
         pending.computeIfPresent(clientMsgId,
-                (id, e) -> new Entry(id, e.conversationId(), e.body(), e.attempts() + 1, nowNanos));
+                (id, e) -> new Entry(id, e.conversationId(), e.body(), e.attempts() + 1, nowNanos, e.notBeforeNanos()));
+    }
+
+    /** The server said when (RATE_LIMITED): due again at {@code atNanos}, not before, with the SAME id. */
+    public synchronized void deferUntil(UUID clientMsgId, long atNanos) {
+        pending.computeIfPresent(clientMsgId,
+                (id, e) -> new Entry(id, e.conversationId(), e.body(), e.attempts(), Long.MIN_VALUE / 2, atNanos));
     }
 
     /** Never sent, or sent and not acked within {@code ackTimeoutNanos}: resend with the same id. */
     public synchronized List<Entry> dueForRetry(long nowNanos, long ackTimeoutNanos) {
         List<Entry> due = new ArrayList<>();
         for (Entry e : pending.values()) {
+            if (nowNanos < e.notBeforeNanos()) {
+                continue;
+            }
             if (e.neverSent() || nowNanos - e.lastSentNanos() > ackTimeoutNanos) {
                 due.add(e);
             }

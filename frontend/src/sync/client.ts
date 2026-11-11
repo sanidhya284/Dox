@@ -35,15 +35,23 @@ export interface SocketLike {
   onclose: ((ev: { code: number }) => void) | null;
 }
 
-export type ApiResult<T> = { ok: true; status: number; data: T } | { ok: false; status: number };
+/** A failure carries the server's error code when it sent one (e.g. RATE_LIMITED, DEMO_BUSY). */
+export type ApiResult<T> =
+  | { ok: true; status: number; data: T }
+  | { ok: false; status: number; code?: string; retryAfterSeconds?: number };
 
 /** Authenticated REST; refreshes the access token once on a 401 (see api/http.ts). */
 export interface Api {
   get<T>(path: string): Promise<ApiResult<T>>;
   post<T>(path: string, body?: unknown): Promise<ApiResult<T>>;
+  del?<T>(path: string): Promise<ApiResult<T>>;
 }
 
-export type ClientState = 'running' | 'logged_out' | 'client_bug' | 'server_bug' | 'too_many_sockets' | 'stopped';
+export type ClientState =
+  | 'running' | 'logged_out' | 'client_bug' | 'server_bug' | 'too_many_sockets' | 'guest_expired' | 'stopped';
+
+/** A send the server refused for good, with its error code (for the UI's "not sent" and Retry). */
+export type FailedSend = OutboxEntry & { readonly code: string };
 
 /** Deliberate defects for the tests' negative forms (each test must fail with its bug on). Never set in the app. */
 export type Bug =
@@ -52,7 +60,9 @@ export type Bug =
   | 'NO_GAP_DETECTION'
   | 'NO_ANTI_ENTROPY'
   | 'NEW_ID_ON_RETRY'
-  | 'LOOP_ON_PROTOCOL_ERROR';
+  | 'LOOP_ON_PROTOCOL_ERROR'
+  | 'IGNORE_RETRY_AFTER'
+  | 'NO_FORGET_ON_404';
 
 export interface ClientConfig {
   ackTimeoutMs: number;
@@ -85,6 +95,8 @@ export interface ClientDeps {
   bugs?: Bug[];
   /** Test hook between subscribe and fetch (the window that fetch-before-subscribe would lose). */
   betweenSubscribeAndFetch?: () => Promise<void> | void;
+  /** Frames the sync algorithm doesn't use (cursor frames, anything newer), for the UI (read receipts). */
+  onOtherFrame?: (frame: Record<string, unknown>) => void;
 }
 
 interface ConvState {
@@ -111,6 +123,8 @@ export class ChatClient {
   private readonly outbox: Outbox;
   private readonly backoff: Backoff;
   private readonly convs = new Map<string, ConvState>();
+  /** Conversations the server answered 404 for (deleted, or no longer mine): never fetched again. */
+  private readonly gone = new Set<string>();
   private readonly listeners = new Set<() => void>();
 
   private stateValue: ClientState = 'running';
@@ -126,7 +140,7 @@ export class ChatClient {
   reconnects = 0;
   terminalErrors = 0;
   /** Sends the server refused for good (terminal error), for the UI. */
-  readonly failedSends: OutboxEntry[] = [];
+  readonly failedSends: FailedSend[] = [];
 
   constructor(private readonly deps: ClientDeps) {
     this.cfg = { ...DEFAULT_CONFIG, ...deps.config };
@@ -164,6 +178,38 @@ export class ChatClient {
     this.changed();
     this.flushDue();
     return entry.clientMsgId;
+  }
+
+  /**
+   * Retry of a send the server refused for good: the same body as a NEW send (new clientMsgId; the old id was
+   * rejected, so reusing it would only be rejected again). Returns the new id, or null (unknown id, full outbox).
+   */
+  retryFailed(clientMsgId: string): string | null {
+    const i = this.failedSends.findIndex((f) => f.clientMsgId === clientMsgId);
+    if (i < 0) {
+      return null;
+    }
+    const [failed] = this.failedSends.splice(i, 1);
+    const id = this.send(failed.conversationId, failed.body);
+    if (id === null) {
+      this.failedSends.splice(i, 0, failed);
+    }
+    this.changed();
+    return id;
+  }
+
+  /**
+   * The conversation is gone for this user (a 404: deleted by account removal, or never mine): drop its
+   * messages and never fetch it again, so nothing retries in a loop. The UI calls this on its own 404s too.
+   */
+  forget(conversationId: string): void {
+    this.gone.add(conversationId);
+    this.convs.delete(conversationId);
+    this.changed();
+  }
+
+  isGone(conversationId: string): boolean {
+    return this.gone.has(conversationId);
   }
 
   /** Known messages of one conversation, ordered by seq. */
@@ -316,6 +362,9 @@ export class ChatClient {
       return;
     }
     for (const head of r.data) {
+      if (this.gone.has(head.conversationId)) {
+        continue;
+      }
       const st = this.conv(head.conversationId);
       if (head.lastSeq > st.contiguousSeq) {
         await this.fetchForward(head.conversationId);
@@ -325,11 +374,17 @@ export class ChatClient {
   }
 
   private async fetchForward(conversationId: string): Promise<void> {
+    if (this.gone.has(conversationId)) {
+      return;
+    }
     let after = this.conv(conversationId).contiguousSeq;
     for (;;) {
       const r = await this.deps.api.get<Page>(
         `/api/conversations/${conversationId}/messages?after=${after}&limit=100`);
       if (!r.ok) {
+        if (r.status === 404 && !this.bugs.has('NO_FORGET_ON_404')) {
+          this.forget(conversationId); // gone: drop it, no retry loop
+        }
         return;
       }
       let last = after;
@@ -345,6 +400,9 @@ export class ChatClient {
   }
 
   private merge(msg: Msg): void {
+    if (this.gone.has(msg.conversationId)) {
+      return;
+    }
     const st = this.conv(msg.conversationId);
     if (st.byId.has(msg.id) && !this.bugs.has('NO_DEDUPE')) {
       return;
@@ -404,6 +462,9 @@ export class ChatClient {
       }
       case 'message': {
         const msg = f.message as Msg;
+        if (this.gone.has(msg.conversationId)) {
+          return;
+        }
         const before = this.conv(msg.conversationId).contiguousSeq;
         this.merge(msg);
         if (!this.bugs.has('NO_GAP_DETECTION') && msg.seq > before + 1) {
@@ -416,12 +477,17 @@ export class ChatClient {
           return;
         }
         const id = String(f.clientMsgId);
-        if (isTerminalError(String(f.code))) {
+        const code = String(f.code);
+        if (isTerminalError(code)) {
           const dropped = this.outbox.remove(id);
           if (dropped) {
             this.terminalErrors++;
-            this.failedSends.push(dropped);
+            this.failedSends.push({ ...dropped, code });
           }
+        } else if (code === 'RATE_LIMITED' && typeof f.retryAfterMs === 'number'
+            && !this.bugs.has('IGNORE_RETRY_AFTER')) {
+          // ADR-0012: the server says when. Same clientMsgId; a reconnect doesn't cut the wait short.
+          this.outbox.deferUntil(id, this.now() + f.retryAfterMs);
         } else {
           this.outbox.markDue(id); // retryable: due again on the next tick
         }
@@ -429,7 +495,8 @@ export class ChatClient {
         break;
       }
       default:
-        // cursor frames and anything newer: not needed for message sync
+        // cursor frames and anything newer: not needed for message sync, but the UI may want them
+        this.deps.onOtherFrame?.(f);
     }
   }
 

@@ -62,7 +62,7 @@ public final class ReferenceClient implements AutoCloseable {
 
     public enum Bug { NO_DEDUPE, FETCH_BEFORE_SUBSCRIBE, NO_GAP_DETECTION, NEW_ID_ON_RETRY, LOOP_ON_PROTOCOL_ERROR, NO_ANTI_ENTROPY }
 
-    public enum State { RUNNING, LOGGED_OUT, CLIENT_BUG, SERVER_BUG, TOO_MANY_SOCKETS, STOPPED }
+    public enum State { RUNNING, LOGGED_OUT, CLIENT_BUG, SERVER_BUG, TOO_MANY_SOCKETS, GUEST_EXPIRED, STOPPED }
 
     public record Msg(UUID id, UUID conversationId, long seq, UUID senderId, UUID clientMsgId, String body) {
     }
@@ -608,8 +608,13 @@ public final class ReferenceClient implements AutoCloseable {
                     return;
                 }
                 UUID cmid = UUID.fromString(cmidNode.asText());
-                if (ErrorClass.of(f.get("code").asText()) == ErrorClass.TERMINAL) {
+                String code = f.get("code").asText();
+                JsonNode retryAfter = f.get("retryAfterMs");
+                if (ErrorClass.of(code) == ErrorClass.TERMINAL) {
                     outbox.failed(cmid).ifPresent(e -> terminalErrors.incrementAndGet());
+                } else if ("RATE_LIMITED".equals(code) && retryAfter != null && retryAfter.isNumber()) {
+                    // ADR-0012: the server says when; same clientMsgId, a reconnect doesn't cut the wait short
+                    outbox.deferUntil(cmid, now() + retryAfter.asLong() * 1_000_000L);
                 } else {
                     outbox.markSent(cmid, 0); // retryable: due again on the next tick
                 }
@@ -625,19 +630,24 @@ public final class ReferenceClient implements AutoCloseable {
             return;
         }
         connected = false;
-        switch (code) {
-            case 4002 -> state.set(State.LOGGED_OUT);                        // re-login required
-            case 1007, 4004, 4005 -> {
-                if (bugs.contains(Bug.LOOP_ON_PROTOCOL_ERROR)) {
-                    scheduleReconnect();
-                } else {
-                    state.set(State.CLIENT_BUG);                             // never loop on our own bug
-                }
-            }
-            case 1008 -> state.set(State.SERVER_BUG);
-            case 4007 -> state.set(State.TOO_MANY_SOCKETS);                  // ADR-0006 2a: never auto-reconnect
-            default -> scheduleReconnect();                                  // 4001, 4003, 4006, 1001, 1006, ...
+        State stop = stopStateFor(code);
+        if (stop == null || (stop == State.CLIENT_BUG && bugs.contains(Bug.LOOP_ON_PROTOCOL_ERROR))) {
+            scheduleReconnect();                                             // 4001, 4003, 4006, 1001, 1006, ...
+        } else {
+            state.set(stop);
         }
+    }
+
+    /** The ADR-0008 close table: the state a close code stops the client in, or null to reconnect. */
+    static State stopStateFor(int code) {
+        return switch (code) {
+            case 4002 -> State.LOGGED_OUT;                                   // re-login required
+            case 1007, 4004, 4005 -> State.CLIENT_BUG;                       // never loop on our own bug
+            case 1008 -> State.SERVER_BUG;
+            case 4007 -> State.TOO_MANY_SOCKETS;                             // ADR-0006 2a: never auto-reconnect
+            case 4008 -> State.GUEST_EXPIRED;                                // ADR-0012: the guest was removed
+            default -> null;
+        };
     }
 
     // ═════════════════════════════ REST with single-flight refresh ═════════════════════════════
