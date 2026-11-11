@@ -1,0 +1,101 @@
+# ADR-0012 — Open Sign-Up, Guest Accounts and the Product UI's Read Model
+
+**Status:** Accepted (Phase 6b, all 5 steps)  **Date:** 2026-11-11  **Phase:** 6b
+
+## Context
+dox-chat.in is the first thing a visitor sees. Until now it was invite-only, and the UI could show neither sender names nor a conversation list with previews, nor start a DM. Phase 6b opens sign-up, adds a one-click guest demo, and gives the UI what it needs, with the abuse controls an open demo requires. This ADR is written step by step; later steps add the sign-up, guest and abuse-limit decisions.
+
+## Decision 1: user search for starting DMs (step 1)
+- **Endpoint:** `GET /api/users/search?q=` (authenticated).
+  - a case-insensitive **username prefix**;
+  - **2 to 50 characters** after trimming, otherwise `400 VALIDATION_ERROR`;
+  - at most **20 results**, ordered by username;
+  - **30 requests per minute per user** (`ratelimit.search-per-user-per-minute`).
+- **Returns** `{id, username, displayName, isGuest}`. **Never an email**: the query doesn't even select it.
+- **Excludes:**
+  - the searcher;
+  - anonymized accounts (`deleted_at` set);
+  - bot accounts;
+  - **users who blocked the searcher**, so a blocked user can't find the blocker.
+- **Wildcards:** `%`, `_` and `\` in the query are escaped, so they match literally (`LIKE ... ESCAPE '\'`).
+- **Index:** `idx_users_username_prefix` on `lower(username::text) text_pattern_ops` (V7). `UserSearchTest` runs EXPLAIN on the exact query the app uses (`UserRepository.SEARCH_SQL`). With sequential and bitmap scans off, the plan is `Index Scan using idx_users_username_prefix`, with the range condition `lower(username) ~>=~ 'ab' AND ~<~ 'ac'`. That shows the index can serve the query; it's not a performance claim.
+- **Why prefix and not substring:** a prefix can use a b-tree index, while substring search would need a trigram index (`pg_trgm`). It also makes enumeration slower: an attacker learns at most 20 names per 2-character prefix, at 30 queries a minute.
+
+## Decision 2: names and previews in conversation responses (step 1)
+- **`participants`:** every member who **ever** joined: `{id, username, displayName, isGuest, isBot, isDeleted, left}`.
+  - Members who left and anonymized accounts stay in the list, so their old messages still render a name.
+  - The names come from `UserService` in one batched query; the conversation domain doesn't read the users table itself.
+- **`lastMessage`:** `{senderId, preview, createdAt, seq}`, or `null` for an empty conversation.
+  - **One query for the whole list,** joined on `m.seq = c.last_seq`: an exact lookup on the unique `(conversation_id, seq)` index, with no sort and no scan of the history.
+  - **The preview** is cut at **120 Unicode code points** plus "…", so it never splits an emoji's surrogate pair.
+- **Additive:** both fields are new, so clients that ignore unknown fields (the post-deploy check, an older UI) are unaffected.
+
+## Decision 3: all rate-limit values in one place (step 1)
+`ratelimit.*` binds to `RateLimitProperties`, whose defaults are the production values. The dev, test and bench profiles raise them. Step 5 adds a test that pins the production values.
+
+## Decision 4: open sign-up, with a global cap (step 2)
+- **`registration.mode` defaults to `open`** (env `REGISTRATION_MODE`). `invite` stays available as a switch, with its tests ([ADR-0011](0011-deployment-and-pre-deploy-hardening.md) Decision 2, amended).
+- **Limits on sign-up:** the per-IP limit (5/h) as before, plus a **global** limit across all IPs (`ratelimit.signup-global-per-hour`, 200). It **fails closed**: past it, every sign-up gets `429 RATE_LIMITED` with `Retry-After` until the hour's window ends. The counter `chat.signups{outcome=created|capped}` shows when it bites. An attempt that passes the cap but then fails (a taken username) still uses budget: simpler, and it errs towards closed.
+- **Reserved usernames:** `guest-*`, `deleted-*` (any case) and `dox-bot` get `400 VALIDATION_ERROR` ("reserved"), so a real account can never collide with, or impersonate, a system account.
+- **Not covered:** no email verification and no CAPTCHA. Distributed sign-up spam is bounded only by the global cap.
+
+## Decision 5: "Try the demo" guest accounts (step 2)
+- **`POST /api/auth/guest`** (allowed `Origin` required, like the other cookie endpoints) creates `guest-<10 hex>` with display name "Guest XXXX", `is_guest = true` and **no usable password**, then logs it in with the normal refresh cookie. `UserResponse.isGuest` labels it.
+- **Seeded content, private to the guest:** a welcome DM from the bot and a group "Your demo group" with only the guest and the bot. **Guests never join shared conversations,** so nobody else's conversation list changes (tested: 25 guests in a row each get the welcome DM, and demo1's list is unchanged). The group contains only the bot, not the demo accounts, for exactly that reason.
+- **Limits:** 3 guests per IP per hour (`ratelimit.guest-per-ip-per-hour`); at most **1000 live guests** (`guest.max-live`), beyond which `429 DEMO_BUSY` (the UI points to sign-up). The live count is checked, not locked, so concurrent requests can overshoot by a few. Gauge: `chat.guests.live`.
+- **Restrictions:** guests can't create groups (`403 GUEST_NOT_ALLOWED`); they can start DMs. Step 3 gives them lower send and DM limits.
+
+## Decision 6: the welcome bot (step 2)
+- **`dox-bot`**, `is_bot = true`, no usable password, created idempotently at startup in every profile. Search never returns it.
+- **Its messages use `MessageService.sendAsSystem`:** the same transaction, row lock and seq code as any send; only the per-user limits are skipped. They count as `chat.messages.sent{channel=system}`.
+- **Reply:** when someone writes in a conversation the bot is in, the bot replies with one fixed text, **at most once per 10 s per conversation**, then marks the message read. It reacts after commit (`@TransactionalEventListener(AFTER_COMMIT)`), on its own single thread with a bounded queue; a full queue drops the reaction (best effort, never back-pressure on sends). It replies before it moves its read cursor, so "read cursor at seq N" means message N is fully handled.
+
+## Decision 7: guest cleanup and account removal: anonymize, don't delete history (step 2)
+- **Every 15 minutes** (`guest.cleanup-interval`, own thread), guests older than 24 h (`guest.ttl`) are removed, **one transaction per guest**, claimed with `SELECT ... FOR UPDATE SKIP LOCKED`: two instances never remove the same guest and never wait on each other (tested by holding a row lock from another connection).
+- **The removal step** (`AccountRemovalService.remove`, shared with the runbook's "remove an abusive account"):
+  1. a conversation is **deleted** (messages first; participants cascade) only when **no other active human remains** in it: every other member who hasn't left is the bot, a demo account, or an already removed account. A live guest counts as a human (amended 2026-11-11 after review; the first rule also deleted DMs with live guests);
+  2. every other conversation is **left**, and its messages **stay**, attributed to the removed account. Deleting them would leave seq gaps and break every other member's gap detection and history ([ADR-0008](0008-client-sync-protocol.md)); `messages.sender_id` also references the user;
+  3. the user row is **anonymized**: username `deleted-<32 hex of the id>` (unique, since it's derived from the id; the prefix is reserved), email `deleted-<hex>@deleted.invalid`, display name "Deleted guest" or "Deleted user", a password hash BCrypt never matches, `deleted_at` set;
+  4. refresh tokens and WebSocket tickets are revoked, and after commit realtime closes the user's sockets through **one "close user" path** (`SessionRevocationListener.closeUser`, which Phase 4 routes to every instance): **`4008 guest expired`** for guests. (An operator removal runs in a separate process and can't close sockets: Decision 9.)
+- **Access tokens** already issued stay valid until they expire (up to 15 minutes), but a removed account gets `401 TOKEN_INVALID` for a WebSocket ticket, a new DM or group, and any send (amended 2026-11-11, Decision 9). It is in no conversation, so reads are `404`.
+- **A DM between two guests:** when the first expires, the second is still a live human, so the DM is kept and the first guest is anonymized there; it's deleted when the second expires too.
+- **Two guards, one redundant today:** a member counts as an active human only if they haven't left AND their account isn't removed. Members only ever leave through removal, so the two sets are the same and dropping the "left" guard alone changes nothing (an equivalent mutant: `GuestCleanupTest` still passes). Breaking both fails the two-round test (`aGuestToGuestDmIsDeletedWhenTheSecondGuestExpires`). The "left" guard is kept for when a leave endpoint exists.
+
+## Decision 8: login can't tell guests, the bot or removed accounts from unknown names (step 2)
+Login looks up only accounts that are not guests, not bots and not removed. Every other username takes the unknown-user path, which now runs **one BCrypt comparison against a dummy hash** (a real BCrypt(12) hash made at startup), so a refusal costs the same whether the name is unknown, a guest, the bot, removed, or a real account with a wrong password, and the 401 body is identical (`LoginEquivalenceTest` spies on the encoder: exactly one comparison, the same dummy hash, the same error).
+
+## Decision 9: removing an abusive account is an explicit one-off admin process (amended 2026-11-11 after review)
+- **How:** `--remove-account=<username>` with profiles `prod,admin` (runbook 9a). Without the admin profile, `main()` refuses with exit `2` before Spring starts, so the live app can never be told to do it by accident.
+- **Admin mode** (`application-admin.yml`, `AdminFlywayConfig`): no web server, the cleanup job and demo seeding are not created, the bot isn't seeded, heartbeats aren't scheduled, a 2-connection pool, and **Flyway validates instead of migrating**, so an image that doesn't match the live schema refuses to start (exit `1`). It exits on its own: `0` removed, `3` no such live account.
+- **Removed callers are refused (amended 2026-11-11 after review):** ticket issuance, DM and group creation, and sends check that the caller's account isn't removed, and answer **`401 TOKEN_INVALID`**. 401 rather than 403 because the token, not the request, is what's no longer good: the client tries one refresh, which fails (tokens revoked), and drops the session. Cost: one primary-key lookup on each of those calls (on a send it replaces the guest-flag lookup).
+- **Limitation:** it's a separate process, so it **can't close the user's sockets** on the live app (that needs the Phase 4 cross-instance "close user" path or an admin endpoint). Sockets already open stay until their lifetime ends (`4001`), **at most 15 minutes**, and carry nothing: no new tickets, no sends, no conversations.
+
+## Decision 10: one send budget, a cap on new DMs, and blocks (step 3)
+- **Send limit:** 60 new messages per minute per user, 20 for guests (`ratelimit.send-per-user-per-minute`, `send-per-guest-per-minute`). **One budget for WebSocket and REST**, checked in `MessageService` (both channels call it).
+  - **Only new messages count.** Order, all **outside** the send transaction (amended 2026-11-11 after review): the caller is not removed; a stored message with this sender and `clientMsgId` (same conversation and body) is acked at once without using budget; then the limiter; then the transaction, which repeats the idempotency check under the conversation row lock for correctness. So a client recovering after a lost ack is never refused its own message, and **the limiter never runs while the row lock is held** (Phase 4 makes it a Redis call; `SendLimitOutsideTransactionTest`). A send refused inside the transaction (not a member, recipient unavailable) has already used budget.
+  - Rejected sends get `429 RATE_LIMITED` with `Retry-After` (REST), or an `error` frame with **`retryAfterMs`** (WebSocket; only on `RATE_LIMITED`). Clients wait that long before resending, instead of resending on every ack timeout ([ADR-0008](0008-client-sync-protocol.md)).
+  - The welcome bot's messages (`channel=system`) skip it.
+- **New-DM cap:** 20 per hour per user, 3 for guests (`ratelimit.dm-per-user-per-hour`, `dm-per-guest-per-hour`). Only a DM the call **actually creates** counts (`RETURNING (xmax = 0)` tells an insert from the get-or-create conflict path); reopening an existing DM is free. Past the cap the transaction rolls back, so nothing is stored. A guest's welcome DM doesn't count.
+- **Block:** `POST` / `DELETE /api/users/{id}/block` (idempotent, `204`), `GET /api/users/blocked`. Blocking yourself is `400`; an unknown or removed user is `404`.
+  - **DM creation** with a block in either direction answers `404 USER_NOT_FOUND`, the same as an unknown user, so the blocked user can't probe for it. Search hides the blocker (Decision 1).
+  - **Sending in an existing DM** with a block in either direction, or to a removed account, answers **`403 RECIPIENT_UNAVAILABLE`** (terminal for the client). Here the block **is visible** to the blocked user; hiding it would mean silently dropping messages, which breaks the "acked means stored" rule.
+  - **Groups are unaffected** by blocks.
+- **Cost:** a send now also reads the sender's guest flag and, in a DM, one query for "removed or blocked". Not measured; the Phase 5 numbers predate it.
+
+## Decision 11: the UI's design, "Terminal night" (step 4; chosen 2026-11-11)
+- **What:** dark first (near-black `#0c0f0d`, acid-green accent `#8cff5a`) with a light "paper terminal" variant for `prefers-color-scheme: light`; the system monospace font only; square corners and 1 px rules; an IRC-style log (`[HH:MM] <nick> text`, nick shown once per run of lines from one sender) instead of chat bubbles; channels as `#group` and `@dm`; the composer as a shell prompt (`ana@dox:~$`); ✓ stored and ✓✓ read by, `… sending`, `… waiting (rate limit)`.
+- **Why it replaced the first draft ("quiet paper"):** that draft (rounded bubbles, a deep-teal accent, avatar circles, a list-plus-pane layout) read as a WhatsApp clone in review. The terminal look is distinctive and fits what the project is about: ordered, acknowledged delivery is shown, not hidden. It was picked by the user from three directions (with "Signal" and "Ledger").
+- **Constraints kept:** no UI library and no web font (plain CSS, nothing new to install); **WCAG AA** for every text colour in both themes, including the six per-user nick colours, checked by `contrast.test.ts`, which parses `styles.css` (a mutation that lowers one nick colour fails it); motion only where it carries meaning (a new line slides in, the caret blinks, buttons press), all off under `prefers-reduced-motion`; long unbroken text wraps (`overflow-wrap: anywhere` in a `minmax(0, 1fr)` column), so there's no horizontal scroll.
+- **Tradeoff:** monospace text is less dense to read than a proportional font in long messages, and the look may feel technical to a non-technical visitor. Accepted for a portfolio project whose subject is the delivery machinery.
+
+## Decision 12: end-to-end tests run with raised limits; the production values are pinned (step 5)
+- **Raised limits only for e2e:** `deploy/compose.e2e.yml` sets the `ratelimit.*` values through environment variables on the app container. It is an override file, not a Spring profile, so nothing looser ships inside the production image, and the server only ever runs `compose.yml`.
+- **Production values pinned:** `RateLimitProductionValuesTest` binds `application.yml` + `application-prod.yml` exactly as the server does and asserts every limit and the guest settings; it also checks that the code defaults aren't looser. A changed value fails it (mutations: the send limit in YAML, the sign-up cap default).
+- **CI order:** Playwright with the override, then the app is recreated without it, then `smoke.sh` (which needs the real per-IP login limit).
+- **`GET /api/users/me`:** added because the UI could not show a new user's own name (login and refresh return only a token, and a new user has no conversation to read it from). Found while writing the sign-up e2e test.
+
+## Consequences
+- **V7 is additive:** `users.is_guest`, `users.is_bot`, `users.deleted_at`, the `user_blocks` table, and two indexes. The previous release still runs against it (ADR-0011 Decision 10).
+- **Tests:** `UserSearchTest`, `ConversationReadModelTest`, `GuestAccountTest`, `GuestCleanupTest`, `BotReplyTest`, `LoginEquivalenceTest`, `SignupCapTest`, `SendLimitAndBlockTest`, and the search and guest limits in `RateLimitTest`. Each guarantee has a mutation shown to fail it.
+- **New error codes:** `403 GUEST_NOT_ALLOWED`, `429 DEMO_BUSY`, `403 RECIPIENT_UNAVAILABLE`. **Protocol:** `retryAfterMs` on the `RATE_LIMITED` error frame. **New close code:** `4008` ([ADR-0008](0008-client-sync-protocol.md) table).
+- **Runbook:** "Remove an abusive account" in [AWS-DEPLOY-RUNBOOK.md](../AWS-DEPLOY-RUNBOOK.md) runs the same removal step (`--remove-account=<username>`).

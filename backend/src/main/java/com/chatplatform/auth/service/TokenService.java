@@ -61,6 +61,12 @@ public class TokenService {
         throw new ApiException(ErrorCode.TOKEN_INVALID, "Token expired");
     }
 
+    /** Ends every refresh session of the user (account removal, ADR-0012). Access tokens expire on their own. */
+    @Transactional
+    public void revokeAllForUser(UUID userId) {
+        refreshTokenRepository.revokeAllForUser(userId);
+    }
+
     @Transactional
     public void revokeToken(String rawRefreshToken) {
         String tokenHash = hashToken(rawRefreshToken);

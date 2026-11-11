@@ -4,7 +4,7 @@ import type { AuthSession, FetchLike } from './auth';
 /**
  * Authenticated JSON REST for the sync client and the UI. On a 401 it refreshes ONCE (shared by every
  * concurrent caller, see AuthSession.refresh) and retries; if the refresh fails, the result stays 401
- * and the app shows the login screen.
+ * and the app shows the login screen. A failure carries the server's error code and Retry-After when present.
  */
 export function createApi(auth: AuthSession, fetchImpl: FetchLike = (i, init) => fetch(i, init)): Api {
   async function request<T>(method: string, path: string, body?: unknown): Promise<ApiResult<T>> {
@@ -26,10 +26,17 @@ export function createApi(auth: AuthSession, fetchImpl: FetchLike = (i, init) =>
           r = await send(auth.accessToken());
         }
       }
-      if (!r.ok) {
-        return { ok: false, status: r.status };
-      }
       const text = await r.text();
+      if (!r.ok) {
+        let code: string | undefined;
+        try {
+          code = text ? JSON.parse(text).code : undefined;
+        } catch {
+          code = undefined;
+        }
+        const retry = Number(r.headers?.get?.('Retry-After'));
+        return { ok: false, status: r.status, code, retryAfterSeconds: Number.isFinite(retry) && retry > 0 ? retry : undefined };
+      }
       return { ok: true, status: r.status, data: (text ? JSON.parse(text) : undefined) as T };
     } catch {
       return { ok: false, status: 0 }; // network error: callers retry later
@@ -38,5 +45,6 @@ export function createApi(auth: AuthSession, fetchImpl: FetchLike = (i, init) =>
   return {
     get: <T>(path: string) => request<T>('GET', path),
     post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
+    del: <T>(path: string) => request<T>('DELETE', path),
   };
 }

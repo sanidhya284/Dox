@@ -53,9 +53,15 @@ export class AuthSession {
     return this.authenticate('/api/auth/login', { username, password });
   }
 
-  async register(r: { username: string; email: string; password: string; displayName: string; inviteCode: string }):
+  /** Open sign-up (ADR-0012); inviteCode only matters on a server running registration.mode=invite. */
+  async register(r: { username: string; email: string; password: string; displayName: string; inviteCode?: string }):
     Promise<AuthResult> {
     return this.authenticate('/api/auth/register', r);
+  }
+
+  /** "Try the demo" (ADR-0012): a 24-hour guest account, logged in like any user. DEMO_BUSY when full. */
+  async guest(): Promise<AuthResult> {
+    return this.authenticate('/api/auth/guest', undefined);
   }
 
   async logout(): Promise<void> {
@@ -90,8 +96,8 @@ export class AuthSession {
     const r = await this.fetchImpl(path, {
       method: 'POST',
       credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
     });
     const json = await r.json().catch(() => ({}));
     if (!r.ok) {

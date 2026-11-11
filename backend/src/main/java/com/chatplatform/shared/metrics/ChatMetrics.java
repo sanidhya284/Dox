@@ -20,7 +20,8 @@ import java.util.stream.Collectors;
 @Component
 public class ChatMetrics {
 
-    public enum Channel { REST, WS }
+    /** SYSTEM: messages the server sends itself (the welcome bot; ADR-0012). */
+    public enum Channel { REST, WS, SYSTEM }
 
     public enum SendOutcome { CREATED, DUPLICATE, REJECTED }
 
@@ -29,7 +30,7 @@ public class ChatMetrics {
     public enum CursorOutcome { ADVANCED, STALE }
 
     /** Close codes counted individually; anything else is "other". */
-    static final Set<Integer> NAMED_CLOSE_CODES = Set.of(1000, 1001, 1007, 1009, 4001, 4002, 4003, 4005, 4006, 4007);
+    static final Set<Integer> NAMED_CLOSE_CODES = Set.of(1000, 1001, 1007, 1009, 4001, 4002, 4003, 4005, 4006, 4007, 4008);
 
     private final Map<String, Counter> sent;
     private final Map<TicketOutcome, Counter> tickets;
@@ -37,6 +38,8 @@ public class ChatMetrics {
     private final Map<String, Counter> closes;
     private final Counter pushDropped;
     private final Counter headsRequests;
+    private final Counter signupsCreated;
+    private final Counter signupsCapped;
     private final Timer sendAck;
 
     public ChatMetrics(MeterRegistry registry) {
@@ -64,6 +67,11 @@ public class ChatMetrics {
                 .tag("reason", "queue_full").register(registry);
         headsRequests = Counter.builder("chat.heads.requests")
                 .description("Anti-entropy heads requests").register(registry);
+        signupsCreated = Counter.builder("chat.signups").description("Self sign-ups (ADR-0012)")
+                .tag("outcome", "created").register(registry);
+        signupsCapped = Counter.builder("chat.signups")
+                .description("Self sign-ups refused by the global hourly cap (ADR-0012)")
+                .tag("outcome", "capped").register(registry);
         sendAck = Timer.builder("chat.ws.send.ack")
                 .description("Server side of a WebSocket send: frame received to ack handed to the socket")
                 .publishPercentileHistogram().register(registry);
@@ -110,6 +118,11 @@ public class ChatMetrics {
 
     public void pushDropped() {
         pushDropped.increment();
+    }
+
+    /** A sign-up passed the global cap (created) or was refused by it (capped). */
+    public void signup(boolean created) {
+        (created ? signupsCreated : signupsCapped).increment();
     }
 
     public void headsRequest() {

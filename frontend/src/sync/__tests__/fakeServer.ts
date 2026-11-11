@@ -14,6 +14,15 @@ export class FakeServer {
   dropAcks = 0;
   tickets = 0;
   ticketStatus = 200;
+  /** The next N sends are refused with `refuseCode` (RATE_LIMITED carries retryAfterMs); nothing is stored. */
+  rateLimitNext = 0;
+  retryAfterMs = 0;
+  refuseCode = 'RATE_LIMITED';
+  /** Every send frame received, with the fake clock's time (to check when retries happen). */
+  readonly sendLog: { clientMsgId: string; at: number }[] = [];
+  /** Every GET path, in order. */
+  readonly gets: string[] = [];
+  private readonly removed = new Set<string>();
   private nextId = 1;
 
   constructor(readonly conversations: string[]) {
@@ -46,9 +55,21 @@ export class FakeServer {
     s.deliver({ v: 1, type: 'message', message: msg });
   }
 
+  /** The conversation is deleted (account removal): heads no longer list it, its history is 404. */
+  remove(conversationId: string): void {
+    this.removed.add(conversationId);
+  }
+
   receive(from: FakeSocket, text: string): void {
     const f = JSON.parse(text);
     if (f.type !== 'send') {
+      return;
+    }
+    this.sendLog.push({ clientMsgId: f.clientMsgId, at: Date.now() });
+    if (this.rateLimitNext > 0) {
+      this.rateLimitNext--;
+      from.deliver({ v: 1, type: 'error', clientMsgId: f.clientMsgId, code: this.refuseCode, message: 'refused',
+        ...(this.refuseCode === 'RATE_LIMITED' ? { retryAfterMs: this.retryAfterMs } : {}) });
       return;
     }
     const key = `${from.userId}|${f.clientMsgId}`;
@@ -76,11 +97,15 @@ export class FakeServer {
     const ok = <T>(data: T): Promise<ApiResult<T>> => Promise.resolve({ ok: true, status: 200, data });
     return {
       get: <T>(path: string): Promise<ApiResult<T>> => {
+        this.gets.push(path);
         if (path === '/api/conversations/heads') {
-          return ok(this.conversations.map((c) => ({ conversationId: c, lastSeq: this.rows.get(c)!.length }))) as
-            Promise<ApiResult<T>>;
+          return ok(this.conversations.filter((c) => !this.removed.has(c))
+            .map((c) => ({ conversationId: c, lastSeq: this.rows.get(c)!.length }))) as Promise<ApiResult<T>>;
         }
         const m = path.match(/^\/api\/conversations\/([^/]+)\/messages\?after=(\d+)&limit=(\d+)$/);
+        if (m && this.removed.has(m[1])) {
+          return Promise.resolve({ ok: false, status: 404 });
+        }
         if (m) {
           const all = this.rows.get(m[1])!.filter((x) => x.seq > Number(m[2]));
           const page = all.slice(0, Number(m[3]));

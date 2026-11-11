@@ -27,6 +27,13 @@ public class MessageRepository {
         this.jdbcClient = jdbcClient;
     }
 
+    public void deleteInConversations(java.util.Collection<UUID> conversationIds) {
+        if (!conversationIds.isEmpty()) {
+            jdbcClient.sql("DELETE FROM messages WHERE conversation_id IN (:ids)").param("ids", conversationIds)
+                    .update();
+        }
+    }
+
     public Optional<Message> findByClientMsgId(UUID senderId, UUID clientMsgId) {
         return jdbcClient.sql("""
                 SELECT * FROM messages

@@ -1,0 +1,19 @@
+# Local and CI end-to-end runs ONLY (ADR-0012): raises the rate limits so Playwright can sign up, log in, create
+# guests and send many times from one IP. It is an override file, not a Spring profile, so nothing looser ships
+# inside the production image; the server uses compose.yml alone (deploy/prod/deploy.sh). The production values
+# are pinned by RateLimitProductionValuesTest, and CI recreates the app without this file before smoke.sh.
+#   docker compose -f compose.yml -f compose.build.yml -f compose.e2e.yml up -d --wait
+services:
+  app:
+    environment:
+      RATELIMIT_REGISTERPERIPPERHOUR: "1000"
+      RATELIMIT_SIGNUPGLOBALPERHOUR: "1000"
+      RATELIMIT_LOGINPERIPPERMINUTE: "1000"
+      RATELIMIT_LOGINPERIPANDUSERPERMINUTE: "1000"
+      RATELIMIT_TICKETPERUSERPERMINUTE: "1000"
+      RATELIMIT_SEARCHPERUSERPERMINUTE: "1000"
+      RATELIMIT_GUESTPERIPPERHOUR: "1000"
+      RATELIMIT_SENDPERUSERPERMINUTE: "1000"
+      RATELIMIT_SENDPERGUESTPERMINUTE: "1000"
+      RATELIMIT_DMPERUSERPERHOUR: "1000"
+      RATELIMIT_DMPERGUESTPERHOUR: "1000"

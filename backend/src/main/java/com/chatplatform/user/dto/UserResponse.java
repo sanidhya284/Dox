@@ -14,7 +14,8 @@ public record UserResponse(
         String username,
         String email,
         String displayName,
-        Instant createdAt
+        Instant createdAt,
+        boolean isGuest
 ) {
     public static UserResponse from(User user) {
         return new UserResponse(
@@ -22,7 +23,8 @@ public record UserResponse(
                 user.username(),
                 user.email(),
                 user.displayName(),
-                user.createdAt()
+                user.createdAt(),
+                user.isGuest()
         );
     }
 }

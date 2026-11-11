@@ -1,12 +1,18 @@
-/** Error frame codes (ADR-0008): terminal ones drop the send; anything else, including unknown codes, retries. */
-const TERMINAL = new Set(['VALIDATION_ERROR', 'CONVERSATION_NOT_FOUND', 'IDEMPOTENCY_KEY_CONFLICT']);
+/**
+ * Error frame codes (ADR-0008): terminal ones drop the send; anything else, including unknown codes, retries.
+ * RECIPIENT_UNAVAILABLE (ADR-0012): the DM peer blocked you, you blocked them, or their account was removed.
+ * RATE_LIMITED is retryable, but only after the frame's retryAfterMs (handled in the client).
+ */
+const TERMINAL = new Set(['VALIDATION_ERROR', 'CONVERSATION_NOT_FOUND', 'IDEMPOTENCY_KEY_CONFLICT',
+  'RECIPIENT_UNAVAILABLE']);
 
 export function isTerminalError(code: string): boolean {
   return TERMINAL.has(code);
 }
 
-/** What the client does when the server closes the socket (ADR-0008 table; 4007 from ADR-0006 2a). */
-export type CloseAction = 'reconnect' | 'logged_out' | 'client_bug' | 'server_bug' | 'too_many_sockets';
+/** What the client does when the server closes the socket (ADR-0008 table; 4007 ADR-0006 2a; 4008 ADR-0012). */
+export type CloseAction =
+  | 'reconnect' | 'logged_out' | 'client_bug' | 'server_bug' | 'too_many_sockets' | 'guest_expired';
 
 export function closeAction(code: number): CloseAction {
   switch (code) {
@@ -14,6 +20,8 @@ export function closeAction(code: number): CloseAction {
       return 'logged_out'; // credentials revoked (refresh-token replay): log in again
     case 4007:
       return 'too_many_sockets'; // per-user socket cap: never auto-reconnect
+    case 4008:
+      return 'guest_expired'; // the guest account was removed: offer a new demo or sign-up
     case 1007:
     case 4004:
     case 4005:

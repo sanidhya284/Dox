@@ -77,6 +77,27 @@ class OutboxTest {
         assertThat(ErrorClass.of("VALIDATION_ERROR")).isEqualTo(ErrorClass.TERMINAL);
         assertThat(ErrorClass.of("CONVERSATION_NOT_FOUND")).isEqualTo(ErrorClass.TERMINAL);
         assertThat(ErrorClass.of("IDEMPOTENCY_KEY_CONFLICT")).isEqualTo(ErrorClass.TERMINAL);
+        assertThat(ErrorClass.of("RECIPIENT_UNAVAILABLE")).as("ADR-0012").isEqualTo(ErrorClass.TERMINAL);
+        assertThat(ErrorClass.of("RATE_LIMITED")).as("retried, after retryAfterMs").isEqualTo(ErrorClass.RETRYABLE);
         assertThat(ErrorClass.of("SOMETHING_NEW")).as("unknown codes are retried").isEqualTo(ErrorClass.RETRYABLE);
+    }
+
+    @Test
+    void aDeferredEntryIsNotDueBeforeItsTimeEvenPastTheAckTimeoutAndKeepsItsId() {
+        Outbox o = new Outbox(10);
+        Outbox.Entry e = o.enqueue(UUID.randomUUID(), "later").orElseThrow();
+        o.markSent(e.clientMsgId(), 1_000);
+        o.deferUntil(e.clientMsgId(), 5_000); // RATE_LIMITED: retryAfterMs from now
+        assertThat(o.dueForRetry(4_999, 10)).as("held back although the ack timeout passed").isEmpty();
+        assertThat(o.dueForRetry(5_000, 10)).extracting(Outbox.Entry::clientMsgId).containsExactly(e.clientMsgId());
+    }
+
+    @Test
+    void closeCodesMapToTheTableIncludingGuestExpired() {
+        assertThat(ReferenceClient.stopStateFor(4008)).isEqualTo(ReferenceClient.State.GUEST_EXPIRED);
+        assertThat(ReferenceClient.stopStateFor(4007)).isEqualTo(ReferenceClient.State.TOO_MANY_SOCKETS);
+        assertThat(ReferenceClient.stopStateFor(4002)).isEqualTo(ReferenceClient.State.LOGGED_OUT);
+        assertThat(ReferenceClient.stopStateFor(4001)).as("reconnect").isNull();
+        assertThat(ReferenceClient.stopStateFor(1006)).as("reconnect").isNull();
     }
 }

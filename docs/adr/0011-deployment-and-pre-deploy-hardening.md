@@ -36,6 +36,8 @@ Phase 6 puts the app on the public internet: a browser UI and one VPS that redep
 - **Order:** the invite check runs **before** the username and email conflict checks. Without the code, every attempt gets `403 REGISTRATION_CLOSED`, so nobody can learn which usernames or emails exist. With the code, conflicts are reported as before (`409`).
 - **Tests:** `RegistrationPolicyTest` (no code, a wrong code or a blank code → 403 and no row; a taken username or email without the code → 403, not 409). `RegistrationPolicyUnitTest` covers the unconfigured, blank and unknown-mode cases.
 
+- **Amended 2026-11-11 (Phase 6b, [ADR-0012](0012-open-signup-and-guest-accounts.md) Decision 4):** the default is now `open`, behind the per-IP limit and a new global hourly cap. `invite` remains a switch (`REGISTRATION_MODE=invite`).
+
 ## Decision 3: seeded demo accounts, public data only
 - **What gets seeded:** when `DEMO_PASSWORD` is set (≥ 8 characters), `DemoSeeder` creates `demo1`, `demo2` and `demo3` with that password and one group, "Demo room", owned by `demo1`. It's idempotent, and safe on every start.
 - **When `DEMO_PASSWORD` changes:** the next start **replaces the demo users' password hashes**, so the old password stops working for new logins. Sessions that already exist are not revoked; they end when their refresh tokens expire.

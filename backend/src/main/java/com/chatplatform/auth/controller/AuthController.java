@@ -35,9 +35,11 @@ public class AuthController {
     private final RateLimits rateLimits;
     private final RefreshCookie refreshCookie;
     private final AuthOriginGuard originGuard;
+    private final com.chatplatform.shared.metrics.ChatMetrics metrics;
 
     public AuthController(AuthService authService, RateLimits rateLimits, RefreshCookie refreshCookie,
-                          AuthOriginGuard originGuard) {
+                          AuthOriginGuard originGuard, com.chatplatform.shared.metrics.ChatMetrics metrics) {
+        this.metrics = metrics;
         this.authService = authService;
         this.rateLimits = rateLimits;
         this.refreshCookie = refreshCookie;
@@ -49,7 +51,14 @@ public class AuthController {
     public AuthResponse register(@Valid @RequestBody RegisterRequest request, HttpServletRequest http,
                                  HttpServletResponse response) {
         rateLimits.checkRegister(http.getRemoteAddr()); // before the invite check and BCrypt
+        try {
+            rateLimits.checkGlobalSignup(); // all IPs together (ADR-0012); fails closed
+        } catch (com.chatplatform.shared.exception.RateLimitedException e) {
+            metrics.signup(false);
+            throw e;
+        }
         Registration registration = authService.register(request);
+        metrics.signup(true);
         setCookie(response, registration.tokens());
         return new AuthResponse(registration.user(), registration.tokens().accessToken());
     }

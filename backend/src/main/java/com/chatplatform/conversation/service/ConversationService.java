@@ -4,6 +4,9 @@ import com.chatplatform.conversation.dto.ConversationResponse;
 import com.chatplatform.conversation.dto.ParticipantCursor;
 import com.chatplatform.conversation.dto.ConversationHead;
 import com.chatplatform.conversation.dto.CursorResult;
+import com.chatplatform.conversation.dto.LastMessage;
+import com.chatplatform.conversation.dto.ParticipantInfo;
+import com.chatplatform.user.dto.UserSummary;
 import com.chatplatform.conversation.event.CursorAdvancedEvent;
 import org.springframework.context.ApplicationEventPublisher;
 import com.chatplatform.conversation.dto.CreateDirectRequest;
@@ -32,12 +35,15 @@ public class ConversationService {
     private final ApplicationEventPublisher events;
     private final UserService userService;
     private final ChatMetrics metrics;
+    private final com.chatplatform.shared.ratelimit.RateLimits rateLimits;
 
     public ConversationService(ConversationRepository conversationRepository,
                                ParticipantRepository participantRepository,
                                UserService userService,
                                ApplicationEventPublisher events,
-                               ChatMetrics metrics) {
+                               ChatMetrics metrics,
+                               com.chatplatform.shared.ratelimit.RateLimits rateLimits) {
+        this.rateLimits = rateLimits;
         this.conversationRepository = conversationRepository;
         this.participantRepository = participantRepository;
         this.userService = userService;
@@ -45,19 +51,44 @@ public class ConversationService {
         this.metrics = metrics;
     }
 
+    /**
+     * Creates or returns the DM (ADR-0012): a removed account, or a block in either direction, looks like an
+     * unknown user (404). Only a DM this call actually creates counts towards the hourly new-DM cap; past the cap
+     * the transaction rolls back (429), so nothing is stored.
+     */
     @Transactional
     public ConversationResponse createDirect(UUID currentUserId, CreateDirectRequest request) {
+        return createDirect(currentUserId, request, true);
+    }
+
+    /** The guest's welcome DM (ADR-0012): the same code, not counted towards the guest's DM cap. */
+    @Transactional
+    public ConversationResponse createDirectAsSystem(UUID userId, CreateDirectRequest request) {
+        return createDirect(userId, request, false);
+    }
+
+    private ConversationResponse createDirect(UUID currentUserId, CreateDirectRequest request, boolean capped) {
+        boolean callerIsGuest = userService.requireActive(currentUserId).guest(); // removed: 401 (Decision 9)
         if (currentUserId.equals(request.otherUserId())) {
             throw new ApiException(ErrorCode.CANNOT_DM_SELF);
         }
 
-        // Verify user exists (throws if not found)
-        userService.getUserById(request.otherUserId());
+        // The other user must exist and not be removed (a removed account looks unknown; ADR-0012).
+        if (userService.getUserById(request.otherUserId()).deletedAt() != null) {
+            throw new ApiException(ErrorCode.USER_NOT_FOUND);
+        }
+        if (userService.blockedEitherWay(currentUserId, request.otherUserId())) {
+            throw new ApiException(ErrorCode.USER_NOT_FOUND); // the blocked user can't probe for the block
+        }
 
         // Canonical direct_key
         String directKey = generateDirectKey(currentUserId, request.otherUserId());
 
-        Conversation conversation = conversationRepository.insertDirect(currentUserId, directKey);
+        ConversationRepository.DirectInsert insert = conversationRepository.insertDirect(currentUserId, directKey);
+        Conversation conversation = insert.conversation();
+        if (capped && insert.created()) {
+            rateLimits.checkNewDm(currentUserId, callerIsGuest);
+        }
 
         participantRepository.insert(conversation.id(), currentUserId, "MEMBER");
         participantRepository.insert(conversation.id(), request.otherUserId(), "MEMBER");
@@ -67,6 +98,9 @@ public class ConversationService {
 
     @Transactional
     public ConversationResponse createGroup(UUID currentUserId, CreateGroupRequest request) {
+        if (userService.requireActive(currentUserId).guest()) { // removed: 401 (Decision 9)
+            throw new ApiException(ErrorCode.GUEST_NOT_ALLOWED); // guests can't create groups (ADR-0012)
+        }
         // Verify all members exist
         for (UUID memberId : request.memberIds()) {
             userService.getUserById(memberId);
@@ -104,16 +138,22 @@ public class ConversationService {
                 .map(p -> new ParticipantCursor(p.userId(), p.lastDeliveredSeq(), p.lastReadSeq()))
                 .toList();
 
+        List<UUID> one = List.of(conversationId);
         return new ConversationResponse(
                 conv.id(), conv.type(), conv.title(), participants,
                 unreadCount, conv.lastMessageAt(), conv.createdAt(),
-                me.lastReadSeq(), cursors, conv.lastSeq());
+                me.lastReadSeq(), cursors, conv.lastSeq(),
+                memberInfo(one).getOrDefault(conversationId, List.of()),
+                conversationRepository.lastMessages(one).get(conversationId));
     }
 
     @Transactional(readOnly = true)
     public List<ConversationResponse> getUserConversations(UUID userId) {
         List<Conversation> conversations = conversationRepository.findByUserId(userId);
         Map<UUID, Long> unread = participantRepository.unreadCountsForUser(userId); // one grouped query
+        List<UUID> ids = conversations.stream().map(Conversation::id).toList();
+        Map<UUID, List<ParticipantInfo>> members = memberInfo(ids);                // two queries for all
+        Map<UUID, LastMessage> last = conversationRepository.lastMessages(ids);   // one query for all
         return conversations.stream().map(conv -> {
             long lastReadSeq = participantRepository.find(conv.id(), userId)
                     .map(ConversationParticipant::lastReadSeq)
@@ -123,10 +163,80 @@ public class ConversationService {
             return new ConversationResponse(
                     conv.id(), conv.type(), conv.title(), participants,
                     unreadCount, conv.lastMessageAt(), conv.createdAt(),
-                    lastReadSeq, null, conv.lastSeq());
+                    lastReadSeq, null, conv.lastSeq(),
+                    members.getOrDefault(conv.id(), List.of()), last.get(conv.id()));
         }).toList();
     }
+
+    /**
+     * Every member who ever joined each conversation, with public names (ADR-0012). Names come from UserService
+     * (one batched query), never from the user repository: a domain doesn't read another domain's tables.
+     */
+    private Map<UUID, List<ParticipantInfo>> memberInfo(List<UUID> conversationIds) {
+        List<ParticipantRepository.Membership> rows = participantRepository.findAllMembers(conversationIds);
+        Map<UUID, UserSummary> users = userService.summaries(
+                rows.stream().map(ParticipantRepository.Membership::userId).collect(java.util.stream.Collectors.toSet()));
+        Map<UUID, List<ParticipantInfo>> out = new java.util.HashMap<>();
+        for (ParticipantRepository.Membership row : rows) {
+            UserSummary u = users.get(row.userId());
+            if (u == null) {
+                continue;
+            }
+            out.computeIfAbsent(row.conversationId(), k -> new java.util.ArrayList<>())
+                    .add(new ParticipantInfo(u.id(), u.username(), u.displayName(), u.isGuest(), u.isBot(),
+                            u.isDeleted(), row.left()));
+        }
+        return out;
+    }
     
+    /**
+     * For account removal (ADR-0012): every conversation the user ever joined, mapped to its members who have
+     * not left (possibly none besides the user).
+     */
+    @Transactional(readOnly = true)
+    public Map<UUID, java.util.Set<UUID>> activeMembersOfConversationsOf(UUID userId) {
+        Map<UUID, java.util.Set<UUID>> out = new java.util.HashMap<>();
+        for (ParticipantRepository.Membership m
+                : participantRepository.findAllMembers(participantRepository.conversationIdsOf(userId))) {
+            java.util.Set<UUID> members = out.computeIfAbsent(m.conversationId(), k -> new java.util.HashSet<>());
+            if (!m.left()) {
+                members.add(m.userId());
+            }
+        }
+        return out;
+    }
+
+    /** The user leaves every conversation; their messages stay (ADR-0012). */
+    @Transactional
+    public void leaveAll(UUID userId) {
+        participantRepository.leaveAll(userId);
+    }
+
+    /** Deletes conversations; the caller (account removal) deleted their messages first. */
+    @Transactional
+    public void deleteConversations(java.util.Collection<UUID> conversationIds) {
+        conversationRepository.deleteByIds(conversationIds);
+    }
+
+    /**
+     * Sends in a DM (ADR-0012): 403 RECIPIENT_UNAVAILABLE if the other member was removed or either side blocked
+     * the other. The block is visible to the blocked user here (unlike DM creation, which answers 404).
+     * Groups are never affected.
+     */
+    public void requireRecipientAvailable(UUID conversationId, UUID senderId) {
+        Conversation conv = conversationRepository.findById(conversationId)
+                .orElseThrow(() -> new ApiException(ErrorCode.CONVERSATION_NOT_FOUND));
+        if (!"DIRECT".equals(conv.type()) || conv.directKey() == null) {
+            return;
+        }
+        for (String part : conv.directKey().split(":")) {
+            UUID peer = UUID.fromString(part);
+            if (!peer.equals(senderId) && userService.directPeerUnavailable(senderId, peer)) {
+                throw new ApiException(ErrorCode.RECIPIENT_UNAVAILABLE);
+            }
+        }
+    }
+
     public void requireParticipant(UUID conversationId, UUID userId) {
         if (!participantRepository.isParticipant(conversationId, userId)) {
             throw new ApiException(ErrorCode.CONVERSATION_NOT_FOUND);

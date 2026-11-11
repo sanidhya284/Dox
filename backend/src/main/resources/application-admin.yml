@@ -1,0 +1,17 @@
+# One-off admin mode (ADR-0012, runbook 9a): `--remove-account=<username>` with profiles `prod,admin`.
+# A short-lived process next to the live app: it serves nothing, schedules nothing, seeds nothing and never
+# migrates the schema (Flyway only validates it: AdminFlywayConfig). It exits on its own (RemoveAccountRunner).
+# It can't close sockets on the live instance (that is another process): see runbook 9a.
+spring:
+  main:
+    web-application-type: none
+    banner-mode: off
+  datasource:
+    hikari:
+      maximum-pool-size: 2
+      minimum-idle: 1
+guest:
+  seed-bot: false
+ws:
+  heartbeat:
+    enabled: false

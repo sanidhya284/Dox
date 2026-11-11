@@ -28,6 +28,12 @@ import java.util.UUID;
         "ratelimit.login-per-ip-and-user-per-minute=2",
         "ratelimit.ticket-per-user-per-minute=4",
         "ratelimit.failed-handshakes-per-ip-per-minute=3",
+        "ratelimit.search-per-user-per-minute=3",
+        "ratelimit.guest-per-ip-per-hour=2",
+        "ratelimit.send-per-user-per-minute=3",
+        "ratelimit.send-per-guest-per-minute=2",
+        "ratelimit.dm-per-user-per-hour=2",
+        "ratelimit.dm-per-guest-per-hour=1",
         "ws.max-sockets-per-user=2"
 })
 abstract class HardeningTestSupport extends AbstractIntegrationTest {

@@ -303,6 +303,31 @@ Section 5 is unchanged, and the labels below are the current ones.
 | 4 | 5 s timeout: many resends and duplicates; higher p50 | **Held** for resends (17,733) and duplicates (2,980). **Not comparable** for p50 (survivor bias, see above); p99 and max were much higher. |
 | 5 | C: all VALID to 20/s, no drops or 4003, recv p99 < 250 ms, p99 growing with rate; push threads may queue at 20/s | **Held:** 13 of 13 runs VALID after relabelling (12 plus 1 INVALID at run time), 0 drops, 0 `4003`, p99 ≤ 31.7 ms. **Wrong:** the p99 didn't grow with the rate (27.1 ms at 2/s, 21.7 ms at 20/s), and the push queue never held more than 1 task. |
 
+## 7a. Phase 6b re-run: A at 200/s and B at 300/s (2026-11-11) — confounded, to be repeated
+
+**Why:** Phase 6b added work to every send: a check that the sender's account isn't removed and a duplicate lookup (both before the transaction, each its own query), the send-limit check (in memory), and inside the transaction a DM recipient check (`requireRecipientAvailable`, one query, currently **after** the row lock is taken). The `bench` profile sets every per-user limit to 100000, so the limits themselves never refused anything.
+
+**How:** the same harness and method as section 6 (`run_ladder.py` functions; warm-up 30 s, window 60 s, drain 15 s, `ackTimeout` PT10M, pool 10, 3 passes), only these two points, labelled `-6b`. Code: commit `0dfcbde` plus the uncommitted fix (send limit outside the transaction, removed-caller checks). Other containers were stopped (only `chat-bench-pg` ran, as recorded in each file).
+
+| Point | Before (section 6) | After (Phase 6b) |
+|---|---|---|
+| A 200/s: outcomes | 3 VALID | 2 SATURATED, 1 VALID |
+| A 200/s: ack p50 / p99 (median [min–max]) | 3.8 / 16.5 [11.2–31.3] ms | 1062.9 / 11370.5 [165.0–12263.4] ms |
+| A 200/s: server stored/s, Hikari pending s, lock share | 199.7; 0/0/0; 13% | 196.1 [174.3–199.7]; 35/20/0; 90% |
+| B 300/s: outcomes | 3 VALID | 3 SATURATED (all only by "Hikari pending > 0") |
+| B 300/s: ack p50 / p99 | 4.9 / 31.2 [28.5–32.1] ms | 20.4 / 482.1 [102.1–517.4] ms |
+| B 300/s: server stored/s, Hikari pending s, lock share | 299.6; 0/0/0; 56% | 299.5; 10/11/4; 74% |
+
+Files: A [p1](benchmarks/20261111-115947-A-r200-A-pool10-6b-p1.json) [p2](benchmarks/20261111-120144-A-r200-A-pool10-6b-p2.json) [p3](benchmarks/20261111-120331-A-r200-A-pool10-6b-p3.json); B [p1](benchmarks/20261111-120531-B-r300-B-pool10-6b-p1.json) [p2](benchmarks/20261111-120720-B-r300-B-pool10-6b-p2.json) [p3](benchmarks/20261111-120909-B-r300-B-pool10-6b-p3.json).
+
+**Not a clean comparison. Two confounders, both visible in the result files:**
+1. **Power:** every Phase 6b run was on **battery** (51% and discharging at the start); every section-6 run was on **AC**. macOS can lower CPU performance on battery.
+2. **Warm-up:** in section 6 each 200/s or 300/s run came after the lower rates of the same pass (a warm JVM and a used database); here each block started with its first rate on a freshly started app. The one VALID A run is the third pass.
+
+**What it suggests (not shown):** a slower send path. The lock share rose (A 13% → 90%, B 56% → 74%) and Hikari pending appeared, which fits transactions holding the row lock longer (the recipient check runs under the lock) and more connections per send (two extra queries before the transaction). Neither has been isolated.
+
+**Next:** repeat on AC power with the section-6 warm-up (the lower rates first); if the regression stays, move the recipient check before the row lock and merge the two pre-transaction queries into one, and measure again.
+
 ## 8. Later scenarios (not in this phase)
 - connection ramp;
 - reconnect storm;

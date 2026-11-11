@@ -30,6 +30,13 @@ ratelimit:
   login-per-ip-and-user-per-minute: 100000
   ticket-per-user-per-minute: 100000
   failed-handshakes-per-ip-per-minute: 100000
+  search-per-user-per-minute: 100000
+  guest-per-ip-per-hour: 100000
+  signup-global-per-hour: 100000
+  send-per-user-per-minute: 100000
+  send-per-guest-per-minute: 100000
+  dm-per-user-per-hour: 100000
+  dm-per-guest-per-hour: 100000
 
 # Local http://localhost only: allow the refresh cookie without HTTPS (ADR-0010).
 auth:

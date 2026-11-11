@@ -1,7 +1,8 @@
 # Production profile (ADR-0011). Never combine with 'dev' or 'bench' (ProfileGuard refuses startup);
 # the production image doesn't contain those profile files at all.
-# Required environment: JWT_SECRET, WS_ALLOWED_ORIGINS, REGISTRATION_INVITE_CODE, SPRING_DATASOURCE_URL,
-# SPRING_DATASOURCE_USERNAME, SPRING_DATASOURCE_PASSWORD. Optional: METRICS_PASSWORD, DEMO_PASSWORD.
+# Required environment: JWT_SECRET, WS_ALLOWED_ORIGINS, SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME,
+# SPRING_DATASOURCE_PASSWORD. Optional: METRICS_PASSWORD, DEMO_PASSWORD, REGISTRATION_MODE=invite with
+# REGISTRATION_INVITE_CODE (registration is open by default since Phase 6b, ADR-0012).
 server:
   # Finish in-flight requests on SIGTERM (docker stop) before exiting; sockets close with 1001.
   shutdown: graceful

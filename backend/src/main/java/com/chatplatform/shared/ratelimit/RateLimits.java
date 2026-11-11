@@ -2,7 +2,6 @@ package com.chatplatform.shared.ratelimit;
 
 import com.chatplatform.shared.exception.RateLimitedException;
 import com.chatplatform.shared.ratelimit.FixedWindowRateLimiter.Decision;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -18,6 +17,7 @@ import java.util.UUID;
  * NAT share an IP, so the per-IP limits apply to all of them together.
  */
 @Component
+@org.springframework.boot.context.properties.EnableConfigurationProperties(RateLimitProperties.class)
 public class RateLimits {
 
     private final FixedWindowRateLimiter registerPerIp;
@@ -25,20 +25,63 @@ public class RateLimits {
     private final FixedWindowRateLimiter loginPerIpAndUser;
     private final FixedWindowRateLimiter ticketPerUser;
     private final FixedWindowRateLimiter failedHandshakesPerIp;
+    private final FixedWindowRateLimiter searchPerUser;
+    private final FixedWindowRateLimiter guestPerIp;
+    private final FixedWindowRateLimiter signupGlobal;
+    private final FixedWindowRateLimiter sendPerUser;
+    private final FixedWindowRateLimiter sendPerGuest;
+    private final FixedWindowRateLimiter dmPerUser;
+    private final FixedWindowRateLimiter dmPerGuest;
 
-    public RateLimits(
-            @Value("${ratelimit.register-per-ip-per-hour:5}") int registerPerIpPerHour,
-            @Value("${ratelimit.login-per-ip-per-minute:20}") int loginPerIpPerMinute,
-            @Value("${ratelimit.login-per-ip-and-user-per-minute:5}") int loginPerIpAndUserPerMinute,
-            @Value("${ratelimit.ticket-per-user-per-minute:30}") int ticketPerUserPerMinute,
-            @Value("${ratelimit.failed-handshakes-per-ip-per-minute:20}") int failedHandshakesPerIpPerMinute,
-            @Value("${ratelimit.max-keys:100000}") int maxKeys) {
+    public RateLimits(RateLimitProperties p) {
         Duration minute = Duration.ofMinutes(1);
-        this.registerPerIp = limiter(registerPerIpPerHour, Duration.ofHours(1), maxKeys);
-        this.loginPerIp = limiter(loginPerIpPerMinute, minute, maxKeys);
-        this.loginPerIpAndUser = limiter(loginPerIpAndUserPerMinute, minute, maxKeys);
-        this.ticketPerUser = limiter(ticketPerUserPerMinute, minute, maxKeys);
-        this.failedHandshakesPerIp = limiter(failedHandshakesPerIpPerMinute, minute, maxKeys);
+        int maxKeys = p.maxKeys();
+        this.registerPerIp = limiter(p.registerPerIpPerHour(), Duration.ofHours(1), maxKeys);
+        this.loginPerIp = limiter(p.loginPerIpPerMinute(), minute, maxKeys);
+        this.loginPerIpAndUser = limiter(p.loginPerIpAndUserPerMinute(), minute, maxKeys);
+        this.ticketPerUser = limiter(p.ticketPerUserPerMinute(), minute, maxKeys);
+        this.failedHandshakesPerIp = limiter(p.failedHandshakesPerIpPerMinute(), minute, maxKeys);
+        this.searchPerUser = limiter(p.searchPerUserPerMinute(), minute, maxKeys);
+        this.guestPerIp = limiter(p.guestPerIpPerHour(), Duration.ofHours(1), maxKeys);
+        this.signupGlobal = limiter(p.signupGlobalPerHour(), Duration.ofHours(1), 1);
+        this.sendPerUser = limiter(p.sendPerUserPerMinute(), minute, maxKeys);
+        this.sendPerGuest = limiter(p.sendPerGuestPerMinute(), minute, maxKeys);
+        this.dmPerUser = limiter(p.dmPerUserPerHour(), Duration.ofHours(1), maxKeys);
+        this.dmPerGuest = limiter(p.dmPerGuestPerHour(), Duration.ofHours(1), maxKeys);
+    }
+
+    /** Effectively no limits (unit tests that construct components by hand). */
+    public static RateLimits unlimited() {
+        return new RateLimits(RateLimitProperties.unlimited());
+    }
+
+    public void checkGuest(String ip) {
+        enforce(guestPerIp.tryAcquire(ip));
+    }
+
+    /**
+     * One counter for ALL sign-ups, whatever the IP (ADR-0012): bounds account creation from many IPs.
+     * Fails closed: past the cap, registration answers 429 until the hour's window ends.
+     */
+    public void checkGlobalSignup() {
+        enforce(signupGlobal.tryAcquire("all"));
+    }
+
+    /**
+     * One send budget per user for WebSocket and REST together (ADR-0012). The caller checks it only for a
+     * message that will be NEW: a resend of a committed clientMsgId is acked without using budget.
+     */
+    public void checkSend(UUID userId, boolean guest) {
+        enforce((guest ? sendPerGuest : sendPerUser).tryAcquire(userId.toString()));
+    }
+
+    /** New DMs per user per hour; the caller checks it only when a DM was actually created. */
+    public void checkNewDm(UUID userId, boolean guest) {
+        enforce((guest ? dmPerGuest : dmPerUser).tryAcquire(userId.toString()));
+    }
+
+    public void checkSearch(UUID userId) {
+        enforce(searchPerUser.tryAcquire(userId.toString()));
     }
 
     private static FixedWindowRateLimiter limiter(int limit, Duration window, int maxKeys) {

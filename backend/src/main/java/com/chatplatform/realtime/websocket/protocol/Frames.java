@@ -58,9 +58,12 @@ public final class Frames {
         }
     }
 
-    public record ErrorFrame(int v, String type, UUID clientMsgId, String code, String message) {
+    /** {@code retryAfterMs} only on RATE_LIMITED (ADR-0012): wait that long before resending; omitted otherwise. */
+    public record ErrorFrame(int v, String type, UUID clientMsgId, String code, String message,
+                             @com.fasterxml.jackson.annotation.JsonInclude(
+                                     com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Long retryAfterMs) {
         public static ErrorFrame of(UUID clientMsgId, String code, String message) {
-            return new ErrorFrame(VERSION, "error", clientMsgId, code, message);
+            return new ErrorFrame(VERSION, "error", clientMsgId, code, message, null);
         }
     }
 }

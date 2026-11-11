@@ -185,6 +185,7 @@ Runs before every request. Extracts `Authorization: Bearer <token>`, validates t
   - jittered `heads` anti-entropy;
   - the close-code table (including `4007`).
   - Socket, API, clock and randomness are injected; the tests use a fake server and fake timers.
+- **Views (Phase 6b):** `src/ui/` holds the screens (`AuthScreen`, `ChatApp`, `Sidebar`, `ConversationPane`, `MessageList`, `NewConversationDialog`, `GuestExpired`); the testable logic lives in `model.ts` (names, channel labels, nick colours, grouping and day separators, read receipts, the phone/desktop switch, the search debounce) and `conversations.ts` (the list store: a `404` drops a conversation for good, an unknown id reloads the list at most once). Design and its reasoning: ADR-0012 Decision 11.
 - **Rendering:** message bodies are React text only. ESLint forbids `dangerouslySetInnerHTML` and `innerHTML`, and a test renders an HTML payload and finds no element.
 - **Not covered:** the fault-injection convergence test (`ConvergenceTest`) runs against the Java reference client, not this one.
 
@@ -196,7 +197,7 @@ Runs before every request. Extracts `Authorization: Bearer <token>`, validates t
 - **Secrets** come from `deploy/.env` (git-ignored; templates `.env.example` and `.env.local.example`).
 - **Local build:** `compose.build.yml` builds both images from source.
 - **Phase 4:** an override adds `app2` and `redis` and widens `APP_UPSTREAMS`.
-- **Checks:** `deploy/smoke.sh` and the Playwright test in `frontend/e2e/`.
+- **Checks:** `deploy/smoke.sh` and the Playwright tests in `frontend/e2e/` (`smoke.spec.ts`; `phase6b.spec.ts`: sign-up, guest and bot reply, DM by search with live messages both ways, a group from the member picker, the phone layout). Playwright runs against the stack with `deploy/compose.e2e.yml`, which only raises the rate limits through environment variables; CI then recreates the app without it before `smoke.sh`, which checks a real limit. `RateLimitProductionValuesTest` pins the production values from `application.yml` + `application-prod.yml`.
 - **Pipeline (ADR-0011 Decisions 8 and 9):** `ci.yml` (backend, frontend, e2e) and `deploy.yml` (manual: gate → GHCR images → `production` approval → SSH with a pinned host key → `deploy/prod/deploy.sh`, a health and functional check with rollback). Daily `backup.sh` cron; `restore.sh` drill. Target: one EC2 `t3.small` in ap-southeast-2 behind `dox-chat.in`; `www.dox-chat.in` and `dox.work.gd` 308-redirect (`REDIRECT_HOSTS`).
 
 ## Configuration
@@ -221,7 +222,10 @@ All environment-specific configuration comes from environment variables.
 | `WS_HEARTBEAT_TIMEOUT` | `PT60S` (`ws.heartbeat.timeout`) | A socket with no pong or frame for this long is closed with `4006`. Startup requires it to be at least twice the interval. |
 | `WS_SESSION_MAX_LIFETIME` | `PT15M` (`ws.session.max-lifetime`) | How long a WebSocket may stay open after its handshake; then the server closes it with `4001`. ISO-8601 duration. Startup refuses zero or negative values. |
 | `auth.refresh-cookie.secure` | `true` (`false` in `dev` only) | The `Secure` attribute of the `chat_rt` refresh cookie (ADR-0010). |
-| `REGISTRATION_INVITE_CODE` | none (`registration.invite-code`) | With `registration.mode=invite` (the default), `POST /api/auth/register` needs this code; unset means registration is closed (`403`). `dev`, the test profiles and `bench` set `registration.mode=open` (ADR-0011). |
+| `REGISTRATION_MODE` | `open` (`registration.mode`) | `open`: anyone may register, behind the per-IP limit and `ratelimit.signup-global-per-hour` (200). `invite`: see the next row (ADR-0011, amended by ADR-0012). |
+| `REGISTRATION_INVITE_CODE` | none (`registration.invite-code`) | With `registration.mode=invite`, `POST /api/auth/register` needs this code; unset means registration is closed (`403`). |
+| (none) | `ratelimit.send-per-user-per-minute` 60 (guests 20), `ratelimit.dm-per-user-per-hour` 20 (guests 3) | One send budget for WebSocket and REST, new messages only; new DMs only (ADR-0012). |
+| (none) | `guest.max-live` 1000, `guest.ttl` PT24H, `guest.cleanup-interval` PT15M | Guest cap, lifetime and cleanup period (ADR-0012). |
 | `DEMO_PASSWORD` | none (`demo.password`) | When set (at least 8 characters), seeds `demo1`..`demo3` and a "Demo room" at startup; a changed value resets their password hashes. Public data only. |
 | `WS_MAX_SOCKETS_PER_USER` | `10` (`ws.max-sockets-per-user`) | Open sockets per user; the next one is closed with `4007` (ADR-0006 Decision 2a). |
 | `ratelimit.*` | register 5/h per IP; login 20/min per IP and 5/min per (IP, username); ticket 30/min per user; failed handshakes 20/min per IP; `max-keys` 100000 | In-memory fixed-window limits, per instance (ADR-0011). |
@@ -235,17 +239,22 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/api/auth/register` | no | Register (`inviteCode` required in invite mode; checked before conflicts); returns `{user, accessToken}` and sets the `chat_rt` refresh cookie. Rate-limited per IP. |
+| POST | `/api/auth/register` | no | Register (open by default; `inviteCode` required in invite mode, checked before conflicts); returns `{user, accessToken}` and sets the `chat_rt` refresh cookie. Rate-limited per IP and by a global hourly cap; `guest-*`, `deleted-*` and `dox-bot` are reserved (`400`). |
+| POST | `/api/auth/guest` | allowed `Origin` | "Try the demo": creates a 24-hour guest with a welcome DM and a private group with the bot; returns `{user, accessToken}` (`user.isGuest = true`) and sets the cookie. 3/h per IP; `429 DEMO_BUSY` at 1000 live guests (ADR-0012). |
 | POST | `/api/auth/login` | no | Login; returns `{accessToken}` and sets the `chat_rt` cookie. Rate-limited per IP and per (IP, username), before BCrypt. |
 | POST | `/api/auth/refresh` | `chat_rt` cookie + allowed `Origin` | Rotate the refresh token; returns `{accessToken}` and a new cookie. A failed refresh clears the cookie (ADR-0010). |
 | POST | `/api/auth/logout` | `chat_rt` cookie + allowed `Origin` | Revoke the refresh token and clear the cookie (`204`). |
 | POST | `/api/conversations/direct` | yes | Create or get direct conversation |
-| POST | `/api/conversations/group` | yes | Create group conversation |
+| POST | `/api/conversations/group` | yes | Create group conversation (`403 GUEST_NOT_ALLOWED` for guests) |
 | GET | `/api/conversations` | yes | List user's conversations |
 | GET | `/api/conversations/{id}` | yes | Get one conversation |
 | POST | `/api/conversations/{id}/messages` | yes | Send message (idempotent) |
 | GET | `/api/conversations/{id}/messages` | yes | Paginate messages (keyset): `?before=` newest first, or `?after=` oldest first for catching up (not both); exact `hasMore` |
 | GET | `/api/conversations/heads` | yes | `[{conversationId, lastSeq}]` for my active conversations (anti-entropy check, Phase 3) |
+| POST / DELETE | `/api/users/{id}/block` | yes | Block / unblock (idempotent, `204`; yourself `400`; unknown or removed `404`). A block in either direction makes DM creation `404` and sends in an existing DM `403 RECIPIENT_UNAVAILABLE`; groups unaffected (ADR-0012) |
+| GET | `/api/users/blocked` | yes | Users I blocked: `[{id, username, displayName, isGuest}]` |
+| GET | `/api/users/me` | yes | My own profile `{id, username, email, displayName, createdAt, isGuest}` (login and refresh return only a token); a removed account gets `401` (ADR-0012) |
+| GET | `/api/users/search?q=` | yes | Username prefix search (2–50 chars, ≤ 20 results, 30/min per user): `[{id, username, displayName, isGuest}]`, never email; excludes me, deleted accounts, bots and users who blocked me (ADR-0012) |
 | POST | `/api/ws/ticket` | yes | Issue a one-time WebSocket ticket: `{ticket, expiresInSeconds}`. Rate-limited per user. |
 | GET (upgrade) | `/ws?ticket=...` | ticket + allowed `Origin` | Open a WebSocket (see Realtime above) |
 | POST | `/api/conversations/{id}/cursor` | yes | Move my delivered/read cursor forward: `{kind, seq}` → `{lastDeliveredSeq, lastReadSeq}` (ADR-0007) |
@@ -280,7 +289,15 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 - **Application metrics:** each `chat.*` meter moves on its event (REST created/duplicate/rejected counted separately, WS sends counted as `ws` and timed, the sessions gauge follows connects and closes, closes by code, tickets, cursors, heads); a full push queue increments `chat.push.dropped` by exactly the listener's own count; no `chat.*` meter carries a tag outside a fixed set (`ChatMetricsTest`, `WsPushQueueTest`; mutations: a duplicate counted as created, a per-sender tag, a gauge counting users instead of sockets).
 - **Actuator:** only `/actuator/health` is public, and it shows no component details.
 - **Refresh cookie (ADR-0010):** register and login set `chat_rt` with HttpOnly, Secure, SameSite=Strict, `Path=/api/auth` and a 7-day Max-Age, and no body contains the refresh token; refresh rotates the cookie; refresh or logout with a missing or foreign `Origin` gets `403` and changes nothing; logout clears the cookie (`RefreshCookieTest`).
+- **Conversation read model (ADR-0012):** `participants` lists every member who ever joined (with `left` and `isDeleted`) and no emails; `lastMessage` is the message at `last_seq` (or null), its preview cut at 120 code points without splitting a surrogate pair (`ConversationReadModelTest`).
+- **User search (ADR-0012):** case-insensitive prefix match; no email; 2-char minimum; ≤ 20 results; `%`, `_` matched literally; excludes me, deleted accounts, bots and users who blocked me; the exact query can use `idx_users_username_prefix` (EXPLAIN in `UserSearchTest`).
 - **Rate limits (ADR-0011):** the limit-plus-one register, login, ticket or failed-handshake attempt gets `429` with `Retry-After`; another IP, pair or user is unaffected; a limited login never reaches BCrypt; a blocked handshake doesn't consume the ticket; the limiter's memory stays bounded (`FixedWindowRateLimiterTest`, `RateLimitTest`).
+- **Sign-up and guests (ADR-0012):** the global sign-up cap refuses the next sign-up from a new IP and counts `chat.signups{outcome}`; reserved usernames get `400`; a guest gets the cookie, a welcome DM and a private group with only the bot; 25 guests in a row each get their DM and demo1's list is unchanged; guests can't log in by password or create groups; guest creation needs an allowed `Origin`, is limited per IP, and beyond `guest.max-live` gets `DEMO_BUSY` (`GuestAccountTest`, `SignupCapTest`, `RateLimitTest`).
+- **Account removal (ADR-0012):** an expired guest's conversations with no other active human (only the bot) are deleted with their messages; where a real user or a still-live guest takes part, the guest leaves, is shown as deleted, and history keeps seq 1..n; the row is anonymized; the refresh token stops working; sockets close with `4008`; a row locked by another transaction is skipped, not waited on; an abusive account is removed by the same step (`GuestCleanupTest`; mutation: the first rule, which deleted a DM with a live guest). Admin mode's exit codes and its refusal without the admin profile (`RemoveAccountRunnerTest`).
+- **Login equivalence (ADR-0012):** an unknown name, a guest, the bot and a removed account each cost exactly one BCrypt comparison against the same dummy hash and get the same 401 (`LoginEquivalenceTest`).
+- **Removed callers (ADR-0012 Decision 9):** with a still-valid access token, a removed account gets `401 TOKEN_INVALID` for a ticket, a new DM, a new group and a send (`RemovedCallerTest`; a mutation per check).
+- **Send limit, DM cap and blocks (ADR-0012):** the limiter runs before and outside the send transaction (`SendLimitOutsideTransactionTest`); WebSocket and REST share one per-user send budget; the refusal carries `retryAfterMs` / `Retry-After`; a resend of a committed message is acked beyond the limit; guests have a lower limit; only newly created DMs count towards the cap (the welcome DM doesn't); a block in either direction makes DM creation `404` and DM sends `403 RECIPIENT_UNAVAILABLE` until unblocked; groups are unaffected; sending to a removed DM peer is `403` (`SendLimitAndBlockTest`, `GuestCleanupTest`).
+- **Welcome bot (ADR-0012):** reads and replies after commit, at most once per 10 s per conversation (`BotReplyTest`).
 - **Registration policy:** without the right invite code, registration gets `403` and stores nothing, and a taken username or email isn't revealed (`RegistrationPolicyTest`, `RegistrationPolicyUnitTest`).
 - **Socket cap:** the socket over `ws.max-sockets-per-user` is closed with `4007`, the others stay open, and the cap is per user (`SocketCapTest`).
 - **Demo seed and profiles:** seeding is idempotent and a changed demo password replaces the old one (`DemoSeedTest`); `prod` with `dev` or `bench` refuses startup (`ProfileGuardTest`).
@@ -317,13 +334,15 @@ A socket authenticates once, at the handshake, so it could otherwise outlive the
 
 ## Known Limitations
 
-- **Rate limits are in memory and per instance** (ADR-0011): two instances double them (Phase 4 moves them to Redis), a fixed window can admit up to 2× the limit across a boundary, users behind one NAT share the per-IP limits, and anyone sharing a victim's IP can use up that victim's login attempts. `GET`s and message sends aren't rate-limited.
+- **Rate limits are in memory and per instance** (ADR-0011): two instances double them (Phase 4 moves them to Redis), a fixed window can admit up to 2× the limit across a boundary, users behind one NAT share the per-IP limits, and anyone sharing a victim's IP can use up that victim's login attempts. `GET`s other than search aren't rate-limited.
 - **A lost refresh response logs the user out:** if the server rotated the token but the response (with its `Set-Cookie`) never reached the browser, the next refresh replays the old token, which revokes the family and closes the user's sockets with `4002` (ADR-0010). Two tabs refreshing at once would do the same; the UI serializes refresh across tabs.
 - **Deploys disconnect everyone:** one app instance restarts on every deploy, so sockets close (`1001`) and clients reconnect and catch up. There's no zero-downtime deploy before Phase 4.
 - **Backups live on the same server** until they're copied off by hand; restoring the live database is a manual procedure (runbook 6.2).
 - **VPS sizing is derived from memory limits** (2 GB recommended for Phase 6, 4 GB for Phase 4), not measured.
-- **The browser UI:** unsent messages live in memory, so a reload loses the outbox (sends that were already acked are safe). It doesn't create conversations, and it shows senders as "You" or a short id (there's no user lookup endpoint). Its sync code is unit-tested, but the convergence-under-faults test covers only the Java reference client.
+- **The browser UI:** unsent messages live in memory, so a reload loses the outbox (sends that were already acked are safe). Its sync code is unit-tested, but the convergence-under-faults test covers only the Java reference client.
 - **The demo is public data**, and a changed `DEMO_PASSWORD` doesn't revoke existing demo sessions.
+- **Open sign-up has no email verification or CAPTCHA** (ADR-0012): distributed sign-up spam is bounded only by the global hourly cap, which then blocks real sign-ups too (fails closed). The live-guest cap is checked, not locked, so concurrent requests can overshoot it slightly.
+- **Removed accounts:** access tokens issued before removal stay valid until they expire (≤ 15 min), but get `401` for tickets, new conversations and sends. An operator removal (runbook 9a) runs in a separate process and can't close the user's sockets on the live app: sockets already open stay until their lifetime ends (≤ 15 min) and carry nothing (ADR-0012 Decision 9).
 
 - **Metrics use HTTP Basic:** the password travels with every scrape, so production needs TLS in front (Phase 9).
 - **Measurements are single-laptop:** the load harness runs on the same machine as the app, and Postgres runs in Docker Desktop's VM. Results describe that setup only ([BENCHMARKS.md](BENCHMARKS.md)). The `bench` profile also exposes `/actuator/env` (values shown to the metrics user only); never use that profile outside local measurement.
@@ -331,7 +350,7 @@ A socket authenticates once, at the handshake, so it could otherwise outlive the
 - **Reliable delivery is a client responsibility (ADR-0008):** the reference client lives in test sources (not a published SDK); convergence is shown on one instance with a bounded workload; seeds reproduce faults, not thread schedules; anti-entropy polling cost (`heads` every ~30 s per client) is still unmeasured; there is no server-sent resync hint; a client offline longer than the refresh-token lifetime must log in again.
 - **WebSocket pushes are best effort:** they may arrive out of `seq` order (after-commit handoffs can interleave), are dropped when the push queue is full, and a slow socket is closed with `4003`. Clients order by `seq` and recover from history; gap detection and resync are Phase 3.
 - **A dropped push is only repaired by history sync:** a duplicate send returns the same ack but is deliberately not pushed again, so if the original push was dropped (full push queue, `4003` slow consumer, closed socket) the other participants only see the message by paging history. Automatic gap detection and resync by `seq` are Phase 3.
-- **No per-socket send rate limit:** per-socket (and per-user) send rate limiting is not implemented; a client can send frames as fast as the server processes them.
+- **Send limits are per user, not per socket** (ADR-0012): one budget for WebSocket and REST (60/min, 20 for guests). Frames that fail before the send (invalid JSON, cursor frames) aren't counted, so a client can still send those as fast as the server parses them.
 - **`@TransactionalEventListener` needs a transaction:** events published with no active transaction are silently ignored (no push, no theft close). `MessageService.sendMessage` and the refresh path are transactional; any new publisher must be too.
 - **Logout does not close WebSockets (by design for now):** a socket authenticates only at the handshake. The access token has no session id, so the server cannot tell which of a user's sockets belong to the device that logged out. Closing all of them would log out the user's other devices. An open socket therefore survives logout until the about-15-minute socket lifetime ends (see WebSocket socket lifetime below). Tying sockets to a session id would remove this.
 - Strict theft detection: a client that submits the same refresh token twice (for example a double-click) is logged out. A short grace window could relax this later.

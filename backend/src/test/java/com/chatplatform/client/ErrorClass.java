@@ -12,7 +12,8 @@ public enum ErrorClass {
     RETRYABLE, TERMINAL;
 
     private static final Set<String> TERMINAL_CODES =
-            Set.of("VALIDATION_ERROR", "CONVERSATION_NOT_FOUND", "IDEMPOTENCY_KEY_CONFLICT");
+            Set.of("VALIDATION_ERROR", "CONVERSATION_NOT_FOUND", "IDEMPOTENCY_KEY_CONFLICT",
+                    "RECIPIENT_UNAVAILABLE"); // ADR-0012: blocked, or the DM peer was removed
 
     public static ErrorClass of(String code) {
         return TERMINAL_CODES.contains(code) ? TERMINAL : RETRYABLE;

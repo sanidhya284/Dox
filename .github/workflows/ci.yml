@@ -165,11 +165,13 @@ jobs:
           tags: chat-web:local
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
-      - name: Start the stack (local-only values)
+      # e2e signs up, logs in and sends many times from one IP: compose.e2e.yml raises the rate limits (env vars,
+      # never a profile in the image). The app is recreated WITHOUT it before smoke.sh, which checks a real limit.
+      - name: Start the stack (local-only values, e2e limits)
         working-directory: deploy
         run: |
           cp .env.local.example .env
-          docker compose -f compose.yml up -d --wait --wait-timeout 180
+          docker compose -f compose.yml -f compose.e2e.yml up -d --wait --wait-timeout 180
       - uses: actions/setup-node@v4
         with:
           node-version: '22.11.0'
@@ -206,6 +208,9 @@ jobs:
                   for t in sp['tests']:
                       print(f"- {sp['title']}: {t['status']}, attempts {len(t['results'])}")
           EOF
+      - name: Recreate the app with production limits (no e2e override)
+        working-directory: deploy
+        run: docker compose -f compose.yml up -d --wait --wait-timeout 180 app
       - name: Smoke checks
         run: deploy/smoke.sh https://localhost chat-app:local
       - name: Stack logs on failure

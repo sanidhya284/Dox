@@ -87,10 +87,10 @@ ws:
 server:
   forward-headers-strategy: native
 
-# Who may register. 'invite' (default): the request needs REGISTRATION_INVITE_CODE; with no code
-# configured, registration is closed (403). 'open' only in dev, tests and bench.
+# Who may register (ADR-0011, amended by ADR-0012). 'open' (default since Phase 6b): anyone, behind the per-IP
+# and global sign-up limits. 'invite': the request needs REGISTRATION_INVITE_CODE; with no code, closed (403).
 registration:
-  mode: invite
+  mode: ${REGISTRATION_MODE:open}
   invite-code: ${REGISTRATION_INVITE_CODE:}
 
 # In-memory, per instance (Phase 4 moves them to Redis). Heuristics; NAT users share the per-IP limits.
@@ -100,7 +100,23 @@ ratelimit:
   login-per-ip-and-user-per-minute: 5
   ticket-per-user-per-minute: 30
   failed-handshakes-per-ip-per-minute: 20
+  search-per-user-per-minute: 30
+  guest-per-ip-per-hour: 3
+  signup-global-per-hour: 200
+  # One send budget per user for WebSocket and REST; only new messages count (ADR-0012).
+  send-per-user-per-minute: 60
+  send-per-guest-per-minute: 20
+  # Only DMs that are actually created count.
+  dm-per-user-per-hour: 20
+  dm-per-guest-per-hour: 3
   max-keys: 100000
+
+# "Try the demo" guests (ADR-0012): at most max-live at once (DEMO_BUSY beyond); removed after ttl by a job
+# that runs every cleanup-interval.
+guest:
+  max-live: 1000
+  ttl: PT24H
+  cleanup-interval: PT15M
 
 # Demo accounts demo1..demo3 + "Demo room", seeded at startup when DEMO_PASSWORD is set. Public data only.
 demo:

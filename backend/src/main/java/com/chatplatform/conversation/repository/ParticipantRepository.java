@@ -48,6 +48,42 @@ public class ParticipantRepository {
         }
     }
 
+    /** One membership row: who ever joined, and whether they have left. */
+    /** Every conversation the user ever joined (left or not). */
+    public List<UUID> conversationIdsOf(UUID userId) {
+        return jdbcClient.sql("SELECT conversation_id FROM conversation_participants WHERE user_id = :userId")
+                .param("userId", userId).query(UUID.class).list();
+    }
+
+    /** Leaves every conversation the user is still in (account removal, ADR-0012). */
+    public void leaveAll(UUID userId) {
+        jdbcClient.sql("""
+                        UPDATE conversation_participants SET left_at = now()
+                        WHERE user_id = :userId AND left_at IS NULL
+                        """)
+                .param("userId", userId).update();
+    }
+
+    public record Membership(UUID conversationId, UUID userId, boolean left) {
+    }
+
+    /** Every member who ever joined the given conversations (including those who left), in one query. */
+    public List<Membership> findAllMembers(java.util.Collection<UUID> conversationIds) {
+        if (conversationIds.isEmpty()) {
+            return List.of();
+        }
+        return jdbcClient.sql("""
+                        SELECT conversation_id, user_id, left_at IS NOT NULL AS has_left
+                        FROM conversation_participants
+                        WHERE conversation_id IN (:ids)
+                        ORDER BY joined_at, user_id
+                        """)
+                .param("ids", conversationIds)
+                .query((rs, n) -> new Membership(rs.getObject("conversation_id", UUID.class),
+                        rs.getObject("user_id", UUID.class), rs.getBoolean("has_left")))
+                .list();
+    }
+
     public List<UUID> findParticipantIdsByConversation(UUID conversationId) {
         return jdbcClient.sql("""
                 SELECT user_id FROM conversation_participants

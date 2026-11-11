@@ -9,6 +9,8 @@ export interface OutboxEntry {
   readonly attempts: number;
   /** ms timestamp of the last send; -Infinity means due now. */
   readonly lastSentAt: number;
+  /** Not sent again before this ms timestamp (a RATE_LIMITED refusal's retryAfterMs; ADR-0012). */
+  readonly notBefore?: number;
 }
 
 export class Outbox {
@@ -44,15 +46,25 @@ export class Outbox {
     }
   }
 
+  /** Due again at `at`, not before (the server said when: RATE_LIMITED's retryAfterMs). Same clientMsgId. */
+  deferUntil(clientMsgId: string, at: number): void {
+    const e = this.entries.get(clientMsgId);
+    if (e) {
+      this.entries.set(clientMsgId, { ...e, lastSentAt: -Infinity, notBefore: at });
+    }
+  }
+
+  /** A new socket: everything unacked is due now, except what the server asked us to hold back. */
   markAllDue(): void {
     for (const id of [...this.entries.keys()]) {
       this.markDue(id);
     }
   }
 
-  /** Never sent, or sent longer than ackTimeoutMs ago without an ack. */
+  /** Never sent, or sent longer than ackTimeoutMs ago without an ack; and not held back (notBefore). */
   dueForRetry(now: number, ackTimeoutMs: number): OutboxEntry[] {
-    return [...this.entries.values()].filter((e) => now - e.lastSentAt > ackTimeoutMs);
+    return [...this.entries.values()]
+      .filter((e) => now - e.lastSentAt > ackTimeoutMs && now >= (e.notBefore ?? -Infinity));
   }
 
   /** Removes and returns the entry (ack or terminal error). */

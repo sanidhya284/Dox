@@ -28,11 +28,17 @@ public class AuthService {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.tokenService = tokenService;
+        // A real BCrypt hash (same cost) of a random value nobody knows: compared against when there is no
+        // login candidate, so refusing an unknown name costs the same as refusing a wrong password.
+        this.dummyHash = passwordEncoder.encode(java.util.UUID.randomUUID().toString());
     }
+
+    private final String dummyHash;
 
     @Transactional
     public Registration register(RegisterRequest request) {
         // First: without the invite code, nobody learns whether a username or email exists (ADR-0011).
+        rejectReserved(request.username());
         registrationPolicy.check(request.inviteCode());
         if (userRepository.existsByUsername(request.username())) {
             throw new ApiException(ErrorCode.USERNAME_TAKEN);
@@ -43,15 +49,7 @@ public class AuthService {
 
         String passwordHash = passwordEncoder.encode(request.password());
 
-        User user = new User(
-                null,
-                request.username(),
-                request.email(),
-                passwordHash,
-                request.displayName(),
-                null,
-                null
-        );
+        User user = User.newAccount(request.username(), request.email(), passwordHash, request.displayName());
 
         User savedUser;
         try {
@@ -67,14 +65,26 @@ public class AuthService {
 
     @Transactional
     public TokenPair login(LoginRequest request) {
-        User user = userRepository.findByUsername(request.username())
-                .orElseThrow(() -> new ApiException(ErrorCode.INVALID_CREDENTIALS));
-
-        if (!passwordEncoder.matches(request.password(), user.passwordHash())) {
+        // Guests, the bot and removed accounts are not candidates: to login they are unknown usernames (ADR-0012).
+        // Every refusal runs exactly one BCrypt comparison, so timing doesn't reveal which case it was.
+        java.util.Optional<User> user = userRepository.findLoginCandidate(request.username());
+        boolean ok = passwordEncoder.matches(request.password(), user.map(User::passwordHash).orElse(dummyHash));
+        if (user.isEmpty() || !ok) {
             throw new ApiException(ErrorCode.INVALID_CREDENTIALS);
         }
+        return tokenService.generateTokenPair(user.get().id());
+    }
 
-        return tokenService.generateTokenPair(user.id());
+
+    /** Prefixes and names the system uses for its own accounts (ADR-0012); checked case-insensitively. */
+    static final java.util.List<String> RESERVED_PREFIXES = java.util.List.of("guest-", "deleted-");
+    public static final String BOT_USERNAME = "dox-bot";
+
+    private static void rejectReserved(String username) {
+        String u = username == null ? "" : username.toLowerCase(java.util.Locale.ROOT);
+        if (u.equals(BOT_USERNAME) || RESERVED_PREFIXES.stream().anyMatch(u::startsWith)) {
+            throw new ApiException(ErrorCode.VALIDATION_ERROR, "This username is reserved");
+        }
     }
     
     @Transactional(noRollbackFor = ApiException.class)

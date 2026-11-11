@@ -30,12 +30,21 @@ public class MessageService {
     private final ConversationService conversationService;
     private final ApplicationEventPublisher events;
     private final ChatMetrics metrics;
+    private final com.chatplatform.shared.ratelimit.RateLimits rateLimits;
+    private final com.chatplatform.user.service.UserService userService;
+    private final org.springframework.transaction.support.TransactionTemplate tx;
 
     public MessageService(MessageRepository messageRepository,
                           ConversationRepository conversationRepository,
                           ConversationService conversationService,
                           ApplicationEventPublisher events,
-                          ChatMetrics metrics) {
+                          ChatMetrics metrics,
+                          com.chatplatform.shared.ratelimit.RateLimits rateLimits,
+                          com.chatplatform.user.service.UserService userService,
+                          org.springframework.transaction.PlatformTransactionManager transactionManager) {
+        this.tx = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        this.rateLimits = rateLimits;
+        this.userService = userService;
         this.messageRepository = messageRepository;
         this.conversationRepository = conversationRepository;
         this.conversationService = conversationService;
@@ -43,7 +52,6 @@ public class MessageService {
         this.metrics = metrics;
     }
 
-    @Transactional
     public MessageResponse sendMessage(UUID conversationId, UUID senderId, SendMessageRequest request) {
         return sendMessage(conversationId, senderId, request, null);
     }
@@ -55,27 +63,53 @@ public class MessageService {
      *
      * <p>Metrics (ADR-0009): {@code chat.messages.sent}, channel ws when there is an origin session,
      * else rest. Created and duplicate are counted after commit; rejected when this method refuses.
+     *
+     * <p>Order (ADR-0012 Decision 10, amended): outside any transaction, (a) the body length, (b) the caller is
+     * not a removed account (401), (c) a stored message with this sender and clientMsgId in this conversation
+     * with this body is acked at once and uses no budget, (d) the per-user send limit. Only then (e) the send
+     * transaction, which repeats the idempotency check under the conversation row lock for correctness. The
+     * limiter never runs while that lock is held (Phase 4 makes it a network call to Redis).
      */
-    @Transactional
     public MessageResponse sendMessage(UUID conversationId, UUID senderId, SendMessageRequest request,
                                        String originSessionId) {
         Channel channel = (originSessionId == null) ? Channel.REST : Channel.WS;
         try {
-            return send(conversationId, senderId, request, originSessionId, channel);
+            checkBodyLength(request);
+            boolean guest = userService.requireActive(senderId).guest();
+            Optional<Message> stored = messageRepository.findByClientMsgId(senderId, request.clientMsgId());
+            if (stored.isPresent() && stored.get().conversationId().equals(conversationId)
+                    && stored.get().body().equals(request.body())) {
+                metrics.messageSent(channel, SendOutcome.DUPLICATE);
+                return toResponse(stored.get());
+            }
+            rateLimits.checkSend(senderId, guest);
+            return tx.execute(status -> send(conversationId, senderId, request, originSessionId, channel));
         } catch (ApiException e) {
             metrics.messageSent(channel, SendOutcome.REJECTED);
             throw e;
         }
     }
 
+    /**
+     * A message the server sends itself (the welcome bot; ADR-0012). The same transaction, lock and seq code as
+     * a user's send; it skips only the per-user limits (step 3). Counted under channel "system".
+     */
+    @Transactional
+    public MessageResponse sendAsSystem(UUID conversationId, UUID senderId, String body) {
+        return send(conversationId, senderId, new SendMessageRequest(UUID.randomUUID(), body), null, Channel.SYSTEM);
+    }
+
+    /** Account removal (ADR-0012): deletes every message of conversations that are about to be deleted. */
+    @Transactional
+    public void deleteAllInConversations(java.util.Collection<UUID> conversationIds) {
+        messageRepository.deleteInConversations(conversationIds);
+    }
+
     private MessageResponse send(UUID conversationId, UUID senderId, SendMessageRequest request,
                                  String originSessionId, Channel channel) {
         // 0. Body length: enforced here too, so callers without REST validation (WebSocket, 2c) share it.
         //    Pure input validation, checked before membership, so it reveals nothing about the conversation.
-        if (request.body() != null && request.body().length() > MessageLimits.MAX_BODY_CHARS) {
-            throw new ApiException(ErrorCode.VALIDATION_ERROR,
-                    "Message body must be at most " + MessageLimits.MAX_BODY_CHARS + " characters");
-        }
+        checkBodyLength(request);
 
         // 1. requireParticipant (unchanged)
         conversationService.requireParticipant(conversationId, senderId);
@@ -95,6 +129,10 @@ public class MessageService {
             }
         }
 
+        // 3b. Only a NEW message gets here: the DM recipient must be available (ADR-0012). The send limit was
+        //     checked before this transaction (sendMessage), never under the row lock.
+        conversationService.requireRecipientAvailable(conversationId, senderId);
+
         // 4. incrementAndGetLastSeq, then insert
         long seq = conversationRepository.incrementAndGetLastSeq(conversationId);
 
@@ -111,6 +149,13 @@ public class MessageService {
             return created;
         } else {
             throw new ApiException(ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
+        }
+    }
+
+    private static void checkBodyLength(SendMessageRequest request) {
+        if (request.body() != null && request.body().length() > MessageLimits.MAX_BODY_CHARS) {
+            throw new ApiException(ErrorCode.VALIDATION_ERROR,
+                    "Message body must be at most " + MessageLimits.MAX_BODY_CHARS + " characters");
         }
     }
 

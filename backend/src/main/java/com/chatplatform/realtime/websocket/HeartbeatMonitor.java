@@ -69,9 +69,19 @@ public class HeartbeatMonitor {
         this.clock = clock;
     }
 
+    private boolean enabled = true;
+
+    /** Off only in admin mode (runbook 9a), which serves no sockets. */
+    @org.springframework.beans.factory.annotation.Value("${ws.heartbeat.enabled:true}")
+    void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+    }
+
     @PostConstruct
     void start() {
-        scheduler.scheduleAtFixedRate(this::sweepSafely, interval);
+        if (enabled) {
+            scheduler.scheduleAtFixedRate(this::sweepSafely, interval);
+        }
     }
 
     public void track(UUID userId, String sessionId) {

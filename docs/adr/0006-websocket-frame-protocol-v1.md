@@ -38,6 +38,8 @@ Every frame is a JSON text frame `{"v":1,"type":"...", ...}`. Version 1 has:
 - **Codes reuse REST's:** `VALIDATION_ERROR`, `CONVERSATION_NOT_FOUND`, `IDEMPOTENCY_KEY_CONFLICT`, and `INTERNAL_ERROR` ("An unexpected error occurred", the same text as REST's 500). The message is the code's fixed default, except for `VALIDATION_ERROR`, whose detail only describes the client's own input.
 - **"Doesn't exist" and "not a member"** give identical frames apart from `clientMsgId`, the same 404 rule as REST (`FrameCodecTest`, with a mutation check).
 
+- **Amended 2026-11-11 (Phase 6b, [ADR-0012](0012-open-signup-and-guest-accounts.md) Decision 10):** an `error` frame with code `RATE_LIMITED` also carries `retryAfterMs` (milliseconds to wait before resending). The field is absent on every other error, so v1 clients that ignore unknown fields are unaffected.
+
 ## Decision 2a: a per-user socket cap, close code `4007` (amended 2026-11-06, Phase 6)
 - **What it does:** a user may have at most `ws.max-sockets-per-user` open sockets (env `WS_MAX_SOCKETS_PER_USER`). The default is **10**, which is generous for a few devices and tabs each, and bounds the per-user cost of every push fan-out.
 - **When it applies:** the check runs when the socket is registered, after the handshake, as one atomic `compute` on the user's registry entry, so concurrent connects of one user can't both slip past it.

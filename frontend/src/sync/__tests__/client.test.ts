@@ -183,7 +183,7 @@ describe('outbox: stable clientMsgId', () => {
 describe('close codes (ADR-0008 table)', () => {
   it.each([
     [4001, 'running', true], [4003, 'running', true], [4006, 'running', true], [1001, 'running', true],
-    [4002, 'logged_out', false], [4007, 'too_many_sockets', false],
+    [4002, 'logged_out', false], [4007, 'too_many_sockets', false], [4008, 'guest_expired', false],
     [4005, 'client_bug', false], [1007, 'client_bug', false], [1008, 'server_bug', false],
   ])('close %i → state %s, reconnect: %s', async (code, state, reconnects) => {
     makeClient();

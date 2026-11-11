@@ -22,10 +22,11 @@ import java.util.List;
  * Everything in the demo is public data: anyone with the password can read it.
  */
 @Component
+@org.springframework.context.annotation.Profile("!admin") // admin mode seeds nothing (runbook 9a)
 public class DemoSeeder implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(DemoSeeder.class);
-    static final List<String> USERS = List.of("demo1", "demo2", "demo3");
+    public static final List<String> USERS = List.of("demo1", "demo2", "demo3");
     static final String ROOM = "Demo room";
 
     private final UserService userService;
