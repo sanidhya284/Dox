@@ -328,6 +328,28 @@ Files: A [p1](benchmarks/20261111-115947-A-r200-A-pool10-6b-p1.json) [p2](benchm
 
 **Next:** repeat on AC power with the section-6 warm-up (the lower rates first); if the regression stays, move the recipient check before the row lock and merge the two pre-transaction queries into one, and measure again.
 
+## 7b. Phase 6b re-run 2: AC power, with the section-6 warm-up (2026-11-11)
+
+**How:** the same ladders as section 6 up to the compared points, on AC power (battery full, not charging), each pass climbing the rates on one running app: A at 25, 50, 100, 150, 200/s and B at 25 … 300/s, pool 10, 3 passes, `ackTimeout` PT10M. Labels `-6b2`. Code: `main` at `4a6a472` (Phase 6b merged). Only `chat-bench-pg` ran (recorded in each file). 33 points, 37 runs including the runner's automatic retries of INVALID runs.
+
+| Point | Before (section 6) | Re-run 2 (Phase 6b) |
+|---|---|---|
+| B 300/s: outcomes | 3 VALID | 3 VALID |
+| B 300/s: ack p50 / p99 | 4.9 / 31.2 [28.5–32.1] ms | 4.9 / 28.9 [28.4–32.9] ms |
+| B 300/s: stored/s, Hikari pending s, lock share | 299.6; 0/0/0; 56% | 299.6; 2/0/0; 40% |
+| B 200/s: ack p99 | 14.7 [14.3–14.9] ms | 13.1 [13.0–20.6] ms |
+| A 200/s: outcomes | 3 VALID | 2 VALID, 1 SATURATED |
+| A 200/s: ack p99 per pass | 16.5 [11.2–31.3] ms | p1 22.5, p2 5308.4 (SATURATED), p3 323.8 ms |
+
+**Reading it:**
+- **B (ten conversations): no regression.** Every B point matches section 6 within run-to-run variation, including 300/s. The section-7a result (3 of 3 SATURATED) came from the battery and the cold start, not from the Phase 6b send path.
+- **A (one hot conversation): inconclusive, not a shown regression.** Pass 1 was clean (schedule lag p99 ≤ 0.84 ms at every rate) and its 200/s p99 of 22.5 ms is inside section 6's range. Passes 2 and 3 ran under outside contention: the harness's own schedule lag was 7–20 ms **even at 25/s** (threshold 10 ms; 3 runs were INVALID and retried), against below 1 ms in pass 1 and in every B run. The SATURATED A run (p2, 200/s) also had schedule lag p99 22.6 ms. A at 200/s sits right below the knee found in section 7 (it held at 200/s, was unstable at 300/s), so it is the point most sensitive to a busy laptop.
+- **Not shown:** whether the Phase 6b send path costs a little at A 200/s. One clean pass can't separate a small cost from run-to-run variation.
+
+**Decision:** no code change on this evidence; the candidate optimisation (the DM recipient check before the row lock, one pre-transaction query instead of two) stays a candidate. If A is re-measured, run the A block alone with nothing else in use.
+
+Files: `docs/benchmarks/*-6b2-*.json`. Section 7a's battery-power runs stay above, marked confounded.
+
 ## 8. Later scenarios (not in this phase)
 - connection ramp;
 - reconnect storm;
