@@ -25,6 +25,16 @@ public class UserController {
         this.rateLimits = rateLimits;
     }
 
+    /**
+     * Who am I (ADR-0012): the UI's own name and guest flag, since login and refresh return only a token.
+     * A removed account gets 401 TOKEN_INVALID, like its other calls.
+     */
+    @GetMapping("/me")
+    public com.chatplatform.user.dto.UserResponse me(@AuthenticationPrincipal UUID currentUserId) {
+        userService.requireActive(currentUserId);
+        return com.chatplatform.user.dto.UserResponse.from(userService.getUserById(currentUserId));
+    }
+
     /** Block (ADR-0012): idempotent, 204. */
     @org.springframework.web.bind.annotation.PostMapping("/{id}/block")
     @org.springframework.web.bind.annotation.ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)

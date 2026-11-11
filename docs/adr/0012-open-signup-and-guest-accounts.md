@@ -1,6 +1,6 @@
 # ADR-0012 — Open Sign-Up, Guest Accounts and the Product UI's Read Model
 
-**Status:** In progress (Phase 6b; steps 1 to 3 of 5 written)  **Date:** 2026-11-11  **Phase:** 6b
+**Status:** Accepted (Phase 6b, all 5 steps)  **Date:** 2026-11-11  **Phase:** 6b
 
 ## Context
 dox-chat.in is the first thing a visitor sees. Until now it was invite-only, and the UI could show neither sender names nor a conversation list with previews, nor start a DM. Phase 6b opens sign-up, adds a one-click guest demo, and gives the UI what it needs, with the abuse controls an open demo requires. This ADR is written step by step; later steps add the sign-up, guest and abuse-limit decisions.
@@ -87,6 +87,12 @@ Login looks up only accounts that are not guests, not bots and not removed. Ever
 - **Why it replaced the first draft ("quiet paper"):** that draft (rounded bubbles, a deep-teal accent, avatar circles, a list-plus-pane layout) read as a WhatsApp clone in review. The terminal look is distinctive and fits what the project is about: ordered, acknowledged delivery is shown, not hidden. It was picked by the user from three directions (with "Signal" and "Ledger").
 - **Constraints kept:** no UI library and no web font (plain CSS, nothing new to install); **WCAG AA** for every text colour in both themes, including the six per-user nick colours, checked by `contrast.test.ts`, which parses `styles.css` (a mutation that lowers one nick colour fails it); motion only where it carries meaning (a new line slides in, the caret blinks, buttons press), all off under `prefers-reduced-motion`; long unbroken text wraps (`overflow-wrap: anywhere` in a `minmax(0, 1fr)` column), so there's no horizontal scroll.
 - **Tradeoff:** monospace text is less dense to read than a proportional font in long messages, and the look may feel technical to a non-technical visitor. Accepted for a portfolio project whose subject is the delivery machinery.
+
+## Decision 12: end-to-end tests run with raised limits; the production values are pinned (step 5)
+- **Raised limits only for e2e:** `deploy/compose.e2e.yml` sets the `ratelimit.*` values through environment variables on the app container. It is an override file, not a Spring profile, so nothing looser ships inside the production image, and the server only ever runs `compose.yml`.
+- **Production values pinned:** `RateLimitProductionValuesTest` binds `application.yml` + `application-prod.yml` exactly as the server does and asserts every limit and the guest settings; it also checks that the code defaults aren't looser. A changed value fails it (mutations: the send limit in YAML, the sign-up cap default).
+- **CI order:** Playwright with the override, then the app is recreated without it, then `smoke.sh` (which needs the real per-IP login limit).
+- **`GET /api/users/me`:** added because the UI could not show a new user's own name (login and refresh return only a token, and a new user has no conversation to read it from). Found while writing the sign-up e2e test.
 
 ## Consequences
 - **V7 is additive:** `users.is_guest`, `users.is_bot`, `users.deleted_at`, the `user_blocks` table, and two indexes. The previous release still runs against it (ADR-0011 Decision 10).

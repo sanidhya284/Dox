@@ -185,6 +185,7 @@ export function ConversationPane({
         <form className="composer" onSubmit={send}>
           <label className="prompt" htmlFor="composer-input">{myUsername || 'you'}@dox:~$</label>
           <textarea id="composer-input" rows={1} value={draft} maxLength={4000} placeholder={`message ${label}`}
+            aria-label={`Message ${label}`}
             onChange={(e) => setDraft(e.target.value)} onKeyDown={onKey} />
           <button type="submit" className="cmd" disabled={!draft.trim()}>[send ⏎]</button>
         </form>

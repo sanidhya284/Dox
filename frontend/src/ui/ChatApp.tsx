@@ -99,6 +99,20 @@ export function ChatApp({ auth, api, onLoggedOut, onGuestExpired }: {
     void store.load();
   }, [store]);
 
+  // Who am I: login and refresh return only a token, and a new user has no conversation to read it from.
+  const [profile, setProfile] = useState<{ username: string; isGuest: boolean } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void api.get<{ username: string; isGuest: boolean }>('/api/users/me').then((r) => {
+      if (!cancelled && r.ok) {
+        setProfile({ username: r.data.username, isGuest: r.data.isGuest });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
+
   // Ends of the session decided by the sync client.
   useEffect(() => {
     if (client?.state === 'logged_out') {
@@ -139,9 +153,8 @@ export function ChatApp({ auth, api, onLoggedOut, onGuestExpired }: {
     };
   }, [selected, store, select]);
 
-  const me_ = store.list.flatMap((c) => c.participants).find((p) => p.id === me);
-  const isGuest = me_?.isGuest ?? false;
-  const myUsername = me_?.username ?? '';
+  const isGuest = profile?.isGuest ?? false;
+  const myUsername = profile?.username ?? '';
   const panes = visiblePanes(width, selected);
 
   async function logout() {

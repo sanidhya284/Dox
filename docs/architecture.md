@@ -197,7 +197,7 @@ Runs before every request. Extracts `Authorization: Bearer <token>`, validates t
 - **Secrets** come from `deploy/.env` (git-ignored; templates `.env.example` and `.env.local.example`).
 - **Local build:** `compose.build.yml` builds both images from source.
 - **Phase 4:** an override adds `app2` and `redis` and widens `APP_UPSTREAMS`.
-- **Checks:** `deploy/smoke.sh` and the Playwright test in `frontend/e2e/`.
+- **Checks:** `deploy/smoke.sh` and the Playwright tests in `frontend/e2e/` (`smoke.spec.ts`; `phase6b.spec.ts`: sign-up, guest and bot reply, DM by search with live messages both ways, a group from the member picker, the phone layout). Playwright runs against the stack with `deploy/compose.e2e.yml`, which only raises the rate limits through environment variables; CI then recreates the app without it before `smoke.sh`, which checks a real limit. `RateLimitProductionValuesTest` pins the production values from `application.yml` + `application-prod.yml`.
 - **Pipeline (ADR-0011 Decisions 8 and 9):** `ci.yml` (backend, frontend, e2e) and `deploy.yml` (manual: gate → GHCR images → `production` approval → SSH with a pinned host key → `deploy/prod/deploy.sh`, a health and functional check with rollback). Daily `backup.sh` cron; `restore.sh` drill. Target: one EC2 `t3.small` in ap-southeast-2 behind `dox-chat.in`; `www.dox-chat.in` and `dox.work.gd` 308-redirect (`REDIRECT_HOSTS`).
 
 ## Configuration
@@ -253,6 +253,7 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 | GET | `/api/conversations/heads` | yes | `[{conversationId, lastSeq}]` for my active conversations (anti-entropy check, Phase 3) |
 | POST / DELETE | `/api/users/{id}/block` | yes | Block / unblock (idempotent, `204`; yourself `400`; unknown or removed `404`). A block in either direction makes DM creation `404` and sends in an existing DM `403 RECIPIENT_UNAVAILABLE`; groups unaffected (ADR-0012) |
 | GET | `/api/users/blocked` | yes | Users I blocked: `[{id, username, displayName, isGuest}]` |
+| GET | `/api/users/me` | yes | My own profile `{id, username, email, displayName, createdAt, isGuest}` (login and refresh return only a token); a removed account gets `401` (ADR-0012) |
 | GET | `/api/users/search?q=` | yes | Username prefix search (2–50 chars, ≤ 20 results, 30/min per user): `[{id, username, displayName, isGuest}]`, never email; excludes me, deleted accounts, bots and users who blocked me (ADR-0012) |
 | POST | `/api/ws/ticket` | yes | Issue a one-time WebSocket ticket: `{ticket, expiresInSeconds}`. Rate-limited per user. |
 | GET (upgrade) | `/ws?ticket=...` | ticket + allowed `Origin` | Open a WebSocket (see Realtime above) |

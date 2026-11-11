@@ -283,3 +283,33 @@ Short, honest notes per milestone: the problem, what actually went wrong (or cou
   - same-origin serving, so there's no CORS to misconfigure.
 - *Why rate-limit in the app instead of nginx or Caddy?* The app knows the account being attacked, so it can key on (IP, username) and check before the expensive BCrypt. The price is per-instance memory, which moves to Redis when there are two instances.
 - *What happens to open chats during a deploy?* The sockets close with `1001`. Clients reconnect with jittered backoff, fetch what they missed, and resend unacked messages with the same id, so there are no losses and no duplicates, just a visible reconnect.
+
+## Phase 6b — open sign-up, guests, abuse limits and the product UI
+
+**Problem.** Make the live demo something a visitor can use in one click, without opening it to abuse, and without weakening the delivery guarantees.
+
+**What we built and why.**
+- **Open sign-up with a global hourly cap** (fails closed) on top of the per-IP limit; reserved `guest-`, `deleted-` and bot names.
+- **Guests:** one click, 24 hours, a private welcome DM and group with a bot (never shared rooms, so nobody else's list changes). At most 1000 live.
+- **Removal anonymizes instead of deleting history:** deleting a user's messages would leave seq gaps and break everyone else's sync. Conversations with no other active human are deleted; the rest keep every message, shown as "Deleted guest". `FOR UPDATE SKIP LOCKED` makes the cleanup safe on two instances without a distributed lock.
+- **One send budget per user for WebSocket and REST,** checked outside the send transaction (never under the row lock), after a duplicate check, so a resend of a stored message is never refused.
+- **Blocks:** DM creation answers 404 (the blocked user can't probe), sends in an existing DM answer 403 (silently dropping would break "acked means stored").
+- **Login can't tell a guest, the bot or a removed account from an unknown name:** the same BCrypt work and the same 401.
+- **The UI ("Terminal night"):** an IRC-style log with ✓ stored / ✓✓ read, chosen after the first draft read as a WhatsApp clone. WCAG AA for every colour, checked by a test that parses the stylesheet.
+
+**What we found** (each by running something).
+- **A deletion rule that was too eager:** the first cleanup deleted a DM between two guests while the second was still live. A two-round test now covers it; the "left" guard alone turned out to be an equivalent mutant (members only leave through removal).
+- **A separate admin process can't close sockets** on the live app: the runbook and docs were corrected, and removed accounts now get 401 for tickets, new conversations and sends.
+- **A possible send-path slowdown:** the re-run benchmark was much worse, but on battery and without warm-up, so it's recorded as confounded and not yet attributed.
+- **A UI bug found by an e2e test:** a new user saw no name of their own; `GET /api/users/me` fixed it.
+- **Test bugs:** an injected error frame arrived after the ack; a locator matched both the log and the sidebar preview.
+
+**Tradeoffs.**
+- Fixed-window, in-memory limits are per instance (Redis in Phase 4) and can admit 2x across a window boundary.
+- No email verification or CAPTCHA: distributed sign-up spam is bounded only by the global cap, which then blocks real sign-ups too.
+- A refused send inside the transaction (not a member) has already used budget.
+
+**Follow-ups.**
+- *Why not delete a removed user's messages?* Other members' clients detect gaps by seq; holes would trigger endless gap fetches or look like data loss. Anonymizing keeps every seq.
+- *Why is a block visible on send but hidden on DM creation?* Hiding it on send means accepting a message and never delivering it, which breaks the acknowledgement guarantee; on creation, a 404 reveals nothing.
+- *How would two instances share the limits?* Move the counters to Redis (INCR with expiry); that's why the limiter must never run while a database row lock is held.
