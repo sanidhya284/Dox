@@ -68,6 +68,7 @@ public class ConversationService {
     }
 
     private ConversationResponse createDirect(UUID currentUserId, CreateDirectRequest request, boolean capped) {
+        boolean callerIsGuest = userService.requireActive(currentUserId).guest(); // removed: 401 (Decision 9)
         if (currentUserId.equals(request.otherUserId())) {
             throw new ApiException(ErrorCode.CANNOT_DM_SELF);
         }
@@ -86,7 +87,7 @@ public class ConversationService {
         ConversationRepository.DirectInsert insert = conversationRepository.insertDirect(currentUserId, directKey);
         Conversation conversation = insert.conversation();
         if (capped && insert.created()) {
-            rateLimits.checkNewDm(currentUserId, userService.isGuest(currentUserId));
+            rateLimits.checkNewDm(currentUserId, callerIsGuest);
         }
 
         participantRepository.insert(conversation.id(), currentUserId, "MEMBER");
@@ -97,7 +98,7 @@ public class ConversationService {
 
     @Transactional
     public ConversationResponse createGroup(UUID currentUserId, CreateGroupRequest request) {
-        if (userService.getUserById(currentUserId).isGuest()) {
+        if (userService.requireActive(currentUserId).guest()) { // removed: 401 (Decision 9)
             throw new ApiException(ErrorCode.GUEST_NOT_ALLOWED); // guests can't create groups (ADR-0012)
         }
         // Verify all members exist

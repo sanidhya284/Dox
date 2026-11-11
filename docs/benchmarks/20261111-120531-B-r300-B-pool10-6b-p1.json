@@ -1,0 +1,191 @@
+{
+ "scenario": "B",
+ "label": "B-pool10-6b-p1",
+ "runTag": "4c60458d",
+ "startedAt": "2026-11-11T12:05:31.407470",
+ "outcome": "SATURATED",
+ "reasons": [
+  "Hikari pending > 0 in 10 samples"
+ ],
+ "notes": [],
+ "params": {
+  "quiescedAfterSeconds": 3.38,
+  "lagThresholdMs": 10.0,
+  "clientAckTimeout": "PT10M",
+  "window": "PT1M",
+  "warmup": "PT30S",
+  "targetRate": 300.0,
+  "drain": "PT15S"
+ },
+ "shape": {
+  "users": 10,
+  "conversations": 10,
+  "sockets": 10,
+  "senders": 10,
+  "pushesPerMessage": 9
+ },
+ "setupSeconds": 7.78,
+ "sends": {
+  "outboxFull": 0,
+  "windowFirstSends": 18000,
+  "resends": 0,
+  "outboxRemaining": 0,
+  "planned": 27000,
+  "ackedDistinct": 27000,
+  "achievedRate": 300.0
+ },
+ "latencyMs": {
+  "note": "ms from the INTENDED send time; no expected-interval correction; a percentile is n/a unless at least 10 samples lie above it",
+  "sendToAck": {
+   "count": 18000,
+   "p50": "16.82",
+   "p95": "207.74",
+   "p99": "482.05",
+   "max": 675.84
+  },
+  "sendToReceive": {
+   "count": 162000,
+   "p50": "18.08",
+   "p95": "322.05",
+   "p99": "667.65",
+   "max": 784.38
+  },
+  "scheduleLag": {
+   "count": 18000,
+   "p50": "0.12",
+   "p95": "0.48",
+   "p99": "2.43",
+   "max": 298.24
+  },
+  "pacerLag": {
+   "count": 18000,
+   "p50": "0.01",
+   "p95": "0.20",
+   "p99": "0.86",
+   "max": 22.02
+  },
+  "ackP50ByWindowThird": [
+   "14.66",
+   "18.37",
+   "19.50"
+  ]
+ },
+ "harnessGcShare": 0.0,
+ "server": {
+  "samples": 60,
+  "hikariActiveMax": 10.0,
+  "hikariPendingMax": 3.0,
+  "hikariPendingSamples": 10,
+  "processCpuMax": 0.14728025886206578,
+  "processCpuMean": 0.06824061389499807,
+  "systemCpuMax": 0.8987012987012987,
+  "pushQueuedMax": 68.0,
+  "pgActivityConnectionSamples": {
+   "active|-:-": 31,
+   "active|Client:ClientRead": 5,
+   "active|IO:DataFileExtend": 1,
+   "active|IO:WALSync": 18,
+   "active|IO:WALWrite": 1,
+   "active|LWLock:WALWrite": 8,
+   "active|Lock:transactionid": 107,
+   "active|Lock:tuple": 77,
+   "idle in transaction|-:-": 7,
+   "idle in transaction|Client:ClientRead": 94,
+   "idle in transaction|IO:WALWrite": 1,
+   "idle in transaction|Lock:tuple": 1,
+   "idle|-:-": 13,
+   "idle|Client:ClientRead": 236
+  }
+ },
+ "serverCounterDeltas": {
+  "messagesCreated": 17963.0,
+  "messagesDuplicate": 0.0,
+  "messagesRejected": 0.0,
+  "pushDropped": 0.0,
+  "slowConsumerCloses4003": 0.0,
+  "serverAckMeanMs": 19.14,
+  "headsRequests": 25.0
+ },
+ "receiverCloseCodes": [],
+ "invariants": {
+  "dbRows": 27000,
+  "distinctAckedClientMsgIds": 27000,
+  "everyAckedIdPersisted": true,
+  "rowsWithoutAck": 0,
+  "rowsMatchAcked": true,
+  "seqContiguous": true,
+  "perConversation": [
+   "rows=2700 min=1 max=2700 last_seq=2700 ok",
+   "rows=2700 min=1 max=2700 last_seq=2700 ok",
+   "rows=2700 min=1 max=2700 last_seq=2700 ok",
+   "rows=2700 min=1 max=2700 last_seq=2700 ok",
+   "rows=2700 min=1 max=2700 last_seq=2700 ok",
+   "rows=2700 min=1 max=2700 last_seq=2700 ok",
+   "rows=2700 min=1 max=2700 last_seq=2700 ok",
+   "rows=2700 min=1 max=2700 last_seq=2700 ok",
+   "rows=2700 min=1 max=2700 last_seq=2700 ok",
+   "rows=2700 min=1 max=2700 last_seq=2700 ok"
+  ]
+ },
+ "samplerErrors": 0,
+ "environment": {
+  "cpu": "Intel(R) Core(TM) i7-1068NG7 CPU @ 2.30GHz",
+  "logicalCpus": "8",
+  "memBytes": "17179869184",
+  "os": "ProductName:\t\tmacOS ProductVersion:\t\t26.3 BuildVersion:\t\t25D125",
+  "power": "Now drawing from 'Battery Power'  -InternalBattery-0 (id=7667811)\t51%; discharging; 0:30 remaining present: true",
+  "thermal": "Note: No thermal warning level has been recorded Note: No performance warning level has been recorded 2026-11-11 12:03:46 +0530 CPU Power notify \tCPU_Scheduler_Limit \t= 100 \tCPU_Available_CPUs \t= 8 \tCPU_Speed_Limit \t= 100",
+  "dockerVm": "Docker Desktop; cpus=8; mem=8322732032",
+  "dockerNote": "Docker Desktop on macOS runs Postgres in a Linux VM; not representative of a Linux server.",
+  "runningContainers": [
+   "chat-bench-pg (postgres:16-alpine)"
+  ],
+  "benchContainerLimits": "NanoCpus=0 Memory=0",
+  "gitCommit": "0dfcbdedf4fb94144b613e49985be5c23f02ca3b",
+  "gitDirtyFiles": 41,
+  "harnessJvm": "Java HotSpot(TM) 64-Bit Server VM 23.0.1 [-XX:+UseG1GC, -Xms512m, -Xmx512m, -Dfile.encoding=UTF-8, -Duser.country=IN, -Duser.language=en, -Duser.variant]",
+  "appCommandLine": "java -Xms1g -Xmx1g -XX:+UseG1GC -jar /Users/apple/MyFiles/Projects/Dox/chatplatform/.claude/worktrees/handoff/backend/build/libs/chatplatform-backend-0.1.0-SNAPSHOT.jar",
+  "postgres": {
+   "server_version": "16.15",
+   "shared_buffers": "128MB",
+   "max_connections": "100",
+   "synchronous_commit": "on",
+   "fsync": "on",
+   "wal_sync_method": "fdatasync",
+   "work_mem": "4MB"
+  },
+  "appEffectiveConfig": {
+   "activeProfiles": "[\"bench\"]",
+   "java.version": "23.0.1",
+   "java.vm.name": "Java HotSpot(TM) 64-Bit Server VM",
+   "jwt.secret": "****",
+   "logging.level.com.chatplatform": "INFO",
+   "logging.level.org.flywaydb": "INFO",
+   "logging.level.org.springframework.jdbc": "INFO",
+   "logging.level.root": "INFO",
+   "management.endpoint.env.roles": "METRICS",
+   "management.endpoint.env.show-values": "when-authorized",
+   "management.endpoint.health.show-details": "never",
+   "management.endpoints.web.exposure.include": "health,prometheus,metrics,env",
+   "metrics.password": "****",
+   "server.forward-headers-strategy": "native",
+   "spring.datasource.driver-class-name": "org.postgresql.Driver",
+   "spring.datasource.hikari.connection-test-query": "SELECT 1",
+   "spring.datasource.hikari.connection-timeout": "30000",
+   "spring.datasource.hikari.idle-timeout": "600000",
+   "spring.datasource.hikari.max-lifetime": "1800000",
+   "spring.datasource.hikari.maximum-pool-size": "10",
+   "spring.datasource.hikari.minimum-idle": "2",
+   "spring.datasource.hikari.pool-name": "chatplatform-pool",
+   "spring.datasource.password": "****",
+   "spring.datasource.url": "jdbc:postgresql://localhost:55432/chat_bench",
+   "spring.datasource.username": "chat_bench",
+   "ws.allowed-origins": "http://localhost:3000",
+   "ws.heartbeat.interval": "PT25S",
+   "ws.heartbeat.timeout": "PT60S",
+   "ws.max-sockets-per-user": "10",
+   "ws.session.max-lifetime": "PT2H"
+  }
+ },
+ "rawSamplesFile": "bench-results/20261111-120531-B-r300-B-pool10-6b-p1.json (git-ignored)"
+}

@@ -151,6 +151,14 @@ public class UserRepository {
                 .param("sender", sender).param("peer", peer).query(Boolean.class).single();
     }
 
+    /** [isGuest, isDeleted] in one primary-key lookup; empty if the user doesn't exist. */
+    public Optional<boolean[]> guestAndDeleted(UUID id) {
+        return jdbcClient.sql("SELECT is_guest, deleted_at IS NOT NULL AS deleted FROM users WHERE id = :id")
+                .param("id", id)
+                .query((rs, n) -> new boolean[]{rs.getBoolean("is_guest"), rs.getBoolean("deleted")})
+                .optional();
+    }
+
     public boolean isGuest(UUID id) {
         return jdbcClient.sql("SELECT is_guest FROM users WHERE id = :id").param("id", id)
                 .query(Boolean.class).optional().orElse(false);

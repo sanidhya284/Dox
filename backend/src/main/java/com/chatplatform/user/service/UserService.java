@@ -84,6 +84,23 @@ public class UserService {
         return userRepository.directPeerUnavailable(sender, peer);
     }
 
+    /** What the send path needs about its caller, in one query (ADR-0012). */
+    public record CallerStatus(boolean guest) {
+    }
+
+    /**
+     * The caller's account must still exist and not be removed (ADR-0012 Decision 9). An access token outlives a
+     * removal by up to 15 minutes; this turns it into 401 TOKEN_INVALID wherever something new would start.
+     */
+    public CallerStatus requireActive(UUID id) {
+        boolean[] gd = userRepository.guestAndDeleted(id)
+                .orElseThrow(() -> new ApiException(ErrorCode.TOKEN_INVALID, "Account no longer exists"));
+        if (gd[1]) {
+            throw new ApiException(ErrorCode.TOKEN_INVALID, "Account was removed");
+        }
+        return new CallerStatus(gd[0]);
+    }
+
     public boolean isGuest(UUID id) {
         return userRepository.isGuest(id);
     }

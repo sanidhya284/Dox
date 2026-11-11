@@ -23,8 +23,11 @@ public class WsTicketController {
 
     private final WsTicketService wsTicketService;
     private final com.chatplatform.shared.ratelimit.RateLimits rateLimits;
+    private final com.chatplatform.user.service.UserService userService;
 
-    public WsTicketController(WsTicketService wsTicketService, com.chatplatform.shared.ratelimit.RateLimits rateLimits) {
+    public WsTicketController(WsTicketService wsTicketService, com.chatplatform.shared.ratelimit.RateLimits rateLimits,
+                              com.chatplatform.user.service.UserService userService) {
+        this.userService = userService;
         this.wsTicketService = wsTicketService;
         this.rateLimits = rateLimits;
     }
@@ -38,6 +41,7 @@ public class WsTicketController {
     @PostMapping("/ticket")
     public IssuedTicket issueTicket(@AuthenticationPrincipal UUID currentUserId) {
         rateLimits.checkTicket(currentUserId);
+        userService.requireActive(currentUserId); // a removed account opens no new socket (ADR-0012 Decision 9)
         return wsTicketService.issue(currentUserId);
     }
 }

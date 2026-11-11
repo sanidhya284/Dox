@@ -389,10 +389,9 @@ echo "exit=$?"
 
 Exit codes: `0` removed; `3` no live account with that username (nothing changed); `2` usage error (`--remove-account` without the admin profile, refused before Spring starts, or not exactly one username); `1` startup failed (database unreachable, or the schema doesn't validate against this image).
 
-**It can't close the user's open sockets**, because those live in the app process, not in this one. What the removed user can still do:
-- Their open sockets stay up until their 15-minute lifetime ends (`4001`).
-- Their access token (up to 15 minutes) can still get a ticket and reconnect, but it can't be refreshed (refresh tokens are revoked). So the last socket closes at most about 30 minutes after the removal.
-- Meanwhile they are in no conversation: they receive no pushes, and sends and reads get `404`.
+**It can't close the user's open sockets**, because those live in the app process, not in this one. The residual window:
+- Sockets that are already open stay up until their lifetime ends (`4001`), **at most 15 minutes**. They receive nothing, because the account is in no conversation.
+- **Nothing new:** the still-valid access token gets `401 TOKEN_INVALID` for a WebSocket ticket, a new DM or group, and any send (REST or over an open socket). Refresh fails too (tokens revoked), so the client drops the session.
 
 Check afterwards: the username can't log in (`401`), and `docker compose ps` still shows the real app healthy.
 

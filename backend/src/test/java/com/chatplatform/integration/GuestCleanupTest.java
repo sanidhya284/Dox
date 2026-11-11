@@ -205,6 +205,36 @@ class GuestCleanupTest extends AbstractIntegrationTest {
         assertThat(gone.get("left").asBoolean()).isTrue();
     }
 
+    /**
+     * Two cleanup rounds: B expires first while A is live (the DM is kept and B leaves); then A expires, no
+     * active human remains (B has left and is removed), so the DM is deleted with its messages.
+     */
+    @Test
+    void aGuestToGuestDmIsDeletedWhenTheSecondGuestExpires() throws Exception {
+        String[] a = newGuest();
+        String[] b = newGuest();
+        ResponseEntity<String> dm = restTemplate.exchange("/api/conversations/direct", HttpMethod.POST,
+                new HttpEntity<>(Map.of("otherUserId", b[0]), bearer(a[1])), String.class);
+        UUID dmId = UUID.fromString(mapper.readTree(dm.getBody()).get("id").asText());
+        send(a[1], dmId.toString(), "one");
+        send(b[1], dmId.toString(), "two");
+
+        age(b[0]);
+        removal.removeExpiredGuests();
+        assertThat(count("SELECT count(*) FROM conversations WHERE id IN (:ids)", List.of(dmId)))
+                .as("round 1: A is still live, the DM stays").isEqualTo(1);
+        assertThat(jdbc.sql("SELECT left_at IS NOT NULL FROM conversation_participants "
+                        + "WHERE conversation_id = :c AND user_id = :u")
+                .param("c", dmId).param("u", UUID.fromString(b[0])).query(Boolean.class).single())
+                .as("B has left").isTrue();
+
+        age(a[0]);
+        removal.removeExpiredGuests();
+        assertThat(count("SELECT count(*) FROM conversations WHERE id IN (:ids)", List.of(dmId)))
+                .as("round 2: no active human remains").isZero();
+        assertThat(count("SELECT count(*) FROM messages WHERE conversation_id IN (:ids)", List.of(dmId))).isZero();
+    }
+
     @Test
     void aRowLockedByAnotherInstanceIsSkippedNotWaitedOn() throws Exception {
         String[] locked = newGuest();
