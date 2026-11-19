@@ -78,6 +78,29 @@ public abstract class TwoInstanceSupport extends AbstractIntegrationTest {
     @BeforeAll
     void startInstanceB() {
         Map<String, Object> props = new HashMap<>();
+        props.put("realtime.bus", busModeB());
+        props.putAll(extraPropertiesB());
+        instanceB = startInstance(props);
+        portB = ((WebServerApplicationContext) instanceB).getWebServer().getPort();
+        restA = jdkRest(portA);
+        restB = jdkRest(portB);
+        // The bus subscription starts in the background (BusSubscription): wait until both are subscribed.
+        for (org.springframework.context.ApplicationContext ctx : java.util.List.of(appContext, instanceB)) {
+            ctx.getBeanProvider(org.springframework.data.redis.listener.RedisMessageListenerContainer.class)
+                    .ifAvailable(c -> org.awaitility.Awaitility.await("bus subscription")
+                            .atMost(java.time.Duration.ofSeconds(15)).until(c::isRunning));
+        }
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.context.ApplicationContext appContext;
+
+    /**
+     * Starts one more app instance on the test database and the test Redis, with {@code overrides} on top; the
+     * caller closes it.
+     */
+    protected ConfigurableApplicationContext startInstance(Map<String, Object> overrides) {
+        Map<String, Object> props = new HashMap<>();
         props.put("server.port", 0);
         props.put("spring.datasource.url", postgres.getJdbcUrl());
         props.put("spring.datasource.username", postgres.getUsername());
@@ -85,21 +108,19 @@ public abstract class TwoInstanceSupport extends AbstractIntegrationTest {
         props.put("jwt.secret", "this-is-a-very-long-secret-key-for-tests-only-must-be-32-bytes");
         props.put("spring.data.redis.host", "localhost");
         props.put("spring.data.redis.port", REDIS_PORT);
-        props.put("realtime.bus", busModeB());
+        props.put("realtime.bus", "redis");
         props.put("management.metrics.use-global-registry", false);
-        props.putAll(extraPropertiesB());
+        props.putAll(overrides);
         // Command-line arguments, not default properties: defaults have the LOWEST precedence, so application.yml's
         // datasource URL (localhost:5432) would win and B would silently use another database.
-        instanceB = new SpringApplicationBuilder(ChatPlatformApplication.class)
+        ConfigurableApplicationContext ctx = new SpringApplicationBuilder(ChatPlatformApplication.class)
                 .profiles("integration")
                 .run(asArgs(props));
-        if (!postgres.getJdbcUrl().equals(instanceB.getEnvironment().getProperty("spring.datasource.url"))) {
-            instanceB.close();
-            throw new IllegalStateException("instance B is not on the test database");
+        if (!postgres.getJdbcUrl().equals(ctx.getEnvironment().getProperty("spring.datasource.url"))) {
+            ctx.close();
+            throw new IllegalStateException("the extra instance is not on the test database");
         }
-        portB = ((WebServerApplicationContext) instanceB).getWebServer().getPort();
-        restA = jdkRest(portA);
-        restB = jdkRest(portB);
+        return ctx;
     }
 
     @AfterAll
@@ -107,6 +128,62 @@ public abstract class TwoInstanceSupport extends AbstractIntegrationTest {
         if (instanceB != null) {
             instanceB.close();
         }
+    }
+
+    // ── Helpers shared by the two-instance tests ─────────────────────────────────────────────────────────────
+
+    @org.springframework.beans.factory.annotation.Autowired
+    protected com.chatplatform.realtime.service.WsTicketService wsTickets;
+
+    protected final com.fasterxml.jackson.databind.ObjectMapper json = new com.fasterxml.jackson.databind.ObjectMapper();
+
+    /** Registers a fresh user through {@code rest}; returns [id, accessToken, username]. */
+    protected String[] newUser(TestRestTemplate rest, String prefix) {
+        String name = prefix + java.util.UUID.randomUUID().toString().substring(0, 8);
+        org.springframework.http.ResponseEntity<com.chatplatform.auth.dto.AuthResponse> r = rest.postForEntity(
+                "/api/auth/register", new com.chatplatform.auth.dto.RegisterRequest(name, name + "@example.com",
+                        "password123", name), com.chatplatform.auth.dto.AuthResponse.class);
+        if (r.getStatusCode().value() != 201) {
+            throw new IllegalStateException("register failed: " + r.getStatusCode());
+        }
+        return new String[]{r.getBody().user().id().toString(), r.getBody().accessToken(), name};
+    }
+
+    protected static org.springframework.http.HttpHeaders bearer(String token) {
+        org.springframework.http.HttpHeaders h = new org.springframework.http.HttpHeaders();
+        h.setBearerAuth(token);
+        return h;
+    }
+
+    protected org.springframework.http.ResponseEntity<String> post(TestRestTemplate rest, String path, String token,
+                                                                 Object body) {
+        return rest.exchange(path, org.springframework.http.HttpMethod.POST,
+                new org.springframework.http.HttpEntity<>(body, bearer(token)), String.class);
+    }
+
+    protected org.springframework.http.ResponseEntity<String> get(TestRestTemplate rest, String path, String token) {
+        return rest.exchange(path, org.springframework.http.HttpMethod.GET,
+                new org.springframework.http.HttpEntity<>(bearer(token)), String.class);
+    }
+
+    /** A group created by {@code token}'s user with {@code members}; returns its id. */
+    protected String group(TestRestTemplate rest, String token, String... members) throws Exception {
+        org.springframework.http.ResponseEntity<String> r = post(rest, "/api/conversations/group", token,
+                Map.of("title", "x", "memberIds", java.util.List.of(members)));
+        if (r.getStatusCode().value() != 201) {
+            throw new IllegalStateException("group failed: " + r.getStatusCode());
+        }
+        return json.readTree(r.getBody()).get("id").asText();
+    }
+
+    /** REST send; returns the HTTP status code. */
+    protected int send(TestRestTemplate rest, String token, String conversationId, String body) {
+        return post(rest, "/api/conversations/" + conversationId + "/messages", token,
+                Map.of("clientMsgId", java.util.UUID.randomUUID(), "body", body)).getStatusCode().value();
+    }
+
+    protected WsTestClient socket(int port, String userId) throws Exception {
+        return WsTestClient.connect(port, wsTickets.issue(java.util.UUID.fromString(userId)).ticket());
     }
 
     static String[] asArgs(Map<String, Object> props) {

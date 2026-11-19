@@ -7,8 +7,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
 
 /**
- * In-memory fixed-window counter per key (ADR-0011). Single instance only: in Phase 4 the counters move
- * to Redis. Memory is bounded: when {@code maxKeys} keys are tracked, expired windows are evicted first;
+ * In-memory fixed-window counter per key (ADR-0011). Per instance: with ratelimit.store=redis it is the outage
+ * fallback behind {@link SharedLimiter} (ADR-0013). Memory is bounded: when {@code maxKeys} keys are tracked, expired windows are evicted first;
  * if every tracked window is still live, a NEW key is refused (fail closed) rather than growing the map.
  *
  * <p>Two ways to use it: {@link #tryAcquire} counts every attempt (register, login, ticket);
@@ -90,7 +90,7 @@ public final class FixedWindowRateLimiter {
         return now - w.startMillis() >= windowMillis;
     }
 
-    private static long retryAfter(long millis) {
+    static long retryAfter(long millis) {
         return Math.max(1, (millis + 999) / 1000);
     }
 }

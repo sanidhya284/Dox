@@ -126,6 +126,7 @@ public class HeartbeatMonitor {
                 pingsSent.incrementAndGet();
             }
         }
+        registry.refreshSharedCap(); // ADR-0013: live sockets keep their shared-cap entries; a crashed instance's expire
     }
 
     public long pingsSent() {

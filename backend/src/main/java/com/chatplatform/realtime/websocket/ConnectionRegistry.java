@@ -32,7 +32,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * any close status to 4500 once its limit has tripped) and unregistered; the client recovers from
  * history. Raw sessions are never handed out; callers see session ids only.
  *
- * <p>Single instance only; Phase 4 needs a cross-instance fan-out.
+ * <p>Sessions are local to this instance; other instances are reached through the realtime bus (ADR-0013). With
+ * ratelimit.store=redis the per-user cap is also checked across instances through {@link SharedSocketCap}.
  */
 @Component
 public class ConnectionRegistry {
@@ -74,6 +75,13 @@ public class ConnectionRegistry {
         this.maxSocketsPerUser = maxSocketsPerUser;
     }
 
+    private volatile SharedSocketCap sharedCap;
+
+    @Autowired(required = false)
+    void setSharedCap(SharedSocketCap sharedCap) {
+        this.sharedCap = sharedCap;
+    }
+
     /** Sessions closed with 4003 (slow or broken consumer) since startup. */
     public long slowConsumerCloses() {
         return slowConsumerCloses.get();
@@ -103,6 +111,11 @@ public class ConnectionRegistry {
             }
             return map.isEmpty() ? null : map;
         });
+        SharedSocketCap shared = sharedCap;
+        if (accepted[0] && shared != null && !shared.tryAdd(userId, session.getId(), maxSocketsPerUser)) {
+            removeLocal(userId, session.getId()); // the cap is reached across instances (ADR-0013)
+            return false;
+        }
         return accepted[0];
     }
 
@@ -111,6 +124,37 @@ public class ConnectionRegistry {
     }
 
     private void unregister(UUID userId, String sessionId) {
+        removeLocal(userId, sessionId);
+        SharedSocketCap shared = sharedCap;
+        if (shared != null) {
+            shared.remove(userId, sessionId);
+        }
+    }
+
+    /**
+     * Heartbeat sweep (ADR-0013 Decision 6): re-adds this instance's open sessions to the shared cap with a fresh
+     * expiry. A session that closes meanwhile is removed again after the refresh, so a refresh can't resurrect a
+     * closed session: either its unregister runs after this check (and its removal follows the re-add), or this
+     * check sees it gone.
+     */
+    public void refreshSharedCap() {
+        SharedSocketCap shared = sharedCap;
+        if (shared == null) {
+            return;
+        }
+        for (UUID userId : List.copyOf(sessionsByUser.keySet())) {
+            Set<String> open = sessionIdsFor(userId);
+            shared.refresh(userId, open);
+            Set<String> now = sessionIdsFor(userId);
+            for (String id : open) {
+                if (!now.contains(id)) {
+                    shared.remove(userId, id);
+                }
+            }
+        }
+    }
+
+    private void removeLocal(UUID userId, String sessionId) {
         sessionsByUser.compute(userId, (id, sessions) -> {
             if (sessions == null) {
                 return null;

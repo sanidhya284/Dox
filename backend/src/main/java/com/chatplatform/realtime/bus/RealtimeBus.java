@@ -16,7 +16,13 @@ public interface RealtimeBus {
     /** This instance's id, the {@code origin} of what it publishes. */
     String instanceId();
 
-    /** Waits (at most {@code timeout}) until what was published so far has left this instance. */
-    default void flush(Duration timeout) {
+    /**
+     * Waits at most {@code timeout} for what was published so far to leave this instance. Returns {@code true} only
+     * if every publish so far reached Redis; {@code false} if any was lost (Redis down or paused, breaker open, queue
+     * full) or the timeout passed. Used by the one-shot admin runner (runbook 9a). The local bus never crosses
+     * instances, so it returns {@code false}.
+     */
+    default boolean flush(Duration timeout) {
+        return false;
     }
 }

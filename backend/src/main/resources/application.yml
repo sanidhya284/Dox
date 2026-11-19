@@ -71,8 +71,9 @@ spring.data.redis:
   host: ${REDIS_HOST:redis}
   port: ${REDIS_PORT:6379}
   # Short: a slow Redis must not hold a thread. Lettuce also rejects commands while disconnected
-  # (RedisClientConfig), so nothing queues in memory during an outage.
+  # (RedisBusConfig), so nothing queues in memory during an outage.
   timeout: 200ms
+  connect-timeout: 1s
 
 # ── Logging ───────────────────────────────────────────────────────────────
 logging:

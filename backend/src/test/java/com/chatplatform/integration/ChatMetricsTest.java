@@ -47,6 +47,8 @@ public class ChatMetricsTest extends AbstractIntegrationTest {
             "outcome", Set.of("created", "duplicate", "rejected", "issued", "consumed", "advanced", "stale", "capped"),
             "reason", Set.of("queue_full"),
             "kind", Set.of("message", "cursor", "close_user"),
+            "op", Set.of("limit", "socket_cap", "publish", "refresh"),
+            "result", Set.of("ok", "error"),
             "code", Set.of("1000", "1001", "1007", "1009", "4001", "4002", "4003", "4005", "4006", "4007", "4008", "other"));
 
     @LocalServerPort

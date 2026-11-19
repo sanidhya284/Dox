@@ -53,20 +53,8 @@ class CrossInstanceDeliveryTest extends TwoInstanceSupport {
         return new String[]{r.getBody().user().id().toString(), r.getBody().accessToken(), AuthCookies.refreshToken(r)};
     }
 
-    private static HttpHeaders bearer(String token) {
-        HttpHeaders h = new HttpHeaders();
-        h.setBearerAuth(token);
-        return h;
-    }
-
-    private String group(TestRestTemplate rest, String token, String... members) throws Exception {
-        ResponseEntity<String> r = rest.exchange("/api/conversations/group", HttpMethod.POST,
-                new HttpEntity<>(Map.of("title", "x", "memberIds", List.of(members)), bearer(token)), String.class);
-        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        return mapper.readTree(r.getBody()).get("id").asText();
-    }
-
-    private WsTestClient socket(int port, String userId) throws Exception {
+    @Override
+    protected WsTestClient socket(int port, String userId) throws Exception {
         WsTestClient c = WsTestClient.connect(port, tickets.issue(UUID.fromString(userId)).ticket());
         Thread.sleep(150); // registered on its instance before anything is pushed
         return c;
