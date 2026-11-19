@@ -41,6 +41,9 @@ public class SecurityConfig {
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                 .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/version").permitAll()
+                // The load balancer's readiness check (ADR-0013); not routed publicly by Caddy.
+                .requestMatchers(org.springframework.http.HttpMethod.GET,
+                        com.chatplatform.health.ReadinessController.PATH).permitAll()
                 // Only the exact handshake endpoint; it authenticates with a one-time ticket instead of a JWT.
                 .requestMatchers("/ws").permitAll()
                 .anyRequest().authenticated()

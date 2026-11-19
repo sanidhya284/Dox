@@ -406,11 +406,45 @@ Check afterwards: the username can't log in (`401`), and `docker compose ps` sti
 
 No run started Tomcat, migrated, scheduled the cleanup, or seeded anything (checked in the logs).
 
+## 9b. Two instances (Phase 4, ADR-0013): switch on, deploy, switch back
+
+Not done on the live server yet; the decision is yours. Everything below runs as the `deploy` user in `/opt/chat`. Every deploy already copies the files it needs (`compose.phase4.yml.example`, `caddy/Caddyfile`, `switch_instances.sh`), and they do nothing until you switch.
+
+**Switch on** (runs the currently deployed tag; nothing new is deployed):
+```bash
+cd /opt/chat
+cp compose.phase4.yml.example compose.phase4.yml
+./switch_instances.sh two      # redis + app2 first, then web (Caddy restarts: ~1 s blip), then app
+docker compose -f compose.yml -f compose.phase4.yml ps     # app, app2 healthy; redis, web up
+```
+From now on `deploy.sh` (and so every automatic deploy) sees `compose.phase4.yml` and deploys one instance at a time.
+
+**What a deploy then does:**
+- `app`, then `app2`: each is stopped with SIGTERM (6 s drain while Caddy takes it out of rotation, then up to 20 s graceful shutdown; `stop_grace_period` 35 s) and must be healthy before the next one is touched.
+- An instance that doesn't come up healthy is rolled back on its own; the other one never stopped serving.
+- `web` only if needed: a Caddyfile-only change is reloaded in place (no restart; open WebSockets reconnect once); a UI change recreates Caddy, about 1 s of refused requests.
+- Users: no downtime for app deploys, but each socket reconnects up to twice, and the UI catches up by itself.
+
+**Check after switching or any deploy:**
+```bash
+python3 postdeploy_check.py --env .env --tag manual
+docker compose -f compose.yml -f compose.phase4.yml logs --tail 50 web | grep -c "host is up"   # health checks see both
+```
+
+**Switch back to one instance** (also the rollback if two instances misbehave):
+```bash
+cd /opt/chat
+./switch_instances.sh one      # app back to single settings (app2 serves), then web (~1 s blip), then app2 + redis removed
+```
+It moves `compose.phase4.yml` to `compose.phase4.yml.off`, so the next deploy takes the single-instance path again. Redis holds nothing that needs keeping.
+
+**Drill on a laptop first** (no server): `deploy/drill/two_instance_check.sh <tag1> <tag2>` with locally built `chat-app`/`chat-web` images; it must print `TWO-INSTANCE CHECK PASSED` (0 failed requests under the probe).
+
 ## 10. Operating until April
 
 - **Weekly (5 minutes):** Billing, Credits (burn rate vs the estimate); `df -h /`; `docker compose ps`; the monitor's history; `sudo apt list --upgradable`.
 - **After 24 hours and 7 days:** compare real spend with the estimate. If it is much higher, look at Cost Explorer grouped by service (data transfer and CPU credits are the usual surprises).
-- **Do not** run the benchmark harness against this instance, and do not run Phase 4 here.
+- **Do not** run the benchmark harness against this instance. Two instances (section 9b) only after Phase 4 step 5's memory findings say they fit this server.
 - **Resume rule:** add the live link only after it has been stable for several days, and make the screen recording the main demo.
 - **By March 1, decide:** (a) upgrade to Paid with the $15 budget alert and a spend cap in mind (leftover credits then apply until they expire), (b) let the plan end and rely on the video, or (c) move the same stack to another VPS (the stack is portable; the backup is already off AWS).
 

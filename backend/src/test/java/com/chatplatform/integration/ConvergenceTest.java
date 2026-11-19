@@ -152,6 +152,8 @@ public class ConvergenceTest extends AbstractIntegrationTest {
         final AtomicBoolean on = new AtomicBoolean(true);
         /** Tail phase: drop EVERY push, so the last message of each conversation reaches nobody by push. */
         final AtomicBoolean dropAllPushes = new AtomicBoolean(false);
+        /** From the tail on: no connection drops or server closes, so no reconnect catch-up can find the tail. */
+        final AtomicBoolean noReconnects = new AtomicBoolean(false);
         final Random server;
         final Map<String, AtomicInteger> counts = new ConcurrentHashMap<>();
         final Set<UUID> commitFailedOnce = ConcurrentHashMap.newKeySet();
@@ -199,7 +201,7 @@ public class ConvergenceTest extends AbstractIntegrationTest {
 
                 @Override
                 public boolean dropConnectionNow() {
-                    boolean f = on.get() && r.nextDouble() < 0.01;
+                    boolean f = on.get() && !noReconnects.get() && r.nextDouble() < 0.01;
                     if (f) {
                         count("client dropped connection");
                     }
@@ -317,7 +319,7 @@ public class ConvergenceTest extends AbstractIntegrationTest {
                 } catch (InterruptedException ex) {
                     return;
                 }
-                if (fi.roll(0.30)) {
+                if (!fi.noReconnects.get() && fi.roll(0.30)) {
                     User u = new ArrayList<>(memberships.keySet()).get((int) (fi.server.nextDouble() * 4) % 4);
                     List<ConnectionRegistry> regs = closableRegistries();
                     // One registry: no extra draw, so the single-instance seeds keep their fault sequence.
@@ -366,6 +368,14 @@ public class ConvergenceTest extends AbstractIntegrationTest {
 
             // ── tail: the LAST message of each conversation is never pushed to anyone ──
             // Nothing is sent afterwards, so gap detection cannot fire: only anti-entropy can find these.
+            // No more drops or server closes, and every client reconnected and synced BEFORE the tail is sent:
+            // a reconnect's catch-up fetch can't find the tail messages either.
+            fi.noReconnects.set(true);
+            long connectDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
+            while (clients.stream().anyMatch(c -> !c.isConnected()) && System.nanoTime() < connectDeadline) {
+                Thread.sleep(50);
+            }
+            Thread.sleep(1000); // past the backoff cap and any catch-up fetch in flight
             fi.dropAllPushes.set(true);
             for (Map.Entry<UUID, User> tail : Map.of(g1, u1, g2, u2, d1, u4).entrySet()) {
                 // Faults are still on (a commit may be failed once): resend with the SAME clientMsgId.

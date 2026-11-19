@@ -100,6 +100,12 @@ public abstract class TwoInstanceSupport extends AbstractIntegrationTest {
      * caller closes it.
      */
     protected static ConfigurableApplicationContext startInstance(Map<String, Object> overrides) {
+        return startInstance(overrides, new Class<?>[0]);
+    }
+
+    /** As above, with extra configuration classes (test-only beans) in the new instance. */
+    protected static ConfigurableApplicationContext startInstance(Map<String, Object> overrides,
+                                                                  Class<?>... extraSources) {
         Map<String, Object> props = new HashMap<>();
         props.put("server.port", 0);
         props.put("spring.datasource.url", postgres.getJdbcUrl());
@@ -113,7 +119,10 @@ public abstract class TwoInstanceSupport extends AbstractIntegrationTest {
         props.putAll(overrides);
         // Command-line arguments, not default properties: defaults have the LOWEST precedence, so application.yml's
         // datasource URL (localhost:5432) would win and B would silently use another database.
-        ConfigurableApplicationContext ctx = new SpringApplicationBuilder(ChatPlatformApplication.class)
+        Class<?>[] sources = new Class<?>[extraSources.length + 1];
+        sources[0] = ChatPlatformApplication.class;
+        System.arraycopy(extraSources, 0, sources, 1, extraSources.length);
+        ConfigurableApplicationContext ctx = new SpringApplicationBuilder(sources)
                 .profiles("integration")
                 .run(asArgs(props));
         if (!postgres.getJdbcUrl().equals(ctx.getEnvironment().getProperty("spring.datasource.url"))) {

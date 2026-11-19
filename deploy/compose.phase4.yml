@@ -1,0 +1,53 @@
+# Phase 4: two app instances and Redis (ADR-0013). An OVERRIDE on top of compose.yml; nothing there changes.
+#   docker compose -f compose.yml -f compose.phase4.yml up -d
+# deploy.sh uses it automatically when this file sits next to compose.yml on the server (runbook: switching to
+# two instances, and back).
+#
+# Shutdown budget per app container: drain 6 s (readiness 503; Caddy marks it down within about 2-3 s) + graceful
+# shutdown up to 20 s (in-flight requests finish, sockets close with 1001) + margin = stop_grace_period 35 s.
+# Docker's default (10 s) would SIGKILL an instance in the middle of that.
+
+x-phase4-app-env: &phase4-app-env
+  REALTIME_BUS: redis
+  RATELIMIT_STORE: redis
+  REDIS_HOST: redis
+  APP_SHUTDOWN_DRAIN: PT6S
+
+services:
+  app:
+    environment:
+      <<: *phase4-app-env
+    stop_grace_period: 35s
+
+  app2:
+    extends:
+      file: compose.yml
+      service: app
+    environment:
+      <<: *phase4-app-env
+    stop_grace_period: 35s
+    depends_on:
+      db:
+        condition: service_healthy
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    # No persistence: everything in it is rebuilt or expires (ADR-0013). noeviction: a full Redis fails loudly into
+    # the per-instance fallbacks instead of silently evicting live limit windows (Decision 7).
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb",
+              "--maxmemory-policy", "noeviction"]
+    mem_limit: 96m
+    # No ports and no depends_on from the apps: Redis is never needed to start or to be healthy.
+
+  web:
+    environment:
+      APP_UPSTREAMS: "app:8080 app2:8080"
+      APP_LB: pair
+    # The Caddyfile comes from the server directory (deploy.sh reloads it in place when only it changed, without
+    # restarting Caddy); the UI still comes from the image.
+    volumes:
+      - ./caddy:/etc/caddy:ro
+    depends_on:
+      app2:
+        condition: service_healthy

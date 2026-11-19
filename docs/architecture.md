@@ -229,6 +229,7 @@ All environment-specific configuration comes from environment variables.
 | (none) | `guest.max-live` 1000, `guest.ttl` PT24H, `guest.cleanup-interval` PT15M | Guest cap, lifetime and cleanup period (ADR-0012). |
 | `DEMO_PASSWORD` | none (`demo.password`) | When set (at least 8 characters), seeds `demo1`..`demo3` and a "Demo room" at startup; a changed value resets their password hashes. Public data only. |
 | `REALTIME_BUS` | `local` (`realtime.bus`) | `redis`: pushes and the close-user path cross instances over Redis (ADR-0013). Needs `REDIS_HOST` (default `redis`) / `REDIS_PORT` (6379). The Redis health check is disabled: Redis never makes an instance unhealthy. |
+| `APP_SHUTDOWN_DRAIN` | `PT0S` (`app.shutdown.drain`) | On shutdown, keep serving this long after readiness turns 503 (`/internal/ready`), before the graceful shutdown; the two-instance override sets `PT6S` (ADR-0013 Decision 8). |
 | `RATELIMIT_STORE` | `local` (`ratelimit.store`) | `redis`: every rate limit, the bot throttle and the socket cap are shared across instances, with a per-instance fallback while Redis is unreachable (ADR-0013 Decisions 4 to 6). Behind a circuit breaker: no Redis wait during an outage. |
 | `WS_MAX_SOCKETS_PER_USER` | `10` (`ws.max-sockets-per-user`) | Open sockets per user; the next one is closed with `4007` (ADR-0006 Decision 2a). |
 | `ratelimit.*` | register 5/h per IP; login 20/min per IP and 5/min per (IP, username); ticket 30/min per user; failed handshakes 20/min per IP; `max-keys` 100000 | Fixed-window limits (ADR-0011): in memory per instance, or shared in Redis with `RATELIMIT_STORE=redis` (ADR-0013). |
@@ -263,6 +264,7 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 | POST | `/api/conversations/{id}/cursor` | yes | Move my delivered/read cursor forward: `{kind, seq}` → `{lastDeliveredSeq, lastReadSeq}` (ADR-0007) |
 | GET | `/actuator/health` | no | Health check (status only, no details) |
 | GET | `/api/version` | no | `{commit, shortCommit}` of the running image (the `GIT_SHA` build arg; `unknown` locally). The UI footer shows it. |
+| GET | `/internal/ready` | no (internal only) | 200 while the instance accepts traffic, 503 once it starts shutting down. For the load balancer's health check (ADR-0013 Decision 8); Caddy doesn't route it publicly (`smoke.sh` checks). |
 | GET | `/actuator/prometheus`, `/actuator/metrics` | `metrics` user (HTTP Basic) | Micrometer metrics; never public (ADR-0009) |
 
 ---
@@ -339,7 +341,7 @@ A socket authenticates once, at the handshake, so it could otherwise outlive the
 
 - **Rate limits are fixed windows** (ADR-0011), per instance by default; with `RATELIMIT_STORE=redis` they're shared, but per instance again while Redis is unreachable (up to 2× with two instances; ADR-0013 Decision 4). A fixed window can admit up to 2× the limit across a boundary, users behind one NAT share the per-IP limits, and anyone sharing a victim's IP can use up that victim's login attempts. `GET`s other than search aren't rate-limited.
 - **A lost refresh response logs the user out:** if the server rotated the token but the response (with its `Set-Cookie`) never reached the browser, the next refresh replays the old token, which revokes the family and closes the user's sockets with `4002` (ADR-0010). Two tabs refreshing at once would do the same; the UI serializes refresh across tabs.
-- **Deploys disconnect everyone:** one app instance restarts on every deploy, so sockets close (`1001`) and clients reconnect and catch up. There's no zero-downtime deploy before Phase 4.
+- **Deploys disconnect everyone:** one app instance restarts on every deploy, so sockets close (`1001`) and clients reconnect and catch up. Phase 4's two-instance mode (on a branch, off on the live server) makes app deploys free of downtime but not of disconnects (each socket reconnects up to twice), and a change to the UI or a switch of mode still restarts Caddy: about 1 s of refused requests (ADR-0013 Decision 9).
 - **Backups live on the same server** until they're copied off by hand; restoring the live database is a manual procedure (runbook 6.2).
 - **VPS sizing is derived from memory limits** (2 GB recommended for Phase 6, 4 GB for Phase 4), not measured.
 - **The browser UI:** unsent messages live in memory, so a reload loses the outbox (sends that were already acked are safe). Its sync code is unit-tested, but the convergence-under-faults test covers only the Java reference client.
