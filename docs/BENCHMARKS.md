@@ -350,6 +350,48 @@ Files: A [p1](benchmarks/20261111-115947-A-r200-A-pool10-6b-p1.json) [p2](benchm
 
 Files: `docs/benchmarks/*-6b2-*.json`. Section 7a's battery-power runs stay above, marked confounded.
 
+## 7c. Phase 4 step 0: the single-instance baseline (2026-11-19)
+
+**Why:** Phase 4 (two instances + Redis, ADR-0013) will be compared against this. It also settles the open question from 7b (A at 200/s on the Phase 6b code).
+
+**How:** the section-6 ladders, on AC power (battery full), each pass climbing the rates on one running app: A at 25, 50, 100, 150, 200/s and B at 25 … 300/s, pool 10, 3 passes, `ackTimeout` PT10M. Code: `main` at `4a6a472` (Phase 6b; single instance, no Redis). Before the first run the script waited until no other process used more than 15% CPU (it waited 60 s for macOS app verification to finish). Only `chat-bench-pg` ran. Labels `-p4base`.
+
+**Clean:** 33 points, **33 runs, all VALID on the first attempt** (no retries); the harness's schedule-lag p99 was at most 1.08 ms in every run (threshold 10 ms); Hikari pending 0 in every run.
+
+### A: hot conversation, single instance, pool 10 (Phase 4 step 0)
+
+| Rate/s | Outcomes | n acks/run | ack p50 | ack p99 | ack max | recv p99 | Server stored/s | Hikari pending s | Lock share | Runs |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 25 | 3 VALID | 1500 | 16.1 [16.0–16.5] | 20.6 [20.1–20.7] | 25.9 [25.3–42.1] | 22.1 [21.5–22.1] | 24.9 [24.9–24.9] | 0/0/0 | 0/1 (0%) | [p1](benchmarks/20261119-134104-A-r25-A-pool10-p4base-p1.json) [p2](benchmarks/20261119-134954-A-r25-A-pool10-p4base-p2.json) [p3](benchmarks/20261119-135844-A-r25-A-pool10-p4base-p3.json) |
+| 50 | 3 VALID | 3000 | 11.2 [10.2–11.2] | 16.2 [16.1–16.9] | 45.9 [44.5–78.2] | 17.5 [17.4–18.6] | 49.9 [49.9–49.9] | 0/0/0 | 0/8 (0%) | [p1](benchmarks/20261119-134250-A-r50-A-pool10-p4base-p1.json) [p2](benchmarks/20261119-135140-A-r50-A-pool10-p4base-p2.json) [p3](benchmarks/20261119-140029-A-r50-A-pool10-p4base-p3.json) |
+| 100 | 3 VALID | 6000 | 6.6 [6.5–6.6] | 9.9 [9.9–10.1] | 96.7 [33.2–130.8] | 11.1 [11.0–11.2] | 99.8 [99.8–99.9] | 0/0/0 | 0/18 (0%) | [p1](benchmarks/20261119-134436-A-r100-A-pool10-p4base-p1.json) [p2](benchmarks/20261119-135326-A-r100-A-pool10-p4base-p2.json) [p3](benchmarks/20261119-140214-A-r100-A-pool10-p4base-p3.json) |
+| 150 | 3 VALID | 9000 | 4.7 [4.6–4.8] | 9.8 [9.4–130.2] | 57.5 [31.0–376.8] | 10.8 [10.5–134.1] | 149.8 [149.8–149.8] | 0/0/0 | 15/51 (29%) | [p1](benchmarks/20261119-134622-A-r150-A-pool10-p4base-p1.json) [p2](benchmarks/20261119-135512-A-r150-A-pool10-p4base-p2.json) [p3](benchmarks/20261119-140359-A-r150-A-pool10-p4base-p3.json) |
+| 200 | 3 VALID | 12000 | 4.2 [4.1–4.2] | 22.8 [18.6–24.0] | 109.1 [56.5–187.8] | 24.3 [19.6–25.1] | 199.7 [199.7–199.7] | 0/0/0 | 3/56 (5%) | [p1](benchmarks/20261119-134808-A-r200-A-pool10-p4base-p1.json) [p2](benchmarks/20261119-135658-A-r200-A-pool10-p4base-p2.json) [p3](benchmarks/20261119-140545-A-r200-A-pool10-p4base-p3.json) |
+
+### B: 10 conversations, single instance, pool 10 (Phase 4 step 0)
+
+| Rate/s | Outcomes | n acks/run | ack p50 | ack p99 | ack max | recv p99 | Server stored/s | Hikari pending s | Lock share | Runs |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 25 | 3 VALID | 1500 | 16.6 [16.0–16.6] | 20.7 [20.7–20.9] | 30.5 [25.9–49.5] | 22.5 [22.2–22.5] | 24.9 [24.9–24.9] | 0/0/0 | 0/0 (0%) | [p1](benchmarks/20261119-140741-B-r25-B-pool10-p4base-p1.json) [p2](benchmarks/20261119-141814-B-r25-B-pool10-p4base-p2.json) [p3](benchmarks/20261119-142847-B-r25-B-pool10-p4base-p3.json) |
+| 50 | 3 VALID | 3000 | 10.6 [10.5–11.0] | 16.4 [16.2–16.5] | 66.8 [53.9–76.6] | 18.0 [17.7–18.1] | 49.9 [49.9–49.9] | 0/0/0 | 0/21 (0%) | [p1](benchmarks/20261119-140926-B-r50-B-pool10-p4base-p1.json) [p2](benchmarks/20261119-141959-B-r50-B-pool10-p4base-p2.json) [p3](benchmarks/20261119-143032-B-r50-B-pool10-p4base-p3.json) |
+| 100 | 3 VALID | 6000 | 6.7 [6.6–6.7] | 9.5 [9.4–9.7] | 41.6 [29.3–123.7] | 10.6 [10.5–10.8] | 99.8 [99.8–99.8] | 0/0/0 | 0/32 (0%) | [p1](benchmarks/20261119-141112-B-r100-B-pool10-p4base-p1.json) [p2](benchmarks/20261119-142145-B-r100-B-pool10-p4base-p2.json) [p3](benchmarks/20261119-143217-B-r100-B-pool10-p4base-p3.json) |
+| 150 | 3 VALID | 9000 | 4.6 [4.6–4.6] | 9.6 [9.1–9.9] | 34.8 [26.6–35.0] | 10.7 [10.2–11.1] | 149.8 [149.8–149.8] | 0/0/0 | 0/44 (0%) | [p1](benchmarks/20261119-141257-B-r150-B-pool10-p4base-p1.json) [p2](benchmarks/20261119-142330-B-r150-B-pool10-p4base-p2.json) [p3](benchmarks/20261119-143403-B-r150-B-pool10-p4base-p3.json) |
+| 200 | 3 VALID | 12000 | 4.2 [4.2–4.2] | 16.3 [15.7–19.5] | 142.2 [140.3–158.8] | 17.4 [16.6–20.9] | 199.7 [199.7–199.7] | 0/0/0 | 14/62 (23%) | [p1](benchmarks/20261119-141443-B-r200-B-pool10-p4base-p1.json) [p2](benchmarks/20261119-142515-B-r200-B-pool10-p4base-p2.json) [p3](benchmarks/20261119-143548-B-r200-B-pool10-p4base-p3.json) |
+| 300 | 3 VALID | 18000 | 4.7 [4.6–4.7] | 31.5 [28.3–33.9] | 79.0 [64.5–82.6] | 32.9 [29.4–35.1] | 299.5 [299.5–299.6] | 0/0/0 | 55/160 (34%) | [p1](benchmarks/20261119-141628-B-r300-B-pool10-p4base-p1.json) [p2](benchmarks/20261119-142701-B-r300-B-pool10-p4base-p2.json) [p3](benchmarks/20261119-143734-B-r300-B-pool10-p4base-p3.json) |
+
+| Point | Section 6 (Phase 5 code) | 7b (6b, AC) | **7c baseline (6b, clean)** |
+|---|---|---|---|
+| A 200/s: outcomes | 3 VALID | 2 VALID, 1 SATURATED (contended) | **3 VALID** |
+| A 200/s: ack p99 | 16.5 [11.2–31.3] ms | 22.5 (clean pass) | **22.8 [18.6–24.0] ms** |
+| B 300/s: outcomes | 3 VALID | 3 VALID | **3 VALID** |
+| B 300/s: ack p99 | 31.2 [28.5–32.1] ms | 28.9 [28.4–32.9] ms | **31.5 [28.3–33.9] ms** |
+
+**Reading it:**
+- **The 6b busy-chat question is settled: no regression shown.** A at 200/s held in 3 of 3 runs, with p99 inside section 6's range; 7b's SATURATED run came from outside contention, not from the code.
+- **B is unchanged** at every rate.
+- **One unexplained difference:** at 25/s the ack p50 is about 16 ms (A 16.1, B 16.6), against 11.9 and 11.1 ms in section 6; 7b showed the same. It isn't there at 150/s and above (A 4.2 vs 3.8 ms at 200/s). Section 7 already noted that latency *falls* as the rate rises on this laptop (likely CPU power states between sparse sends); whether the extra ~4.5 ms at low rates is that or the Phase 6b pre-transaction queries was not isolated. It doesn't move the limits.
+- **This is the baseline for Phase 4 step 5** (the same points with two instances).
+
 ## 8. Later scenarios (not in this phase)
 - connection ramp;
 - reconnect storm;
