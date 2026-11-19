@@ -330,6 +330,9 @@ Short, honest notes per milestone: the problem, what actually went wrong (or cou
 - **Docker's default swap hides OOM:** a container may swap as much again as its limit, and an over-limit JVM crawled for minutes instead of being killed.
 - **The image's heap setting (75% of the container) doesn't fit:** heap max + the non-heap part exceeds the limit, so the kernel kills the container before Java reports anything.
 - **A test script replaced a local stack:** `name: chat` in `compose.yml` made the check attach to the developer's own containers; it now uses its own project.
+- **Where the JVM's memory goes (Native Memory Tracking):** the heap was the small part. Class metadata, code cache and symbols are ~150 MiB, and 50–90 MiB more is glibc holding memory the C2 compiler freed, invisible to NMT. The JVM was already on SerialGC in every container (it picks it below ~1.8 GiB), so "switch to SerialGC" changed nothing there; it's stated explicitly so it can't flip.
+- **Caps bound growth, they don't shrink use:** RSS with code-cache, metaspace and direct-memory caps was the same as without; they turn unbounded areas into bounded ones.
+- **A crash costs the in-flight sends, not the acked ones:** 1–2 POSTs per crash fail with 502 (Caddy can't safely resend a POST it already forwarded), none of them stored; the client's retry with the same `clientMsgId` would be deduplicated. `docker kill` is a manual stop that the restart policy ignores; a real crash is back in ~1 s.
 - **The 6b send path costs about 3 ms at low rates** (pre-6b vs current in the same session); 7c had left that open.
 
 **Tradeoffs.**

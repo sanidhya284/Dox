@@ -410,12 +410,12 @@ No run started Tomcat, migrated, scheduled the cleanup, or seeded anything (chec
 
 Not done on the live server yet; the decision is yours. Everything below runs as the `deploy` user in `/opt/chat`. Every deploy already copies the files it needs (`compose.phase4.yml.example`, `caddy/Caddyfile`, `switch_instances.sh`), and they do nothing until you switch.
 
-**Memory first** (ADR-0013 Decision 10, BENCHMARKS 7e). Two instances set limits on every container: app and app2 512m each (heap 40%, no swap), db 320m, redis 96m, web 64m, 1504 MiB in total; measured on a laptop at about 0.8 GiB for all five under load. Before switching:
+**Memory first** (ADR-0013 Decision 10, BENCHMARKS 7e). Two instances set limits on every container: app and app2 512m each (heap 40%, capped code cache, metaspace and direct memory, Tomcat 64 threads, no swap), db 320m, redis 96m, web 64m, 1504 MiB in total; measured on a laptop at about 0.8 GiB for all five under load. Before switching:
 ```bash
 free -m                                      # note "available" and swap "used" now, with one instance
 docker stats --no-stream                     # today's app (768m limit) and db usage
 ```
-Switch only if `available` is comfortably above what the second app adds (about 300 MiB idle, about 360 MiB under load measured) and swap use is small.
+Switch only if `available` is comfortably above what the second app adds (about 280 MiB idle, about 350 MiB under load measured) and swap use is small.
 
 **Switch on** (runs the currently deployed tag; nothing new is deployed):
 ```bash
@@ -448,10 +448,15 @@ docker compose -f compose.yml -f compose.phase4.yml logs --tail 50 web | grep -c
 **Watch after switching** (the first hour, then after the next few deploys):
 ```bash
 free -m                                      # "available" should stay well above 0; swap "used" should not keep growing
-docker stats --no-stream                     # app/app2 measured ~280 MiB idle, ~360 under load (limit 512); db ~100 (limit 320)
+docker stats --no-stream                     # app/app2 measured ~280 MiB idle, ~350 under load (limit 512); db ~100 (limit 320)
 docker inspect -f '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKilled}}' $(docker compose -f compose.yml -f compose.phase4.yml ps -q)
 ```
 Switch back if an app keeps restarting or shows `oom=true`, if an app sits near its 512 MiB, if db approaches 320 MiB, or if `available` falls low and swap keeps growing. An app dying alone is survivable (the other serves, Caddy retries), but a pattern of it means the limits are wrong for the server.
+
+**If one app dies:** a crash (OOM, JVM fault) is restarted by Docker in about 1 s and is back in Caddy's rotation in about 9 s; meanwhile the other instance serves, and only sends in flight on the dead one fail (measured 1–2 per crash, none stored). `docker kill` or `docker stop` by hand is NOT restarted by the policy; bring it back with:
+```bash
+docker compose -f compose.yml -f compose.phase4.yml up -d --no-deps app2      # or app; healthy in ~11 s
+```
 
 **Switch back to one instance** (also the rollback if two instances misbehave):
 ```bash

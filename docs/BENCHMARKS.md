@@ -479,13 +479,13 @@ Files: `docs/benchmarks/*-6b2-*.json`. Section 7a's battery-power runs stay abov
 
 **How:** the production images (`chat-app`/`chat-web` built from this branch) with `compose.yml` + `compose.phase4.yml` + [`deploy/drill/compose.memory.yml`](../deploy/drill/compose.memory.yml) (ports on localhost for the harness, raised rate limits; own compose project). Per variant: 60 s idle, then B 100/s, B 200/s and C 10/s (200 sockets) with `base2` (both instances), then 60 s idle. `docker stats` and each JVM's `VmRSS` (`/proc/1/status`) every ~4 s. Docker Desktop VM on the laptop, not the server. "load" is the maximum seen during the load, the others the last sample.
 
-| MiB | A: 2 × 768m, heap 75% (max 576) | B: 2 × 512m, heap 75% (max 384) | **Chosen: 2 × 512m, heap 40% (max ~205)** |
-|---|---|---|---|
-| app RSS idle / load / after | 298 / 404 / 404 | 285 / 372 / 372 | **280 / 362 / 363** |
-| app2 RSS idle / load / after | 289 / 390 / 390 | 282 / 365 / 365 | **272 / 351 / 352** |
-| app, app2 `docker stats` at load | 391, 373 | 354, 346 | **344, 334** |
-| db / redis / web at load | 100 / 10 / 20 | 101 / 12 / 22 | **100 / 12 / 21** |
-| restarts, OOM kills | 0 | 0 | **0** |
+| MiB | A: 2 × 768m, heap 75% (max 576) | B: 2 × 512m, heap 75% (max 384) | Step 5: 2 × 512m, heap 40% (max ~205) | **Final: + caps (below)** |
+|---|---|---|---|---|
+| app RSS idle / load / after | 298 / 404 / 404 | 285 / 372 / 372 | 280 / 362 / 363 | **275 / 346 / 346** |
+| app2 RSS idle / load / after | 289 / 390 / 390 | 282 / 365 / 365 | 272 / 351 / 352 | **279 / 346 / 346** |
+| app, app2 `docker stats` at load | 391, 373 | 354, 346 | 344, 334 | **329, 328** |
+| db / redis / web at load | 100 / 10 / 20 | 101 / 12 / 22 | 100 / 12 / 21 | **98 / 10 / 22** |
+| restarts, OOM kills | 0 | 0 | 0 | **0** |
 
 **Where an app's RSS goes** (B at 200/s on the 512m stack, Micrometer every second, 91 samples per instance): heap used at most 76 MiB, heap committed 87 MiB, non-heap (metaspace, code cache, ...) 135 MiB, 66–78 threads. RSS minus committed heap stayed at 279–290 MiB: the JVM needs about 290 MiB **besides** its heap. So the image's `MaxRAMPercentage=75` doesn't fit a container: at 512m the heap could grow to 384 MiB, and 384 + 290 is about 670 MiB, so the kernel would kill the container before Java raised an OutOfMemoryError (at 768m: 576 + 290 = 866). The two-instance override caps the heap at 40% (about 205 MiB, 2.7 times the most it used): 205 + 290 = about 495 MiB, under 512m. That margin is thin, and it rests on this measurement of the non-heap part. The single-instance setting (768m, 75%) is unchanged by this phase; its heap has never come near its maximum, but the same arithmetic applies (HANDOFF open item).
 
@@ -498,6 +498,52 @@ Files: `docs/benchmarks/*-6b2-*.json`. Section 7a's battery-power runs stay abov
 - `app`, `db`, `redis` and `web`: 0 restarts, start times unchanged.
 - Probe: 431 requests / 0 failed, 94 of 94 acked sends in Postgres (first run); 494 / 0 failed, 107 of 107 (second run). Its WebSocket client was closed once when `app2` was replaced and reconnected with nothing missing.
 - **Not shown with the probe running:** a kill in the middle of serving. Without swap, a JVM sized past 512m already crosses the limit while booting. With swap (Docker's default) one run did kill `app2` under load after about 2 minutes, with `app` and `db` untouched, but that run's probe never started (its origin wasn't allowed in the drill config; fixed).
+
+### Follow-up: where the non-heap memory goes, and caps (2026-11-20)
+
+**How:** the same stack with `-XX:NativeMemoryTracking=summary` and the summary printed at JVM exit (`PrintNMTStatistics`; the image is a JRE without `jcmd`). `app2` was stopped after 60 s idle; `app` took **all** the load (B 200/s, then C 10/s with 200 sockets), heavier per instance than the table above, and was stopped right after it. Committed MiB:
+
+| | Idle (step-5 flags) | After load (step-5 flags) | After load (caps) |
+|---|---|---|---|
+| Java heap (max ~205) | 58 | 141 | 133 |
+| Metaspace + class + CDS archive | 59 + 11 + 12 | 67 + 12 + 12 | 67 + 12 + 12 |
+| Code cache | 26 | 50 | 39 |
+| Symbols | 24 | 25 | 25 |
+| Other (NIO direct buffers) | 8 | 12 | 8 |
+| Compiler (C2; transient arena peak ~60) | 0.3 | 10 | 2 |
+| NMT's own bookkeeping | 4 | 5 | 5 |
+| Thread stacks (90+ threads; touched pages only) | 1.4 | 1.4 | 1.4 |
+| GC | 0.2 | 0.5 | 0.5 |
+| **Total committed / RSS** | **206 / 289** | **337 / 388** | **305 / 387** |
+
+- **Besides the heap:** about 150–200 MiB is tracked (class metadata ~80, code ~40–50, symbols ~25, direct buffers ~10), and **50–90 MiB isn't tracked by NMT at all**: memory glibc keeps after the C2 compiler frees its arenas (peaks of ~60 MiB). Thread stacks are negligible (~15 KB touched per thread), so `-Xss` stays at the default.
+- **GC:** inside a container below ~1.8 GiB, the JVM already picks **SerialGC** on its own (checked with `PrintFlagsFinal` at 512m and 768m), so every container run so far, and the live server, used SerialGC; only the host-JVM benchmarks (7c, 7d) used G1. GC overhead here is under 1 MiB.
+- **Tomcat:** with the default 200, the busiest run created 56–60 worker threads (64 when capped at 64, still VALID).
+- **Caps chosen** (`compose.phase4.yml`): `-XX:+UseSerialGC` (explicit, so raising a limit can't switch it), `-XX:ReservedCodeCacheSize=80m` (measured 39–50), `-XX:MaxMetaspaceSize=128m` (67), `-XX:MaxDirectMemorySize=64m` (≤ 12), `SERVER_TOMCAT_THREADS_MAX=64` (database work is bounded by the 10-connection pool, so more threads only queue; the cap limits how far a database stall multiplies threads). **They bound growth; they don't shrink what is used:** RSS with caps alone was 387 MiB in the heavy run, the same as without.
+- **Tried and not adopted:** `MALLOC_ARENA_MAX=2`. One run peaked at 358 MiB, but its NMT showed the difference came mostly from a smaller committed heap at that moment, not from the untracked part; one run doesn't separate the two, and with 2 vCPUs the server has 16 arenas by default instead of the laptop VM's 64.
+- **Result (the table's last column, the same method as before, load split over both instances):** peak RSS **346 MiB per app, 166 MiB below the 512m limit**; idle 275–279. Even with all the load on one instance, 387 MiB (125 below). All five containers peaked at 787 MiB (`docker stats`).
+- **Latency with the caps:** one pass of the two-instance B ladder (25 … 300/s; host JVMs as in 7d, so the climb warms them the same way) with the capped flags (`-Xms205m -Xmx205m` for the 40%, SerialGC, the code cache, metaspace and direct-memory caps, Tomcat 64 threads; labels `-p4caps`). All 6 points VALID; no "CodeCache is full" or OutOfMemoryError in either app's log.
+
+| B, two instances | 7d (G1, `-Xmx1g`, Tomcat 200), median [min–max] of 3 | **Capped flags, 1 run** |
+|---|---|---|
+| 300/s: outcome | 3 VALID | **VALID** |
+| 300/s: ack p50 / p99 / max (ms) | 10.2 [8.1–11.8] / 84.8 [60.3–250.4] / 201.7 [115.4–389.9] | **7.9 / 66.4 / 185.9** |
+| 300/s: stored/s, Hikari pending samples, lock share | 299.3, 0/0/0, 73% | **299.4, 1, 69%** |
+| 200/s: ack p50 / p99 (ms) | 5.3 / 25.8 [24.3–32.2] | **5.2 / 23.1** |
+
+  **No regression shown** at 300/s: the capped run sits inside step 5's range on every column. It's one run, against a spread that is wide at this rate (p99 60–250 ms), so it can rule out a large regression, not a small one. [Run files](benchmarks/20261120-014623-B-r300-B-pool10-p4caps-p1.json) (and the five lower rates beside it).
+
+### Crash under load (2026-11-20)
+
+The capped two-instance stack, the zero-failure probe through Caddy at **10 sends/s** plus 6 GETs/s and a WebSocket client:
+
+| Event | Requests / failed | Acked sends / in Postgres / rows stored | `app2` back |
+|---|---|---|---|
+| `docker kill app2`, then `compose up -d app2` 15 s later; then a crash of `app2` (SIGKILL to its JVM from the Docker VM) | 1220 / **2** (one POST per kill, HTTP 502) | 716 / 716 / 716 | `docker kill`: **not restarted** (Docker treats it as a manual stop); after `compose up`: in Caddy's rotation at 8.6 s, Docker-healthy at 11.3 s. Crash: restarted by the policy in 0.9 s, in rotation at 9.0 s, healthy at 11.2 s |
+| Crash of `app2`, then of `app` (which held the probe's socket) | 944 / **3** (1 + 2 POSTs, HTTP 502) | 560 / 560 / 560 | each restarted in ~1 s and healthy at ~11 s; the socket closed at +46.8 s, reconnected once to the other instance and converged (6 rows from catch-up, none missing) |
+
+- **Why POSTs fail:** a send in flight on the instance that dies can't be answered, and Caddy doesn't resend a POST already forwarded (it can't know whether it took effect), so it returns 502. One more POST failed 0.6 s later on the `app` crash: most likely sent over Caddy's pooled connection before two missed health checks (1 s apart) took `app` out. GETs and later requests were retried on the other instance (`lb_try_duration`). **No failed send was stored** (rows = acked), and a client retrying with the same `clientMsgId` would be deduplicated anyway.
+- `db`, `redis` and `web` never restarted.
 
 ## 8. Later scenarios (not in this phase)
 - connection ramp;

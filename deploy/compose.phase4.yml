@@ -7,16 +7,23 @@
 # shutdown up to 20 s (in-flight requests finish, sockets close with 1001) + margin = stop_grace_period 35 s.
 # Docker's default (10 s) would SIGKILL an instance in the middle of that.
 #
-# Memory (step 5, measured; BENCHMARKS 7e, ADR-0013 Decision 10). Limits on every container, about 1.5 GiB in total
-# on a 2 GiB t3.small; measured peak use about 0.8 GiB. Each JVM needs about 290 MiB besides its heap (metaspace,
-# code cache, threads, native), and used at most 76 MiB of heap under load, so the heap is capped at 40% of 512m
-# (about 205 MiB): heap max + the rest stays under the limit, and a runaway heap ends in a Java OutOfMemoryError
-# (ExitOnOutOfMemoryError: the container restarts) instead of a kernel kill. memswap_limit = mem_limit on the apps:
-# Docker's default lets a container swap as much again as its limit (the drill's over-limit JVM crawled for minutes
-# instead of being killed). db keeps that default on purpose: Postgres slowing down beats Postgres being killed.
+# Memory (step 5, measured; BENCHMARKS 7e, ADR-0013 Decision 10). Limits on every container, 1504 MiB in total on a
+# 2 GiB t3.small; measured peak use about 0.8 GiB. Native Memory Tracking under load: metaspace + class data ~81 MiB,
+# code cache ~40-50, symbols ~25, direct buffers ~8-12, thread stacks ~1.4 (so -Xss is left alone), plus 50-90 MiB
+# that glibc holds outside the JVM's accounting. Heap used at most 76 MiB. The flags bound each area above what was
+# measured (they don't shrink it): heap 40% of 512m (~205 MiB), code cache 80m (measured 39-50), metaspace 128m
+# (67), direct memory 64m (12); SerialGC stated explicitly (the JVM already picks it below ~1.8 GiB of memory; this
+# keeps it if a limit is raised). Tomcat max threads 64 instead of 200: the busiest measured run (B 200/s plus 200
+# sockets on ONE instance) created 56-64 workers; database work is bounded by the 10-connection pool anyway, so more
+# threads would only queue on it, and the cap bounds how far a database stall can multiply threads. A runaway heap or
+# metaspace ends in a Java OutOfMemoryError (ExitOnOutOfMemoryError: the container restarts), not a kernel kill.
+# memswap_limit = mem_limit on the apps: Docker's default lets a container swap as much again as its limit (the
+# drill's over-limit JVM crawled for minutes instead of being killed). db keeps that default on purpose: Postgres
+# slowing down beats Postgres being killed.
 
 x-phase4-app-env: &phase4-app-env
-  JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=40 -XX:+ExitOnOutOfMemoryError"
+  JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=40 -XX:+ExitOnOutOfMemoryError -XX:+UseSerialGC -XX:ReservedCodeCacheSize=80m -XX:MaxMetaspaceSize=128m -XX:MaxDirectMemorySize=64m"
+  SERVER_TOMCAT_THREADS_MAX: "64"
   REALTIME_BUS: redis
   RATELIMIT_STORE: redis
   REDIS_HOST: redis
