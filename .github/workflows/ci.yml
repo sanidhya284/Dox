@@ -240,6 +240,8 @@ jobs:
     needs: [build-and-test, frontend]
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      COMPOSE_PROJECT_NAME: chatcheck   # the check script's own project; smoke.sh reads the web logs from it
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -264,8 +266,8 @@ jobs:
         run: |
           docker tag chat-app:ci1 chat-app:ci2
           docker tag chat-web:ci1 chat-web:ci2
-      # First deploy straight onto two instances, then ci1 -> ci2 while the probe runs (0 failed requests, every
-      # acked send in Postgres, the socket client converges) (ADR-0013 Decision 9).
+      # First deploy straight onto two instances, then ci1 -> ci2 while the probe runs, then a deploy whose second
+      # instance fails (both must end on ci2, exit 1); 0 failed requests throughout (ADR-0013 Decision 9).
       - name: Two-instance deploy check
         run: deploy/drill/two_instance_check.sh ci1 ci2 "$RUNNER_TEMP/srv"
       - name: Smoke checks (two instances)

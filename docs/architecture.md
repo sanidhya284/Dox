@@ -264,7 +264,7 @@ Local run: `SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun`. Production must set `
 | POST | `/api/conversations/{id}/cursor` | yes | Move my delivered/read cursor forward: `{kind, seq}` → `{lastDeliveredSeq, lastReadSeq}` (ADR-0007) |
 | GET | `/actuator/health` | no | Health check (status only, no details) |
 | GET | `/api/version` | no | `{commit, shortCommit}` of the running image (the `GIT_SHA` build arg; `unknown` locally). The UI footer shows it. |
-| GET | `/internal/ready` | no (internal only) | 200 while the instance accepts traffic, 503 once it starts shutting down. For the load balancer's health check (ADR-0013 Decision 8); Caddy doesn't route it publicly (`smoke.sh` checks). |
+| GET | `/internal/ready` | no (internal only) | 200 while the instance accepts traffic, 503 once it starts shutting down. For the load balancer's health check (ADR-0013 Decision 8); the public site answers `404` for `/internal` and below (`smoke.sh` checks). |
 | GET | `/actuator/prometheus`, `/actuator/metrics` | `metrics` user (HTTP Basic) | Micrometer metrics; never public (ADR-0009) |
 
 ---

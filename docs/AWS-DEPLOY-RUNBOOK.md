@@ -438,7 +438,7 @@ cd /opt/chat
 ```
 It moves `compose.phase4.yml` to `compose.phase4.yml.off`, so the next deploy takes the single-instance path again. Redis holds nothing that needs keeping.
 
-**Drill on a laptop first** (no server): `deploy/drill/two_instance_check.sh <tag1> <tag2>` with locally built `chat-app`/`chat-web` images; it must print `TWO-INSTANCE CHECK PASSED` (0 failed requests under the probe).
+**Drill on a laptop first** (no server): `deploy/drill/two_instance_check.sh <tag1> <tag2>` with locally built `chat-app`/`chat-web` images; it must print `TWO-INSTANCE CHECK PASSED` (0 failed requests under the probe, including a deploy whose second instance fails and both are rolled back). It uses its own compose project (`chatcheck`), so a local `chat` stack is left alone; it needs ports 80/443 free.
 
 ## 10. Operating until April
 

@@ -52,9 +52,10 @@ done
 check "GET / (UI) is 200" "$(status "$BASE/")" 200
 curl -sk "$BASE/api/version" | grep -q '"shortCommit"' && pass "GET /api/version (public) reports the build" || fail "GET /api/version (public) reports the build"
 curl -sk "$BASE/" | grep -q '<div id="root">' && pass "UI index.html served" || fail "UI index.html served"
-# The load balancer's readiness check (ADR-0013) is internal: through the proxy it is just the UI, never the app.
-curl -sk "$BASE/internal/ready" | grep -q '<div id="root">' && pass "/internal/ready is not proxied to the app" \
-  || fail "/internal/ready is not proxied to the app"
+# The load balancer's readiness check (ADR-0013) is internal: the proxy answers 404 for /internal and below.
+for p in /internal /internal/ready /internal/anything; do
+  check "GET $p is 404 at the proxy" "$(status "$BASE$p")" 404
+done
 
 headers=$(curl -sk -D - -o /dev/null "$BASE/")
 grep -qi '^x-content-type-options: nosniff' <<<"$headers" && pass "X-Content-Type-Options" || fail "X-Content-Type-Options"
