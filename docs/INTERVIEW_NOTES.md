@@ -313,3 +313,32 @@ Short, honest notes per milestone: the problem, what actually went wrong (or cou
 - *Why not delete a removed user's messages?* Other members' clients detect gaps by seq; holes would trigger endless gap fetches or look like data loss. Anonymizing keeps every seq.
 - *Why is a block visible on send but hidden on DM creation?* Hiding it on send means accepting a message and never delivering it, which breaks the acknowledgement guarantee; on creation, a 404 reveals nothing.
 - *How would two instances share the limits?* Move the counters to Redis (INCR with expiry); that's why the limiter must never run while a database row lock is held.
+
+## Phase 4 — two app instances and Redis
+
+**Problem.** One instance means every deploy disconnects everyone and one crash takes the site down. Run two behind Caddy without weakening a single guarantee, with Redis as an optimization the app survives losing.
+
+**What we built and why.**
+- **A Redis pub/sub bus (`chat:rt`), at most once:** after commit, an instance pushes to its own sockets and publishes; the other delivers. A lost publish costs only latency, because clients already recover from Postgres (gap fetch, `heads`). Exactly-once delivery over the bus wasn't needed, because the database is the record.
+- **Every limit shared in Redis, with a per-instance fallback and a circuit breaker:** Redis down means limits become per instance (up to 2×), never refusing everyone and never waiting on timeouts. Each limit's outage effect is written down (ADR-0013 Decision 4).
+- **The socket cap is one Lua script** (expire, count, add): a check-then-add version admitted 20 of 20 simultaneous handshakes against a cap of 10.
+- **Drain, then shut down:** readiness goes 503 for 6 s so Caddy stops routing, then in-flight requests finish. Rolling deploys measured 0 failed requests; sockets reconnect.
+- **Memory limits on every container**, from measurements: the JVM needs ~290 MiB besides a heap that used ≤ 76 MiB, so the heap is capped at 40% of 512m and the apps get no swap (a dead app is cheap; a thrashing one isn't). 1504 MiB of limits on a 2 GiB host.
+
+**What we found** (each by running something).
+- **A deploy would have restarted Postgres:** adding a memory limit to `db` changed its config, so the first two-instance deploy on a server switched from one instance recreated the container. Found by making the drill start the way the real server does; fixed with `--no-recreate`.
+- **Docker's default swap hides OOM:** a container may swap as much again as its limit, and an over-limit JVM crawled for minutes instead of being killed.
+- **The image's heap setting (75% of the container) doesn't fit:** heap max + the non-heap part exceeds the limit, so the kernel kills the container before Java reports anything.
+- **A test script replaced a local stack:** `name: chat` in `compose.yml` made the check attach to the developer's own containers; it now uses its own project.
+- **The 6b send path costs about 3 ms at low rates** (pre-6b vs current in the same session); 7c had left that open.
+
+**Tradeoffs.**
+- "No downtime", not "no disconnects": a rolling deploy closes each socket up to twice; the sync protocol makes that harmless.
+- Every instance reads every bus message: fine for two, not for twenty (per-user or per-instance channels then).
+- Caddy is still a single point: a UI change is a ~1 s blip.
+- On one laptop two instances bought no throughput and a worse tail above 150 msg/s; they're for availability, not speed.
+
+**Follow-ups.**
+- *Why not sticky sessions?* Nothing needs them: tickets, tokens and limits are shared, and a socket stays where it was accepted.
+- *Why at most once and not Redis Streams?* The client already recovers anything missed from Postgres; a durable bus would duplicate the database's job.
+- *What if Redis is down for an hour?* Sends, history and health are unaffected; cross-instance pushes stop (clients catch up via `heads`), limits are per instance, and the breaker keeps every request off Redis.

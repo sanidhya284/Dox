@@ -1,0 +1,30 @@
+# Memory drill only (Phase 4 step 5, ADR-0013): the production images and the two-instance override, with the app
+# ports and the database published on localhost so the load harness (LoadMain, base/base2/jdbc) can drive them,
+# and the rate limits raised so the load isn't refused. Never on the server.
+#   COMPOSE_PROJECT_NAME=chatmem APP_MEM_LIMIT=512m docker compose -f compose.yml -f compose.phase4.yml \
+#     -f drill/compose.memory.yml up -d --wait
+x-memory-drill-env: &memory-drill-env
+  WS_ALLOWED_ORIGINS: "http://localhost:3000,https://localhost"  # the harness and the probe (through Caddy)
+  METRICS_PASSWORD: "bench-only-metrics-password-123"  # the harness scrapes /actuator/prometheus
+  RATELIMIT_REGISTERPERIPPERHOUR: "100000"
+  RATELIMIT_SIGNUPGLOBALPERHOUR: "100000"
+  RATELIMIT_LOGINPERIPPERMINUTE: "100000"
+  RATELIMIT_LOGINPERIPANDUSERPERMINUTE: "100000"
+  RATELIMIT_TICKETPERUSERPERMINUTE: "100000"
+  RATELIMIT_SENDPERUSERPERMINUTE: "100000"
+
+services:
+  app:
+    environment:
+      <<: *memory-drill-env
+    mem_limit: ${APP_MEM_LIMIT:-512m}
+    memswap_limit: ${APP_MEM_LIMIT:-512m}
+    ports: ["127.0.0.1:18080:8080"]
+  app2:
+    environment:
+      <<: *memory-drill-env
+    mem_limit: ${APP_MEM_LIMIT:-512m}
+    memswap_limit: ${APP_MEM_LIMIT:-512m}
+    ports: ["127.0.0.1:18081:8080"]
+  db:
+    ports: ["127.0.0.1:55433:5432"]

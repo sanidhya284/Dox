@@ -6,17 +6,33 @@
 # Shutdown budget per app container: drain 6 s (readiness 503; Caddy marks it down within about 2-3 s) + graceful
 # shutdown up to 20 s (in-flight requests finish, sockets close with 1001) + margin = stop_grace_period 35 s.
 # Docker's default (10 s) would SIGKILL an instance in the middle of that.
+#
+# Memory (step 5, measured; BENCHMARKS 7e, ADR-0013 Decision 10). Limits on every container, about 1.5 GiB in total
+# on a 2 GiB t3.small; measured peak use about 0.8 GiB. Each JVM needs about 290 MiB besides its heap (metaspace,
+# code cache, threads, native), and used at most 76 MiB of heap under load, so the heap is capped at 40% of 512m
+# (about 205 MiB): heap max + the rest stays under the limit, and a runaway heap ends in a Java OutOfMemoryError
+# (ExitOnOutOfMemoryError: the container restarts) instead of a kernel kill. memswap_limit = mem_limit on the apps:
+# Docker's default lets a container swap as much again as its limit (the drill's over-limit JVM crawled for minutes
+# instead of being killed). db keeps that default on purpose: Postgres slowing down beats Postgres being killed.
 
 x-phase4-app-env: &phase4-app-env
+  JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=40 -XX:+ExitOnOutOfMemoryError"
   REALTIME_BUS: redis
   RATELIMIT_STORE: redis
   REDIS_HOST: redis
   APP_SHUTDOWN_DRAIN: PT6S
 
 services:
+  db:
+    # Measured at most 101 MiB under load (shared_buffers 128 MB, 20 pooled connections). Applies when db is created;
+    # deploy.sh never recreates db for it (--no-recreate), so on a switched server it's set live (runbook 9b).
+    mem_limit: 320m
+
   app:
     environment:
       <<: *phase4-app-env
+    mem_limit: 512m
+    memswap_limit: 512m   # no swap: an app over its limit is killed fast (the other serves), not left thrashing
     stop_grace_period: 35s
 
   app2:
@@ -25,6 +41,8 @@ services:
       service: app
     environment:
       <<: *phase4-app-env
+    mem_limit: 512m
+    memswap_limit: 512m   # no swap: an app over its limit is killed fast (the other serves), not left thrashing
     stop_grace_period: 35s
     depends_on:
       db:
@@ -37,10 +55,11 @@ services:
     # the per-instance fallbacks instead of silently evicting live limit windows (Decision 7).
     command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb",
               "--maxmemory-policy", "noeviction"]
-    mem_limit: 96m
+    mem_limit: 96m    # maxmemory 64 MB + overhead; measured at most 12 MiB
     # No ports and no depends_on from the apps: Redis is never needed to start or to be healthy.
 
   web:
+    mem_limit: 64m    # measured at most 22 MiB
     environment:
       APP_UPSTREAMS: "app:8080 app2:8080"
       APP_LB: pair

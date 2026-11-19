@@ -410,6 +410,13 @@ No run started Tomcat, migrated, scheduled the cleanup, or seeded anything (chec
 
 Not done on the live server yet; the decision is yours. Everything below runs as the `deploy` user in `/opt/chat`. Every deploy already copies the files it needs (`compose.phase4.yml.example`, `caddy/Caddyfile`, `switch_instances.sh`), and they do nothing until you switch.
 
+**Memory first** (ADR-0013 Decision 10, BENCHMARKS 7e). Two instances set limits on every container: app and app2 512m each (heap 40%, no swap), db 320m, redis 96m, web 64m, 1504 MiB in total; measured on a laptop at about 0.8 GiB for all five under load. Before switching:
+```bash
+free -m                                      # note "available" and swap "used" now, with one instance
+docker stats --no-stream                     # today's app (768m limit) and db usage
+```
+Switch only if `available` is comfortably above what the second app adds (about 300 MiB idle, about 360 MiB under load measured) and swap use is small.
+
 **Switch on** (runs the currently deployed tag; nothing new is deployed):
 ```bash
 cd /opt/chat
@@ -418,6 +425,13 @@ cp compose.phase4.yml.example compose.phase4.yml
 docker compose -f compose.yml -f compose.phase4.yml ps     # app, app2 healthy; redis, web up
 ```
 From now on `deploy.sh` (and so every automatic deploy) sees `compose.phase4.yml` and deploys one instance at a time.
+
+**Postgres's limit, without restarting it.** Neither the switch nor any deploy replaces the `db` container (`deploy.sh` starts it with `--no-recreate`; the two-instance check asserts it), so the 320m in the override applies only to a newly created `db`. Apply it to the running one in place, only if it uses well under 320 MiB:
+```bash
+docker stats --no-stream $(docker compose ps -q db)                 # MEM USAGE well under 320MiB? then:
+docker update --memory 320m --memory-swap 640m $(docker compose ps -q db)   # live; swap kept (640m = 320m + 320m swap)
+```
+Setting a limit below what Postgres is using can get it killed, which is why this is a separate, checked step. Switching back to one instance leaves this limit in place (harmless at the measured ~100 MiB).
 
 **What a deploy then does:**
 - `app`, then `app2`: each is stopped with SIGTERM (6 s drain while Caddy takes it out of rotation, then up to 20 s graceful shutdown; `stop_grace_period` 35 s) and must be healthy before the next one is touched.
@@ -430,6 +444,14 @@ From now on `deploy.sh` (and so every automatic deploy) sees `compose.phase4.yml
 python3 postdeploy_check.py --env .env --tag manual
 docker compose -f compose.yml -f compose.phase4.yml logs --tail 50 web | grep -c "host is up"   # health checks see both
 ```
+
+**Watch after switching** (the first hour, then after the next few deploys):
+```bash
+free -m                                      # "available" should stay well above 0; swap "used" should not keep growing
+docker stats --no-stream                     # app/app2 measured ~280 MiB idle, ~360 under load (limit 512); db ~100 (limit 320)
+docker inspect -f '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKilled}}' $(docker compose -f compose.yml -f compose.phase4.yml ps -q)
+```
+Switch back if an app keeps restarting or shows `oom=true`, if an app sits near its 512 MiB, if db approaches 320 MiB, or if `available` falls low and swap keeps growing. An app dying alone is survivable (the other serves, Caddy retries), but a pattern of it means the limits are wrong for the server.
 
 **Switch back to one instance** (also the rollback if two instances misbehave):
 ```bash

@@ -5,6 +5,9 @@
 # 3. still under the probe, deploy <tag2>-flag: an image broken only where DRILL_BREAK is set, which the drill sets
 #    on app2 alone. `app` updates and passes, `app2` fails, and deploy.sh must exit 1 with BOTH instances back on
 #    <tag2> (no mixed versions) and .deployed-tag still <tag2>.
+# Throughout, the Postgres container must never be replaced: it starts as the single-instance stack creates it (as on
+# the live server, before switching), and compose.phase4.yml gives db a memory limit, which must not make a deploy
+# recreate it (a Postgres restart is downtime for both instances).
 # Fails unless all of that holds, the probe saw 0 failed requests, every acked send is in Postgres and its socket
 # client converged.
 #   deploy/drill/two_instance_check.sh <tag1> <tag2> [server-dir]
@@ -23,6 +26,10 @@ export CHAT_DIR="$SRV" SKIP_PULL=1
 # Its own compose project: compose.yml says `name: chat`, which would otherwise attach to (and replace) a local
 # `chat` stack on the same machine. Run smoke.sh with the same COMPOSE_PROJECT_NAME afterwards.
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-chatcheck}"
+
+echo "== db created by the single-instance stack, as on the live server"
+IMAGE_TAG="$T1" docker compose -f "$SRV/compose.yml" up -d --wait db
+DB_ID="$(docker compose -f "$SRV/compose.yml" ps -q db)"
 
 echo "== first deploy (two instances): $T1"
 "$SRV/deploy.sh" "$T1"
@@ -60,6 +67,7 @@ for svc in app app2; do
   [ "$st" = healthy ] || { echo "== FAILED: $svc is $st"; bad=1; }
 done
 echo "== after the failed deploy: exit $rc, app $img_app, app2 $img_app2, .deployed-tag $deployed"
+[ "$(c4 ps -q db)" = "$DB_ID" ] || { echo "== FAILED: a deploy replaced the db container (Postgres restarted)"; bad=1; }
 
 sleep 5
 touch "$SRV/stop"
@@ -68,7 +76,7 @@ if ! wait "$PROBE"; then
   exit 1
 fi
 if [ "$bad" != 0 ]; then
-  echo "== TWO-INSTANCE CHECK FAILED (second-instance rollback)"
+  echo "== TWO-INSTANCE CHECK FAILED (second-instance rollback or db replaced)"
   exit 1
 fi
 echo "== TWO-INSTANCE CHECK PASSED"

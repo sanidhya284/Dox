@@ -68,7 +68,10 @@ if [ -f "$DIR/compose.phase4.yml" ]; then
   }
 
   [ "${SKIP_PULL:-0}" = "1" ] || IMAGE_TAG="$TAG" compose4 pull --quiet
-  compose4 up -d --no-deps db redis   # no-ops when running; a first deploy needs the database up first
+  # Start db and redis only if they don't exist yet (a first deploy needs the database). --no-recreate: an app deploy
+  # never replaces Postgres, even when its compose config differs (compose.phase4.yml adds a memory limit; on a server
+  # switched from one instance, db was created without it). Applying that limit is a separate step (runbook 9b).
+  compose4 up -d --no-deps --no-recreate db redis
   wait_healthy db
   for svc in app app2; do
     if ! roll "$svc" "$TAG"; then
