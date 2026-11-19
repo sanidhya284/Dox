@@ -389,7 +389,7 @@ echo "exit=$?"
 
 Exit codes: `0` removed; `3` no live account with that username (nothing changed); `2` usage error (`--remove-account` without the admin profile, refused before Spring starts, or not exactly one username); `1` startup failed (database unreachable, or the schema doesn't validate against this image).
 
-**It can't close the user's open sockets**, because those live in the app process, not in this one. The residual window:
+**Closing the user's open sockets** (ADR-0013 Decision 3): on a two-instance server with Redis (`REALTIME_BUS=redis` in `.env`), add `-e REALTIME_BUS=redis` to the command; the process then publishes `close_user` on the bus and the live instances close the account's sockets at once. On the single-instance server (no Redis, today) it can't: those sockets live in the app process, not in this one. The residual window then:
 - Sockets that are already open stay up until their lifetime ends (`4001`), **at most 15 minutes**. They receive nothing, because the account is in no conversation.
 - **Nothing new:** the still-valid access token gets `401 TOKEN_INVALID` for a WebSocket ticket, a new DM or group, and any send (REST or over an open socket). Refresh fails too (tokens revoked), so the client drops the session.
 

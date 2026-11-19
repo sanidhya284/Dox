@@ -38,11 +38,15 @@ public class RemoveAccountRunner implements ApplicationRunner {
     private final ConfigurableApplicationContext context;
     private final Environment environment;
 
+    private final com.chatplatform.realtime.bus.RealtimeBus bus;
+
     public RemoveAccountRunner(AccountRemovalService removal, ConfigurableApplicationContext context,
-                               Environment environment) {
+                               Environment environment,
+                               com.chatplatform.realtime.bus.RealtimeBus bus) {
         this.removal = removal;
         this.context = context;
         this.environment = environment;
+        this.bus = bus;
     }
 
     @Override
@@ -67,6 +71,9 @@ public class RemoveAccountRunner implements ApplicationRunner {
         }
         try {
             removal.removeAccount(names.getFirst());
+            // ADR-0013: with REALTIME_BUS=redis the removal's close_user is published; deliver it before exiting,
+            // so the live instances close the account's sockets now (without Redis: the 9a residual window).
+            bus.flush(java.time.Duration.ofSeconds(5));
             return REMOVED;
         } catch (IllegalArgumentException e) {
             log.error("Not removed: {} ({})", names.getFirst(), e.getMessage());

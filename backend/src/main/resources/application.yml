@@ -57,6 +57,22 @@ management:
   endpoint:
     health:
       show-details: never
+  # Redis is an optimization (ADR-0013): it must never make the app unhealthy or unready.
+  health:
+    redis:
+      enabled: false
+
+# ── Phase 4: two instances (ADR-0013) ──────────────────────────────────────
+# realtime.bus: local (default; one instance, nothing contacts Redis) or redis (pushes and the close-user path cross
+# instances over the Redis channel chat:rt, at most once). Env: REALTIME_BUS.
+realtime:
+  bus: ${REALTIME_BUS:local}
+spring.data.redis:
+  host: ${REDIS_HOST:redis}
+  port: ${REDIS_PORT:6379}
+  # Short: a slow Redis must not hold a thread. Lettuce also rejects commands while disconnected
+  # (RedisClientConfig), so nothing queues in memory during an outage.
+  timeout: 200ms
 
 # ── Logging ───────────────────────────────────────────────────────────────
 logging:

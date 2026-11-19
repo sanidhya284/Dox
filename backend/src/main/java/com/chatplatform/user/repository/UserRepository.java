@@ -164,6 +164,17 @@ public class UserRepository {
                 .query(Boolean.class).optional().orElse(false);
     }
 
+    /** The seeding lock key (ADR-0013): any fixed number, used only for this. */
+    static final long SEEDING_LOCK = 4_708_026_011L;
+
+    /**
+     * Serializes account seeding across instances until the caller's transaction ends (ADR-0013): two instances
+     * starting at once would otherwise both find no bot and both insert it.
+     */
+    public void lockSeeding() {
+        jdbcClient.sql("SELECT pg_advisory_xact_lock(:k)").param("k", SEEDING_LOCK).query().singleRow();
+    }
+
     public long countLiveGuests() {
         return jdbcClient.sql("SELECT count(*) FROM users WHERE is_guest AND deleted_at IS NULL")
                 .query(Long.class).single();

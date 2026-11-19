@@ -38,6 +38,7 @@ public class ChatMetrics {
     private final Map<String, Counter> closes;
     private final Counter pushDropped;
     private final Counter headsRequests;
+    private final Map<String, Counter> rt = new java.util.HashMap<>();
     private final Counter signupsCreated;
     private final Counter signupsCapped;
     private final Timer sendAck;
@@ -72,6 +73,13 @@ public class ChatMetrics {
         signupsCapped = Counter.builder("chat.signups")
                 .description("Self sign-ups refused by the global hourly cap (ADR-0012)")
                 .tag("outcome", "capped").register(registry);
+        for (com.chatplatform.realtime.bus.BusKind k : com.chatplatform.realtime.bus.BusKind.values()) {
+            for (String m : java.util.List.of("published", "publish.failed", "publish.dropped", "received")) {
+                rt.put(m + "/" + k, Counter.builder("chat.rt." + m)
+                        .description("Cross-instance bus (ADR-0013): " + m.replace('.', ' ') + ", by kind")
+                        .tag("kind", k.name()).register(registry));
+            }
+        }
         sendAck = Timer.builder("chat.ws.send.ack")
                 .description("Server side of a WebSocket send: frame received to ack handed to the socket")
                 .publishPercentileHistogram().register(registry);
@@ -118,6 +126,22 @@ public class ChatMetrics {
 
     public void pushDropped() {
         pushDropped.increment();
+    }
+
+    public void rtPublished(com.chatplatform.realtime.bus.BusKind k) {
+        rt.get("published/" + k).increment();
+    }
+
+    public void rtPublishFailed(com.chatplatform.realtime.bus.BusKind k) {
+        rt.get("publish.failed/" + k).increment();
+    }
+
+    public void rtPublishDropped(com.chatplatform.realtime.bus.BusKind k) {
+        rt.get("publish.dropped/" + k).increment();
+    }
+
+    public void rtReceived(com.chatplatform.realtime.bus.BusKind k) {
+        rt.get("received/" + k).increment();
     }
 
     /** A sign-up passed the global cap (created) or was refused by it (capped). */

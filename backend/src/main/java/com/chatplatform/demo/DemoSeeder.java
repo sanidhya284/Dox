@@ -57,6 +57,7 @@ public class DemoSeeder implements ApplicationRunner {
             throw new IllegalStateException("DEMO_PASSWORD must be at least 8 characters");
         }
         String hash = passwordEncoder.encode(password);
+        userService.lockSeeding(); // ADR-0013: two instances seeding at once: the second waits, then finds them
         List<User> users = USERS.stream()
                 .map(u -> userService.createOrResetPassword(u, u + "@demo.invalid", u, hash))
                 .toList();

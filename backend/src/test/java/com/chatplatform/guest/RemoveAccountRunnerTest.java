@@ -18,11 +18,12 @@ import static org.mockito.Mockito.verifyNoInteractions;
 class RemoveAccountRunnerTest {
 
     private final AccountRemovalService removal = mock(AccountRemovalService.class);
+    private final com.chatplatform.realtime.bus.RealtimeBus bus = mock(com.chatplatform.realtime.bus.RealtimeBus.class);
 
     private RemoveAccountRunner runner(String... profiles) {
         MockEnvironment env = new MockEnvironment();
         env.setActiveProfiles(profiles);
-        return new RemoveAccountRunner(removal, mock(ConfigurableApplicationContext.class), env);
+        return new RemoveAccountRunner(removal, mock(ConfigurableApplicationContext.class), env, bus);
     }
 
     @Test
@@ -33,6 +34,15 @@ class RemoveAccountRunnerTest {
 
         doThrow(new IllegalArgumentException("No live account")).when(removal).removeAccount("ghost");
         assertThat(r.exitCode(List.of("ghost"))).isEqualTo(3);
+    }
+
+    @Test
+    void theRemovalsCloseUserPublishIsFlushedBeforeTheProcessExits() {
+        // ADR-0013: with REALTIME_BUS=redis the admin process publishes close_user, so live sockets close at once.
+        runner("prod", "admin").exitCode(List.of("spammer"));
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(removal, bus);
+        order.verify(removal).removeAccount("spammer");
+        order.verify(bus).flush(org.mockito.ArgumentMatchers.any(java.time.Duration.class));
     }
 
     @Test
