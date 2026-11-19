@@ -148,7 +148,7 @@ public class ConvergenceTest extends AbstractIntegrationTest {
 
     // ── the seeded fault injector ──
 
-    private static final class FaultInjector {
+    static final class FaultInjector {
         final AtomicBoolean on = new AtomicBoolean(true);
         /** Tail phase: drop EVERY push, so the last message of each conversation reaches nobody by push. */
         final AtomicBoolean dropAllPushes = new AtomicBoolean(false);
@@ -248,6 +248,27 @@ public class ConvergenceTest extends AbstractIntegrationTest {
         }).when(messageRepository).insert(any(UUID.class), anyLong(), any(UUID.class), any(UUID.class), anyString());
     }
 
+    // ── hooks for the two-instance variant (TwoInstanceConvergenceTest); single instance by default ──
+
+    /** The port client {@code index} connects to. */
+    protected int portFor(int index) {
+        return port;
+    }
+
+    /** The REST client client {@code index} uses. */
+    protected org.springframework.boot.test.web.client.TestRestTemplate restFor(int index) {
+        return restTemplate;
+    }
+
+    /** Further server-side faults (e.g. dropped bus publishes). */
+    protected void installExtraFaults(FaultInjector fi) {
+    }
+
+    /** The registries the server closer may close sessions in. */
+    protected List<ConnectionRegistry> closableRegistries() {
+        return List.of(registry);
+    }
+
     @ParameterizedTest(name = "seed {0}")
     @MethodSource("seeds")
     void everyClientConvergesToTheDatabaseUnderFaults(long seed) throws Exception {
@@ -271,6 +292,7 @@ public class ConvergenceTest extends AbstractIntegrationTest {
 
         FaultInjector fi = new FaultInjector(seed);
         installServerFaults(fi);
+        installExtraFaults(fi);
         long droppedBefore = pushListener.droppedPushes();
 
         List<ReferenceClient> clients = new ArrayList<>();
@@ -279,7 +301,8 @@ public class ConvergenceTest extends AbstractIntegrationTest {
         for (Map.Entry<User, List<UUID>> e : memberships.entrySet()) {
             for (int i = 0; i < CLIENTS_PER_USER; i++) {
                 User u = e.getKey();
-                ReferenceClient c = new ReferenceClient(u.username() + "#" + i, port, restTemplate, mapper, u.id(),
+                ReferenceClient c = new ReferenceClient(u.username() + "#" + i, portFor(index), restFor(index),
+                        mapper, u.id(),
                         u.username(), PASSWORD, seed * 1000 + index, ReferenceClient.Config.forTests(), bugs);
                 c.setFaults(fi.clientFaults(index++));
                 clients.add(c.start());
@@ -296,10 +319,14 @@ public class ConvergenceTest extends AbstractIntegrationTest {
                 }
                 if (fi.roll(0.30)) {
                     User u = new ArrayList<>(memberships.keySet()).get((int) (fi.server.nextDouble() * 4) % 4);
-                    List<String> ids = new ArrayList<>(registry.sessionIdsFor(u.id()));
+                    List<ConnectionRegistry> regs = closableRegistries();
+                    // One registry: no extra draw, so the single-instance seeds keep their fault sequence.
+                    ConnectionRegistry reg = regs.size() == 1 ? regs.get(0)
+                            : regs.get((int) (fi.server.nextDouble() * regs.size()) % regs.size());
+                    List<String> ids = new ArrayList<>(reg.sessionIdsFor(u.id()));
                     if (!ids.isEmpty()) {
                         boolean slow = fi.roll(0.5);
-                        registry.closeSession(u.id(), ids.get(0), slow ? WsCloseStatuses.SLOW_CONSUMER : WsCloseStatuses.IDLE_TIMEOUT);
+                        reg.closeSession(u.id(), ids.get(0), slow ? WsCloseStatuses.SLOW_CONSUMER : WsCloseStatuses.IDLE_TIMEOUT);
                         fi.count(slow ? "server close 4003" : "server close 4006");
                     }
                 }

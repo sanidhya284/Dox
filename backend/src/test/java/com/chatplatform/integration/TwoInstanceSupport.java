@@ -99,7 +99,7 @@ public abstract class TwoInstanceSupport extends AbstractIntegrationTest {
      * Starts one more app instance on the test database and the test Redis, with {@code overrides} on top; the
      * caller closes it.
      */
-    protected ConfigurableApplicationContext startInstance(Map<String, Object> overrides) {
+    protected static ConfigurableApplicationContext startInstance(Map<String, Object> overrides) {
         Map<String, Object> props = new HashMap<>();
         props.put("server.port", 0);
         props.put("spring.datasource.url", postgres.getJdbcUrl());

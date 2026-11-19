@@ -1,6 +1,6 @@
 # ADR-0013 — Two App Instances and Redis
 
-**Status:** In progress (Phase 4; steps 0 to 2 of 5 written)  **Date:** 2026-11-19  **Phase:** 4
+**Status:** In progress (Phase 4; steps 0 to 3 of 5 written)  **Date:** 2026-11-19  **Phase:** 4
 
 ## Context
 dox-chat.in runs one app instance. Every socket, push, theft close, rate limit and socket cap lives in that process, and every deploy disconnects everyone. Phase 4 runs two instances behind Caddy, so a user can be on either one and a deploy never takes the site down. The core principle doesn't change: **Postgres is the source of truth; Redis is only a delivery and coordination optimization.** The app must stay correct and healthy with Redis down.
@@ -72,4 +72,8 @@ Redis holds only small keys that expire on their own (limit windows, socket sets
   - `SocketCapCrashTest`: live sockets keep counting past the timeout; a crashed instance's entries expire within timeout + interval.
   - `SocketCapAtomicityTest`: handshakes for one user on both instances are held at the admission point by a test-only hook and released together. At 9 sockets, 2 simultaneous handshakes admit exactly 1; 20 simultaneous handshakes with cap 10 admit exactly 10 (20 repetitions each). A two-step check-then-add with the hook between the steps admits all of them, every time, so the single script is what makes the cap hold.
   - `RedisGuardTest` (timeout opens; open means no attempts; one probe under contention); `RedisBusFlushTest` and `RemoveAccountRunnerTest` (bounded flush, "close lost" message).
+- **Step 3 tests:**
+  - `TwoInstanceConvergenceTest`: the Phase 3 convergence test (same seeds, faults and assertions) with clients alternating between A and B, server-side faults on A, 20% of A's bus publishes dropped, sessions closed on both instances, and in the tail phase every push and every publish dropped. 5 runs x 3 seeds: 15/15 converged. With `NO_ANTI_ENTROPY` clients, seed 11 fails, as on one instance.
+  - `GuestCleanupTwoInstanceTest`: both instances run the cleanup at the same moment over 30 expired guests; the counts add up to exactly the expired guests (15 + 15 in the recorded run), each is anonymized once, and sockets on either instance close with 4008. Claiming without the row lock removes each guest twice and fails it.
+  - Already covered in earlier steps: the bot throttle across instances (`SharedLimitsTest`), and `close_user` with 4002 and 4008 across instances (`CrossInstanceDeliveryTest`).
 - **Step 1 tests:** `CrossInstanceDeliveryTest` (A→B and B→A pushes exactly once, a recipient on the origin instance gets no duplicate, cursor frames cross, `close_user` closes a socket on the other instance with 4002 (theft, operator removal) and 4008 (guest expiry)), `LocalBusTwoInstanceTest` (nothing crosses with the default bus; the message is stored and recoverable), `ConcurrentStartupTest`, and the runner's flush-before-exit in `RemoveAccountRunnerTest`. `TwoInstanceSupport` runs a second Spring context in the same JVM on the same Postgres, with a singleton Redis on a fixed port and one Micrometer registry per context.
