@@ -51,10 +51,20 @@ public class SharedSocketCap {
         if (crashed) {
             return true;
         }
-        return guard.call(RedisGuard.Op.SOCKET_CAP,
-                () -> !Long.valueOf(0).equals(redis.execute(RedisScripts.SOCKET_ADD, List.of(PREFIX + userId),
-                        ttlMillis, String.valueOf(cap), member(sessionId))),
-                () -> true);
+        return guard.call(RedisGuard.Op.SOCKET_CAP, () -> {
+            // Check and add are ONE script, so there is no gap between them: the hook runs where a two-step
+            // (ZCARD, then ZADD) version would pause between its check and its add (SocketCapAtomicityTest).
+            admissionHook.accept(userId);
+            return !Long.valueOf(0).equals(redis.execute(RedisScripts.SOCKET_ADD, List.of(PREFIX + userId),
+                    ttlMillis, String.valueOf(cap), member(sessionId)));
+        }, () -> true);
+    }
+
+    private volatile java.util.function.Consumer<UUID> admissionHook = id -> { };
+
+    /** Test seam (SocketCapAtomicityTest): runs on every admission at the check/add point; a no-op otherwise. */
+    public void setAdmissionHook(java.util.function.Consumer<UUID> hook) {
+        this.admissionHook = hook == null ? id -> { } : hook;
     }
 
     void remove(UUID userId, String sessionId) {
