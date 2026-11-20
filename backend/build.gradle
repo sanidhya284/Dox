@@ -69,6 +69,10 @@ dependencies {
     // Phase 5-lite: Prometheus scrape format for Micrometer (version managed by Spring Boot). ADR-0009.
     runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
 
+    // ── Phase 4 (ADR-0013): Redis for the cross-instance bus and shared limits (Lettuce). Only contacted when
+    //    realtime.bus=redis / ratelimit.store=redis; the default single instance never connects. ──
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+
     // ── Testing ────────────────────────────────────────────────────────────
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
 

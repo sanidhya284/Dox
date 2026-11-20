@@ -16,6 +16,91 @@ check() { python3 "$DIR/postdeploy_check.py" --env "$DIR/.env" --tag "$1"; }
 PREV="$(cat .deployed-tag 2>/dev/null || true)"
 echo "== deploying $TAG (previous good: ${PREV:-none})"
 
+# ── Two instances (ADR-0013; runbook "switching to two instances") ──────────────────────────────────────────
+# Only when compose.phase4.yml sits next to compose.yml. One instance at a time: Docker stops the old container
+# (SIGTERM: drain 6 s while Caddy takes it out of rotation, then graceful shutdown; stop_grace_period 35 s) and
+# the next one is touched only after this one is healthy, so the other instance serves throughout. A failed
+# instance is rolled back on its own. Without the file, the single-instance path below runs, unchanged.
+if [ -f "$DIR/compose.phase4.yml" ]; then
+  compose4() { docker compose -f "$DIR/compose.yml" -f "$DIR/compose.phase4.yml" "$@"; }
+
+  wait_healthy() {  # <service>: healthy within HEALTH_WAIT s, or fail early when it keeps restarting
+    local id st rc deadline=$((SECONDS + ${HEALTH_WAIT:-180}))
+    while :; do
+      id="$(compose4 ps -q "$1")"
+      st="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id" 2>/dev/null || echo missing)"
+      rc="$(docker inspect -f '{{.RestartCount}}' "$id" 2>/dev/null || echo 0)"
+      [ "$st" = "healthy" ] && return 0
+      if [ "$rc" -ge 2 ]; then echo "== $1 keeps restarting (restarts: $rc)"; return 1; fi
+      if [ "$SECONDS" -ge "$deadline" ]; then echo "== $1 not healthy after ${HEALTH_WAIT:-180}s ($st)"; return 1; fi
+      sleep 2
+    done
+  }
+
+  roll() {  # <service> <tag>
+    echo "== $1 -> $2"
+    IMAGE_TAG="$2" compose4 up -d --no-deps "$1" || true
+    wait_healthy "$1"
+  }
+
+  web_image() { IMAGE_TAG="$1" compose4 config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["web"]["image"])'; }
+
+  update_web() {  # <tag>: the UI from the image, the Caddyfile from ./caddy (mounted)
+    local wid ui_new ui_old sha
+    sha="$(sha256sum "$DIR/caddy/Caddyfile" | cut -d' ' -f1)"
+    wid="$(compose4 ps -q web)"
+    if [ -z "$wid" ]; then
+      IMAGE_TAG="$1" compose4 up -d --no-deps web
+    else
+      ui_new="$(docker run --rm --entrypoint sh "$(web_image "$1")" -c 'cd /srv && find . -type f -exec sha256sum {} + | sort | sha256sum')"
+      ui_old="$(docker exec "$wid" sh -c 'cd /srv && find . -type f -exec sha256sum {} + | sort | sha256sum')"
+      if [ "$ui_new" != "$ui_old" ]; then
+        echo "== the UI changed: recreating web (Caddy restarts: a blip of a few seconds; runbook)"
+        IMAGE_TAG="$1" compose4 up -d --no-deps web
+      elif [ "$sha" != "$(cat .caddyfile.sha 2>/dev/null || true)" ]; then
+        echo "== only the Caddyfile changed: reloading it in place (no restart)"
+        docker exec "$wid" caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+      else
+        echo "== web unchanged"
+      fi
+    fi
+    echo "$sha" > .caddyfile.sha
+  }
+
+  [ "${SKIP_PULL:-0}" = "1" ] || IMAGE_TAG="$TAG" compose4 pull --quiet
+  # Start db and redis only if they don't exist yet (a first deploy needs the database). --no-recreate: an app deploy
+  # never replaces Postgres, even when its compose config differs (compose.phase4.yml adds a memory limit; on a server
+  # switched from one instance, db was created without it). Applying that limit is a separate step (runbook 9b).
+  compose4 up -d --no-deps --no-recreate db redis
+  wait_healthy db
+  for svc in app app2; do
+    if ! roll "$svc" "$TAG"; then
+      compose4 logs --tail 60 "$svc" || true
+      if [ -z "$PREV" ]; then echo "== no previous good tag (first deploy)"; exit 1; fi
+      echo "== ROLLING BACK $svc to $PREV; the other instance keeps serving"
+      roll "$svc" "$PREV" || echo "== $svc is not healthy on $PREV either: investigate by hand"
+      [ "$svc" = "app2" ] && { roll app "$PREV" || echo "== app is not healthy on $PREV either"; }
+      exit 1
+    fi
+  done
+  update_web "$TAG"
+  if check "$TAG"; then
+    [ -n "$PREV" ] && [ "$PREV" != "$TAG" ] && echo "$PREV" > .deployed-tag.prev
+    echo "$TAG" > .deployed-tag
+    docker image prune -f > /dev/null
+    echo "== DEPLOYED $TAG (two instances)"
+    exit 0
+  fi
+  echo "== CHECK FAILED for $TAG"
+  if [ -z "$PREV" ]; then exit 1; fi
+  echo "== ROLLING BACK both instances to $PREV, one at a time"
+  roll app "$PREV" || echo "== app is not healthy on $PREV"
+  roll app2 "$PREV" || echo "== app2 is not healthy on $PREV"
+  update_web "$PREV"
+  if check "$PREV"; then echo "== ROLLED BACK: $PREV is serving again"; else echo "== ROLLBACK CHECK ALSO FAILED"; fi
+  exit 1
+fi
+
 export IMAGE_TAG="$TAG"
 # A failed pull changes nothing (the old containers keep running): fail without touching the stack.
 [ "${SKIP_PULL:-0}" = "1" ] || compose pull --quiet

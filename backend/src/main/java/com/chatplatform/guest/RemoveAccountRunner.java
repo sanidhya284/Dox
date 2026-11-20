@@ -33,16 +33,21 @@ public class RemoveAccountRunner implements ApplicationRunner {
     static final int REMOVED = 0;
     static final int USAGE = 2;
     static final int NOT_FOUND = 3;
+    static final java.time.Duration FLUSH_TIMEOUT = java.time.Duration.ofSeconds(3);
 
     private final AccountRemovalService removal;
     private final ConfigurableApplicationContext context;
     private final Environment environment;
 
+    private final com.chatplatform.realtime.bus.RealtimeBus bus;
+
     public RemoveAccountRunner(AccountRemovalService removal, ConfigurableApplicationContext context,
-                               Environment environment) {
+                               Environment environment,
+                               com.chatplatform.realtime.bus.RealtimeBus bus) {
         this.removal = removal;
         this.context = context;
         this.environment = environment;
+        this.bus = bus;
     }
 
     @Override
@@ -67,6 +72,16 @@ public class RemoveAccountRunner implements ApplicationRunner {
         }
         try {
             removal.removeAccount(names.getFirst());
+            // ADR-0013: with REALTIME_BUS=redis the removal's close_user is published; deliver it before exiting,
+            // so the live instances close the account's sockets now (without Redis: the 9a residual window).
+            if (bus.flush(FLUSH_TIMEOUT)) {
+                log.info("Removed {}; close_user delivered to the live instances (their sockets close now)",
+                        names.getFirst());
+            } else {
+                log.warn("Removed {}, but close_user was NOT delivered (REALTIME_BUS=local, or Redis down or "
+                        + "paused): the close is lost, so open sockets end within the 15-minute window (runbook 9a)",
+                        names.getFirst());
+            }
             return REMOVED;
         } catch (IllegalArgumentException e) {
             log.error("Not removed: {} ({})", names.getFirst(), e.getMessage());

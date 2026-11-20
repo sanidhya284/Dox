@@ -31,7 +31,9 @@ public class UserService {
     }
 
     /** The welcome bot (ADR-0012): created once, never able to log in (its hash is not a BCrypt hash). */
+    @org.springframework.transaction.annotation.Transactional
     public User ensureBot(String username, String displayName) {
+        userRepository.lockSeeding(); // two instances starting at once: the second waits, then finds it
         return userRepository.findByUsername(username).orElseGet(() -> userRepository.save(new User(
                 null, username, username + "@bot.invalid", NO_LOGIN_HASH, displayName, null, null, false, true,
                 null)));
@@ -103,6 +105,11 @@ public class UserService {
 
     public boolean isGuest(UUID id) {
         return userRepository.isGuest(id);
+    }
+
+    /** For seeding inside the caller's transaction (ADR-0013). */
+    public void lockSeeding() {
+        userRepository.lockSeeding();
     }
 
     public long countLiveGuests() {

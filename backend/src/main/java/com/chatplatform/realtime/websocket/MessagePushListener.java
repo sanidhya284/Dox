@@ -43,11 +43,13 @@ public class MessagePushListener {
     private final ThreadPoolExecutor pushExecutor;
     private final AtomicLong droppedPushes = new AtomicLong();
     private final ChatMetrics metrics;
+    private final com.chatplatform.realtime.bus.RealtimeBus bus;
 
     public MessagePushListener(ConnectionRegistry registry, ConversationService conversationService, FrameCodec codec,
                                @Qualifier(RealtimeSchedulingConfig.WS_PUSH_EXECUTOR) ThreadPoolExecutor pushExecutor,
-                               ChatMetrics metrics) {
+                               ChatMetrics metrics, com.chatplatform.realtime.bus.RealtimeBus bus) {
         this.metrics = metrics;
+        this.bus = bus;
         this.registry = registry;
         this.conversationService = conversationService;
         this.codec = codec;
@@ -89,6 +91,9 @@ public class MessagePushListener {
             List<UUID> recipients = conversationService.activeParticipantIds(event.conversationId());
             String frame = codec.cursor(event.conversationId(), event.userId(), event.lastDeliveredSeq(), event.lastReadSeq());
             registry.sendToUsers(recipients, new TextMessage(frame), event.originSessionId());
+            // ADR-0013: the same delivery on the other instances (at most once; enqueue only, never blocks here).
+            bus.publish(com.chatplatform.realtime.bus.Envelope.push(bus.instanceId(),
+                    com.chatplatform.realtime.bus.BusKind.cursor, recipients, frame, event.originSessionId()));
         } catch (RuntimeException e) {
             log.error("Cursor push for user {} failed", event.userId(), e);
         }
@@ -97,7 +102,11 @@ public class MessagePushListener {
     private void push(MessageResponse message, String originSessionId) {
         try {
             List<UUID> recipients = conversationService.activeParticipantIds(message.conversationId());
-            registry.sendToUsers(recipients, new TextMessage(codec.message(message)), originSessionId);
+            String frame = codec.message(message);
+            registry.sendToUsers(recipients, new TextMessage(frame), originSessionId);
+            // ADR-0013: the same delivery on the other instances (at most once; enqueue only, never blocks here).
+            bus.publish(com.chatplatform.realtime.bus.Envelope.push(bus.instanceId(),
+                    com.chatplatform.realtime.bus.BusKind.message, recipients, frame, originSessionId));
         } catch (RuntimeException e) {
             log.error("Push of message {} failed", message.id(), e);
         }

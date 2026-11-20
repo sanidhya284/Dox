@@ -32,11 +32,14 @@ public class SessionRevocationListener {
 
     private final ConnectionRegistry registry;
     private final ThreadPoolTaskScheduler executor;
+    private final com.chatplatform.realtime.bus.RealtimeBus bus;
 
     public SessionRevocationListener(
             ConnectionRegistry registry,
-            @Qualifier(RealtimeSchedulingConfig.WS_TASK_SCHEDULER) ThreadPoolTaskScheduler executor) {
+            @Qualifier(RealtimeSchedulingConfig.WS_TASK_SCHEDULER) ThreadPoolTaskScheduler executor,
+            com.chatplatform.realtime.bus.RealtimeBus bus) {
         this.registry = registry;
+        this.bus = bus;
         this.executor = executor;
     }
 
@@ -51,8 +54,13 @@ public class SessionRevocationListener {
                 ? WsCloseStatuses.GUEST_EXPIRED : WsCloseStatuses.CREDENTIALS_REVOKED);
     }
 
-    /** The single "close user" path: every socket of the user, off the calling thread. */
+    /**
+     * The single "close user" path: every socket of the user, off the calling thread, on this instance and (over the
+     * bus, ADR-0013) on every other instance.
+     */
     void closeUser(UUID userId, CloseStatus status) {
+        bus.publish(com.chatplatform.realtime.bus.Envelope.closeUser(bus.instanceId(), userId, status.getCode(),
+                status.getReason()));
         try {
             executor.execute(() -> registry.closeAll(userId, status));
         } catch (RuntimeException e) {

@@ -1,0 +1,79 @@
+# Phase 4: two app instances and Redis (ADR-0013). An OVERRIDE on top of compose.yml; nothing there changes.
+#   docker compose -f compose.yml -f compose.phase4.yml up -d
+# deploy.sh uses it automatically when this file sits next to compose.yml on the server (runbook: switching to
+# two instances, and back).
+#
+# Shutdown budget per app container: drain 6 s (readiness 503; Caddy marks it down within about 2-3 s) + graceful
+# shutdown up to 20 s (in-flight requests finish, sockets close with 1001) + margin = stop_grace_period 35 s.
+# Docker's default (10 s) would SIGKILL an instance in the middle of that.
+#
+# Memory (step 5, measured; BENCHMARKS 7e, ADR-0013 Decision 10). Limits on every container, 1504 MiB in total on a
+# 2 GiB t3.small; measured peak use about 0.8 GiB. Native Memory Tracking under load: metaspace + class data ~81 MiB,
+# code cache ~40-50, symbols ~25, direct buffers ~8-12, thread stacks ~1.4 (so -Xss is left alone), plus 50-90 MiB
+# that glibc holds outside the JVM's accounting. Heap used at most 76 MiB. The flags bound each area above what was
+# measured (they don't shrink it): heap 40% of 512m (~205 MiB), code cache 80m (measured 39-50), metaspace 128m
+# (67), direct memory 64m (12); SerialGC stated explicitly (the JVM already picks it below ~1.8 GiB of memory; this
+# keeps it if a limit is raised). Tomcat max threads 64 instead of 200: the busiest measured run (B 200/s plus 200
+# sockets on ONE instance) created 56-64 workers; database work is bounded by the 10-connection pool anyway, so more
+# threads would only queue on it, and the cap bounds how far a database stall can multiply threads. A runaway heap or
+# metaspace ends in a Java OutOfMemoryError (ExitOnOutOfMemoryError: the container restarts), not a kernel kill.
+# memswap_limit = mem_limit on the apps: Docker's default lets a container swap as much again as its limit (the
+# drill's over-limit JVM crawled for minutes instead of being killed). db keeps that default on purpose: Postgres
+# slowing down beats Postgres being killed.
+
+x-phase4-app-env: &phase4-app-env
+  JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=40 -XX:+ExitOnOutOfMemoryError -XX:+UseSerialGC -XX:ReservedCodeCacheSize=80m -XX:MaxMetaspaceSize=128m -XX:MaxDirectMemorySize=64m"
+  SERVER_TOMCAT_THREADS_MAX: "64"
+  REALTIME_BUS: redis
+  RATELIMIT_STORE: redis
+  REDIS_HOST: redis
+  APP_SHUTDOWN_DRAIN: PT6S
+
+services:
+  db:
+    # Measured at most 101 MiB under load (shared_buffers 128 MB, 20 pooled connections). Applies when db is created;
+    # deploy.sh never recreates db for it (--no-recreate), so on a switched server it's set live (runbook 9b).
+    mem_limit: 320m
+
+  app:
+    environment:
+      <<: *phase4-app-env
+    mem_limit: 512m
+    memswap_limit: 512m   # no swap: an app over its limit is killed fast (the other serves), not left thrashing
+    stop_grace_period: 35s
+
+  app2:
+    extends:
+      file: compose.yml
+      service: app
+    environment:
+      <<: *phase4-app-env
+    mem_limit: 512m
+    memswap_limit: 512m   # no swap: an app over its limit is killed fast (the other serves), not left thrashing
+    stop_grace_period: 35s
+    depends_on:
+      db:
+        condition: service_healthy
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    # No persistence: everything in it is rebuilt or expires (ADR-0013). noeviction: a full Redis fails loudly into
+    # the per-instance fallbacks instead of silently evicting live limit windows (Decision 7).
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb",
+              "--maxmemory-policy", "noeviction"]
+    mem_limit: 96m    # maxmemory 64 MB + overhead; measured at most 12 MiB
+    # No ports and no depends_on from the apps: Redis is never needed to start or to be healthy.
+
+  web:
+    mem_limit: 64m    # measured at most 22 MiB
+    environment:
+      APP_UPSTREAMS: "app:8080 app2:8080"
+      APP_LB: pair
+    # The Caddyfile comes from the server directory (deploy.sh reloads it in place when only it changed, without
+    # restarting Caddy); the UI still comes from the image.
+    volumes:
+      - ./caddy:/etc/caddy:ro
+    depends_on:
+      app2:
+        condition: service_healthy

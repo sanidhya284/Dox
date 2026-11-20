@@ -28,6 +28,7 @@ DEFAULT_ACK_TIMEOUT = "PT5S"        # ReferenceClient production default, for th
 PASSES, MAX_RETRIES = 3, 2
 AB_RATES = [25, 50, 100, 150, 200, 300]
 C_RATES = [2, 5, 10, 20]
+EXTRA_ARGS = ""                     # appended to every loadTest invocation (e.g. "base2=http://localhost:8081")
 BLOCKS = [  # name, scenario, Hikari pool, rates
     ("A-pool10", "A", 10, AB_RATES),
     ("B-pool10", "B", 10, AB_RATES),
@@ -125,7 +126,7 @@ def compact(raw):
 
 def run_one(scenario, rate, label, ack_timeout, counter):
     args = (f"scenario={scenario} rate={rate} warmup=PT{WARMUP}S window=PT{WINDOW}S drain=PT{DRAIN}S "
-            f"ackTimeout={ack_timeout} label={label} out={RAW}")
+            f"ackTimeout={ack_timeout} label={label} out={RAW} {EXTRA_ARGS}").strip()
     log_path = os.path.join(RAW, f"run-{label}-r{rate}.log")
     with open(log_path, "w") as log:
         code = subprocess.run(["./gradlew", "-q", "loadTest", f"-Pload.args={args}"], cwd=BACKEND,

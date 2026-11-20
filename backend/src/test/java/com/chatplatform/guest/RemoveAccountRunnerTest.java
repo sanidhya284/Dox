@@ -18,11 +18,12 @@ import static org.mockito.Mockito.verifyNoInteractions;
 class RemoveAccountRunnerTest {
 
     private final AccountRemovalService removal = mock(AccountRemovalService.class);
+    private final com.chatplatform.realtime.bus.RealtimeBus bus = mock(com.chatplatform.realtime.bus.RealtimeBus.class);
 
     private RemoveAccountRunner runner(String... profiles) {
         MockEnvironment env = new MockEnvironment();
         env.setActiveProfiles(profiles);
-        return new RemoveAccountRunner(removal, mock(ConfigurableApplicationContext.class), env);
+        return new RemoveAccountRunner(removal, mock(ConfigurableApplicationContext.class), env, bus);
     }
 
     @Test
@@ -33,6 +34,54 @@ class RemoveAccountRunnerTest {
 
         doThrow(new IllegalArgumentException("No live account")).when(removal).removeAccount("ghost");
         assertThat(r.exitCode(List.of("ghost"))).isEqualTo(3);
+    }
+
+    @Test
+    void theRemovalsCloseUserPublishIsFlushedBeforeTheProcessExits() {
+        // ADR-0013: with REALTIME_BUS=redis the admin process publishes close_user, so live sockets close at once.
+        runner("prod", "admin").exitCode(List.of("spammer"));
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(removal, bus);
+        order.verify(removal).removeAccount("spammer");
+        order.verify(bus).flush(org.mockito.ArgumentMatchers.any(java.time.Duration.class));
+    }
+
+    @Test
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void withRedisUnreachableTheRunnerExitsWithinSecondsAndSaysTheCloseIsLost(
+            org.springframework.boot.test.system.CapturedOutput output) throws Exception {
+        // Step 2, point 3: a real RedisBus pointed at a port nothing listens on (down; a pause is the same to the
+        // breaker: a timeout instead of a refusal, covered in RedisOutageTest).
+        org.springframework.boot.autoconfigure.data.redis.RedisProperties props =
+                new org.springframework.boot.autoconfigure.data.redis.RedisProperties();
+        props.setHost("localhost");
+        try (java.net.ServerSocket s = new java.net.ServerSocket(0)) {
+            props.setPort(s.getLocalPort());
+        }
+        props.setTimeout(java.time.Duration.ofMillis(200));
+        io.micrometer.core.instrument.simple.SimpleMeterRegistry meters =
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        com.chatplatform.realtime.bus.RedisBus realBus = new com.chatplatform.realtime.bus.RedisBus(props,
+                new com.fasterxml.jackson.databind.ObjectMapper(),
+                new com.chatplatform.shared.metrics.ChatMetrics(meters),
+                new com.chatplatform.shared.redis.RedisGuard(meters), 100);
+        org.mockito.Mockito.doAnswer(inv -> {
+            realBus.publish(com.chatplatform.realtime.bus.Envelope.closeUser(realBus.instanceId(),
+                    java.util.UUID.randomUUID(), 4002, "credentials revoked"));
+            return null;
+        }).when(removal).removeAccount("spammer");
+        MockEnvironment env = new MockEnvironment();
+        env.setActiveProfiles("prod", "admin");
+        RemoveAccountRunner r = new RemoveAccountRunner(removal, mock(ConfigurableApplicationContext.class), env,
+                realBus);
+        try {
+            long start = System.nanoTime();
+            assertThat(r.exitCode(List.of("spammer"))).isEqualTo(0); // the account IS removed
+            long ms = (System.nanoTime() - start) / 1_000_000;
+            assertThat(ms).as("exits within a few seconds").isLessThan(4_000);
+            assertThat(output).contains("close_user was NOT delivered").contains("15-minute window");
+        } finally {
+            realBus.destroy();
+        }
     }
 
     @Test

@@ -1,6 +1,7 @@
 # Caddy: TLS terminator, static UI server and reverse proxy (ADR-0011).
-# Exposes only: the UI, /api/*, /ws and /actuator/health. Every other /actuator path is 404.
+# Exposes only: the UI, /api/*, /ws and /actuator/health. Every other /actuator path and /internal/* is 404.
 # Environment (set by compose): DOMAIN, REDIRECT_HOSTS, APP_UPSTREAMS (default "app:8080"; Phase 4 adds a second instance),
+# APP_LB ("single" or "pair"), APP_HEALTH_URI (pair only; default /internal/ready),
 # HSTS_SNIPPET ("hsts" in production, "nohsts" for local https://localhost so the browser doesn't pin localhost).
 
 (hsts) {
@@ -22,6 +23,32 @@
 }
 
 (tls_default) {
+}
+
+# The proxy to the app (ADR-0011, ADR-0013 Decision 9). APP_LB picks the load-balancing snippet:
+# "single" (default) adds nothing, so one instance is proxied exactly as before Phase 4;
+# "pair" (compose.phase4.yml) balances two instances with active health checks on the internal /internal/ready
+# (503 from the moment an instance starts shutting down; the public /actuator/health stays 200 while it drains). Numbers: a check every
+# 1 s, 2 failures mark an instance down, so a draining instance (readiness 503 for 6 s) is out of rotation within
+# about 2-3 s; a request that can't reach one instance is retried on the other for up to 5 s.
+(app_proxy) {
+	reverse_proxy {$APP_UPSTREAMS:app:8080} {
+		import lb_{$APP_LB:single}
+	}
+}
+
+(lb_single) {
+}
+
+(lb_pair) {
+	lb_policy least_conn
+	lb_try_duration 5s
+	lb_try_interval 250ms
+	health_uri {$APP_HEALTH_URI:/internal/ready}
+	health_interval 1s
+	health_timeout 1s
+	health_fails 2
+	health_passes 1
 }
 
 # Old and alternative names (REDIRECT_HOSTS, space-separated; compose defaults it to "www.<DOMAIN>") get a
@@ -66,16 +93,22 @@
 	# Caddy replaces any client-sent X-Forwarded-For with the real peer address (it trusts no upstream proxy),
 	# so the app's per-IP rate limits can't be dodged by spoofing the header (smoke.sh checks this).
 	handle /actuator/health {
-		reverse_proxy {$APP_UPSTREAMS:app:8080}
+		import app_proxy
 	}
 	handle /actuator* {
 		respond 404
 	}
+	# Internal endpoints (the load balancer's /internal/ready, ADR-0013 Decision 8) are never public: an explicit
+	# 404, not the UI's index.html.
+	@internal path /internal /internal/*
+	handle @internal {
+		respond 404
+	}
 	handle /api/* {
-		reverse_proxy {$APP_UPSTREAMS:app:8080}
+		import app_proxy
 	}
 	handle /ws {
-		reverse_proxy {$APP_UPSTREAMS:app:8080}
+		import app_proxy
 	}
 	handle {
 		root * /srv

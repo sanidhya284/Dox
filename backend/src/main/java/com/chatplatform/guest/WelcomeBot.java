@@ -4,7 +4,7 @@ import com.chatplatform.auth.service.AuthService;
 import com.chatplatform.conversation.service.ConversationService;
 import com.chatplatform.message.event.MessageCreatedEvent;
 import com.chatplatform.message.service.MessageService;
-import com.chatplatform.shared.ratelimit.FixedWindowRateLimiter;
+import com.chatplatform.shared.ratelimit.RateLimits;
 import com.chatplatform.user.service.UserService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,13 +16,13 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 
-import java.time.Duration;
 import java.util.UUID;
 
 /**
  * The welcome bot (ADR-0012): a system account ("dox-bot", no usable password) that greets every guest.
  * Seeded idempotently at startup, whatever the profile. When someone writes in a conversation the bot is in,
- * the bot replies once with a fixed text (at most once per 10 s per conversation) and marks the message read.
+ * the bot replies once with a fixed text (at most once per 10 s per conversation, through the shared limiter, so
+ * also across instances: ADR-0013) and marks the message read.
  *
  * <p>It reacts AFTER_COMMIT (never to a send that rolled back), on its own single thread (never on the request
  * thread). It replies BEFORE it moves its read cursor, so a read cursor at seq N means message N is fully
@@ -46,13 +46,14 @@ public class WelcomeBot implements ApplicationRunner, DisposableBean {
     private final UserService userService;
     private final ConversationService conversationService;
     private final MessageService messageService;
-    private final FixedWindowRateLimiter replies =
-            new FixedWindowRateLimiter(1, Duration.ofSeconds(10), 10_000, System::currentTimeMillis);
+    private final RateLimits limits;
     private final ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
     private volatile UUID botId;
 
-    public WelcomeBot(UserService userService, ConversationService conversationService, MessageService messageService) {
+    public WelcomeBot(UserService userService, ConversationService conversationService, MessageService messageService,
+                      RateLimits limits) {
         this.userService = userService;
+        this.limits = limits;
         this.conversationService = conversationService;
         this.messageService = messageService;
         executor.setCorePoolSize(1);
@@ -97,7 +98,7 @@ public class WelcomeBot implements ApplicationRunner, DisposableBean {
             if (!conversationService.activeParticipantIds(conversationId).contains(bot)) {
                 return;
             }
-            if (replies.tryAcquire(conversationId.toString()).allowed()) {
+            if (limits.botReplyAllowed(conversationId)) {
                 messageService.sendAsSystem(conversationId, bot, REPLY);
             }
             conversationService.advanceCursor(conversationId, bot, "read", seq);

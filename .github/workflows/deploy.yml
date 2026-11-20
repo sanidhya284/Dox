@@ -162,7 +162,17 @@ jobs:
       - name: Copy compose file and server scripts
         run: |
           scp deploy/compose.yml deploy/prod/deploy.sh deploy/prod/backup.sh deploy/prod/restore.sh \
-              deploy/prod/postdeploy_check.py deploy-target:/opt/chat/
+              deploy/prod/postdeploy_check.py deploy/prod/switch_instances.sh deploy-target:/opt/chat/
+      # Phase 4 (ADR-0013), inert on a single instance: the two-instance override is copied as an EXAMPLE (its
+      # presence as compose.phase4.yml is what switches the server to two instances, which only the operator does;
+      # runbook) and replaces the active override only when two-instance mode is already on. The Caddyfile in
+      # caddy/ is read only by the two-instance web container (mounted); deploy.sh reloads it in place.
+      - name: Copy the two-instance files (unused unless switched on)
+        run: |
+          ssh deploy-target "mkdir -p /opt/chat/caddy"
+          scp deploy/compose.phase4.yml deploy-target:/opt/chat/compose.phase4.yml.example
+          scp deploy/caddy/Caddyfile deploy-target:/opt/chat/caddy/Caddyfile
+          ssh deploy-target "cd /opt/chat && if [ -f compose.phase4.yml ]; then cp compose.phase4.yml.example compose.phase4.yml; fi"
       - name: Deploy ${{ needs.gate.outputs.deploy_tag }} (health-gated, rolls back on failure${{ inputs.drill && '; DRILL - expected to fail' || '' }})
         run: ssh deploy-target "chmod +x /opt/chat/*.sh && /opt/chat/deploy.sh ${{ needs.gate.outputs.deploy_tag }}"
       - name: Install the daily backup cron (idempotent; deploy user's own crontab)

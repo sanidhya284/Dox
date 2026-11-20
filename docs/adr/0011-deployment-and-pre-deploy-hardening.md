@@ -26,7 +26,7 @@ Phase 6 puts the app on the public internet: a browser UI and one VPS that redep
   - **Cost:** an attacker can't lock a victim out from a *different* IP (the victim's IP has its own counters), but anyone sharing the victim's IP can.
   - **No per-username key:** a global per-username limit would let anyone lock any account out.
 - **Shared NAT:** users behind one NAT (an office, a campus, mobile carrier-grade NAT) share the per-IP limits. Five registrations per hour from one office is the visible cost. The invite code makes registration rare anyway.
-- **Per instance:** two instances double the effective limits. Phase 4 moves the counters to Redis.
+- **Per instance:** two instances double the effective limits. Phase 4 moves the counters to Redis. *Amended 2026-11-19 ([ADR-0013](0013-two-instances-and-redis.md) Decision 4):* with `ratelimit.store=redis` every limit is shared across instances; the in-memory window remains the default and the outage fallback.
 
 ## Decision 2: invite-only registration, checked first
 - **Modes:**

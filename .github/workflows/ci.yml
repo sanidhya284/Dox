@@ -211,6 +211,14 @@ jobs:
       - name: Recreate the app with production limits (no e2e override)
         working-directory: deploy
         run: docker compose -f compose.yml up -d --wait --wait-timeout 180 app
+      # ADR-0013: merging Phase 4 must not change the single instance. No Redis is configured here (the defaults are
+      # REALTIME_BUS=local, RATELIMIT_STORE=local), so health must be exactly UP and the real post-deploy check must
+      # pass. Before smoke.sh, whose last check spends this IP's login budget.
+      - name: Single instance without Redis is healthy and passes the post-deploy check
+        run: |
+          test "$(curl -sk https://localhost/actuator/health)" = '{"status":"UP"}'
+          echo "CHECK_INSECURE_TLS=1" >> deploy/.env
+          python3 deploy/prod/postdeploy_check.py --env deploy/.env --base https://localhost --tag ci
       - name: Smoke checks
         run: deploy/smoke.sh https://localhost chat-app:local
       - name: Stack logs on failure
@@ -226,3 +234,47 @@ jobs:
             frontend/test-results/
             frontend/playwright-report/
           retention-days: 7
+
+  two-instances:
+    name: Two instances (rolling deploy under the zero-failure probe, smoke)
+    needs: [build-and-test, frontend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      COMPOSE_PROJECT_NAME: chatcheck   # the check script's own project; smoke.sh reads the web logs from it
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build app image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          load: true
+          tags: chat-app:ci1
+          cache-from: type=gha,scope=app
+      - name: Build web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/web.Dockerfile
+          load: true
+          tags: chat-web:ci1
+          cache-from: type=gha,scope=web
+      # The same images under a second tag: the rolling deploy replaces each instance in turn (compose recreates
+      # a service when its image reference changes).
+      - name: Second tag
+        run: |
+          docker tag chat-app:ci1 chat-app:ci2
+          docker tag chat-web:ci1 chat-web:ci2
+      # First deploy straight onto two instances, then ci1 -> ci2 while the probe runs, then a deploy whose second
+      # instance fails (both must end on ci2, exit 1); 0 failed requests throughout (ADR-0013 Decision 9).
+      - name: Two-instance deploy check
+        run: deploy/drill/two_instance_check.sh ci1 ci2 "$RUNNER_TEMP/srv"
+      - name: Smoke checks (two instances)
+        run: deploy/smoke.sh https://localhost chat-app:ci2
+      - name: Probe report
+        if: always()
+        run: cat "$RUNNER_TEMP/srv/probe.json" >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Stack logs on failure
+        if: failure()
+        run: docker compose -f "$RUNNER_TEMP/srv/compose.yml" -f "$RUNNER_TEMP/srv/compose.phase4.yml" logs --tail 200

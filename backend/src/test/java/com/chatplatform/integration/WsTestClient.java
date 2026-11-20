@@ -19,6 +19,11 @@ final class WsTestClient extends TextWebSocketHandler {
 
     final LinkedBlockingQueue<String> frames = new LinkedBlockingQueue<>();
     final CompletableFuture<CloseStatus> closed = new CompletableFuture<>();
+    /** Every text frame with its arrival time (System.nanoTime), for latency measurements. */
+    final java.util.concurrent.ConcurrentLinkedQueue<Arrival> arrivals = new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    record Arrival(long nanos, String payload) {
+    }
     private volatile WebSocketSession session;
 
     static WsTestClient connect(int port, String ticket) throws Exception {
@@ -35,6 +40,7 @@ final class WsTestClient extends TextWebSocketHandler {
 
     @Override
     protected void handleTextMessage(WebSocketSession s, TextMessage message) {
+        arrivals.add(new Arrival(System.nanoTime(), message.getPayload()));
         frames.add(message.getPayload());
     }
 

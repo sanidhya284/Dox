@@ -47,6 +47,10 @@ import java.util.concurrent.locks.LockSupport;
  * groupSize=10 groups=10 fanUsers=20 socketsPerUser=10 lagMs=10 label=... out=../bench-results
  * base=http://localhost:8080 jdbc=jdbc:postgresql://localhost:55432/chat_bench.
  *
+ * <p>Two instances (Phase 4, ADR-0013): base2=http://localhost:8081 spreads the clients over both (sender and
+ * receiver i connect to instance i mod 2), samples both, sums their message counters (the stored rate) and takes
+ * the larger Hikari-pending count of the two for the classifier. Without base2, nothing changes.
+ *
  * <p>Exit codes: 0 a result was written (VALID, SATURATED or INVALID), 3 invariant violation (a bug),
  * 2 bad arguments or the app/DB not reachable.
  */
@@ -66,6 +70,8 @@ public final class LoadMain {
     private final Duration drain;
     private final String base;
     private final int port;
+    private final String base2;   // "" = one instance
+    private final int port2;
     private final String runTag = UUID.randomUUID().toString().substring(0, 8);
     private final String bodyPrefix;
 
@@ -92,6 +98,8 @@ public final class LoadMain {
         this.drain = Duration.parse(arg("drain", "PT15S"));
         this.base = arg("base", "http://localhost:8080");
         this.port = URI.create(base).getPort();
+        this.base2 = arg("base2", "");
+        this.port2 = base2.isBlank() ? port : URI.create(base2).getPort();
         this.bodyPrefix = "L|" + runTag + "|";
         if (!Set.of("A", "B", "C").contains(scenario)) {
             throw new IllegalArgumentException("scenario must be A, B or C");
@@ -135,10 +143,22 @@ public final class LoadMain {
         ServerSampler sampler = new ServerSampler(base, arg("metricsPassword", "bench-only-metrics-password-123"),
                 jdbc, dbUser, dbPassword);
         sampler.scrape(); // fail fast if the app is not up or the metrics password is wrong
+        ServerSampler sampler2 = base2.isBlank() ? null : new ServerSampler(base2,
+                arg("metricsPassword", "bench-only-metrics-password-123"), jdbc, dbUser, dbPassword);
+        List<ServerSampler> samplers = sampler2 == null ? List.of(sampler) : List.of(sampler, sampler2);
+        if (sampler2 != null) {
+            sampler2.scrape();
+        }
         Map<String, Object> environment = Environment.capture(sampler, jdbc, dbUser, dbPassword, port, mapper);
+        if (sampler2 != null) {
+            environment.put("instances", List.of(base, base2));
+        }
 
         // A previous (overloaded) run may still be draining its backlog: start only on a quiet server.
-        double quiescedAfter = awaitQuietServer(sampler, jdbc, dbUser, dbPassword);
+        double quiescedAfter = 0;
+        for (ServerSampler sm : samplers) {
+            quiescedAfter += awaitQuietServer(sm, jdbc, dbUser, dbPassword);
+        }
 
         // ── setup (outside the window): users (BCrypt), conversations, sockets ──
         long setupStart = System.nanoTime();
@@ -156,16 +176,22 @@ public final class LoadMain {
         windowStart = t0 + warmup.toNanos();
         windowNanos = window.toNanos();
         OpenLoopSchedule schedule = new OpenLoopSchedule(t0, rate);
-        sampler.start();
+        for (ServerSampler sm : samplers) {
+            sm.start();
+        }
         long samplerStartNanos = System.nanoTime();
         // Window-start snapshot on its own thread, so the pacer is never delayed by a scrape.
-        java.util.concurrent.CompletableFuture<PrometheusText> beforeF = new java.util.concurrent.CompletableFuture<>();
+        java.util.concurrent.CompletableFuture<List<PrometheusText>> beforeF = new java.util.concurrent.CompletableFuture<>();
         AtomicLong gcBeforeRef = new AtomicLong();
         Thread snap = new Thread(() -> {
             sleepUntil(windowStart);
             gcBeforeRef.set(gcMillis());
             try {
-                beforeF.complete(sampler.scrape());
+                List<PrometheusText> b = new ArrayList<>();
+                for (ServerSampler sm : samplers) {
+                    b.add(sm.scrape());
+                }
+                beforeF.complete(b);
             } catch (Exception e) {
                 beforeF.complete(null);
             }
@@ -186,8 +212,11 @@ public final class LoadMain {
         }
         sleepUntil(windowStart + windowNanos);
         long gcWindowMillis = gcMillis() - gcBeforeRef.get();
-        PrometheusText after = sampler.scrape();
-        PrometheusText before = beforeF.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        List<PrometheusText> after = new ArrayList<>();
+        for (ServerSampler sm : samplers) {
+            after.add(sm.scrape());
+        }
+        List<PrometheusText> before = beforeF.get(10, java.util.concurrent.TimeUnit.SECONDS);
 
         // ── drain: let acks and pushes for the window arrive ──
         long drainDeadline = System.nanoTime() + drain.toNanos();
@@ -196,9 +225,12 @@ public final class LoadMain {
         }
         Thread.sleep(1000);
         List<ServerSampler.Sample> all = sampler.stop();
+        List<ServerSampler.Sample> all2 = sampler2 == null ? List.of() : sampler2.stop();
         long winStartMs = (windowStart - samplerStartNanos) / 1_000_000;
         long winEndMs = winStartMs + window.toMillis();
         List<ServerSampler.Sample> inWindow = all.stream()
+                .filter(s -> s.tMillis() >= winStartMs && s.tMillis() <= winEndMs).toList();
+        List<ServerSampler.Sample> inWindow2 = all2.stream()
                 .filter(s -> s.tMillis() >= winStartMs && s.tMillis() <= winEndMs).toList();
         long outboxRemaining = senders.stream().mapToInt(ReferenceClient::outboxSize).sum();
         List<Integer> receiverCloses = receivers.stream().map(PushReceiver::closeCode).filter(c -> c >= 0).toList();
@@ -216,6 +248,13 @@ public final class LoadMain {
 
         // ── classify ──
         Map<String, Object> serverSummary = ServerSampler.summarize(inWindow);
+        Map<String, Object> serverSummary2 = sampler2 == null ? null : ServerSampler.summarize(inWindow2);
+        if (serverSummary2 != null) {
+            // The classifier (and Relabel) read server.hikariPendingSamples: the worse of the two instances.
+            serverSummary.put("hikariPendingSamplesInstance1", serverSummary.get("hikariPendingSamples"));
+            serverSummary.put("hikariPendingSamples", Math.max((Long) serverSummary.get("hikariPendingSamples"),
+                    (Long) serverSummary2.get("hikariPendingSamples")));
+        }
         double achieved = windowFirstSends.get() / (windowNanos / 1e9);
         Map<String, Object> deltas = counterDeltas(before, after);
         double storedRate = deltas.get("messagesCreated") instanceof Double created
@@ -257,10 +296,18 @@ public final class LoadMain {
         result.put("latencyMs", latency);
         result.put("harnessGcShare", round(gcWindowMillis / (double) window.toMillis()));
         result.put("server", serverSummary);
+        if (serverSummary2 != null) {
+            result.put("server2", serverSummary2);
+            result.put("samples2", inWindow2);
+        }
         result.put("serverCounterDeltas", deltas);
         result.put("receiverCloseCodes", receiverCloses);
         result.put("invariants", invariants);
-        result.put("samplerErrors", sampler.errors());
+        List<String> samplerErrors = new ArrayList<>(sampler.errors());
+        if (sampler2 != null) {
+            samplerErrors.addAll(sampler2.errors());
+        }
+        result.put("samplerErrors", samplerErrors);
         result.put("samples", inWindow);
         result.put("environment", environment);
 
@@ -278,6 +325,9 @@ public final class LoadMain {
                 recv.describe(99), lag.describe(99), serverSummary.get("hikariPendingSamples"), file.getPath()));
 
         sampler.close();
+        if (sampler2 != null) {
+            sampler2.close();
+        }
         return verdict.outcome() == RunClassifier.Outcome.INVARIANT_VIOLATION ? 3 : 0;
     }
 
@@ -349,7 +399,7 @@ public final class LoadMain {
                 for (User m : members.subList(1, members.size())) { // one login (the registration) per user
                     for (int s = 0; s < perUser; s++) {
                         PushReceiver pr = new PushReceiver(mapper, this::onReceived);
-                        pr.connect(port, ticket(rest, m));
+                        pr.connect(receivers.size() % 2 == 0 ? port : port2, ticket(rest, m));
                         receivers.add(pr);
                     }
                 }
@@ -365,8 +415,10 @@ public final class LoadMain {
         }
         long seed = 1;
         for (User su : senderUsers) {
-            ReferenceClient c = new ReferenceClient(su.username(), port, rest(), mapper, su.id(), su.username(),
-                    PASSWORD, seed++, clientConfig(), Set.of());
+            boolean second = !base2.isBlank() && senders.size() % 2 == 1;
+            ReferenceClient c = new ReferenceClient(su.username(), second ? port2 : port,
+                    second ? new TestRestTemplate(new RestTemplateBuilder().rootUri(base2)) : rest(), mapper, su.id(),
+                    su.username(), PASSWORD, seed++, clientConfig(), Set.of());
             c.setObserver(observer());
             senders.add(c.start());
         }
@@ -578,25 +630,33 @@ public final class LoadMain {
         return m;
     }
 
-    private static Map<String, Object> counterDeltas(PrometheusText before, PrometheusText after) {
+    /** Counter increases over the window, summed over every instance (one or two). */
+    static Map<String, Object> counterDeltas(List<PrometheusText> before, List<PrometheusText> after) {
         Map<String, Object> m = new LinkedHashMap<>();
-        if (before == null || after == null) {
+        if (before == null || after == null || before.stream().anyMatch(java.util.Objects::isNull)
+                || after.stream().anyMatch(java.util.Objects::isNull)
+                || before.size() != after.size()) {
             return m;
         }
-        m.put("messagesCreated", after.sum("chat_messages_sent_total", "outcome=\"created\"")
-                - before.sum("chat_messages_sent_total", "outcome=\"created\""));
-        m.put("messagesDuplicate", after.sum("chat_messages_sent_total", "outcome=\"duplicate\"")
-                - before.sum("chat_messages_sent_total", "outcome=\"duplicate\""));
-        m.put("messagesRejected", after.sum("chat_messages_sent_total", "outcome=\"rejected\"")
-                - before.sum("chat_messages_sent_total", "outcome=\"rejected\""));
-        m.put("pushDropped", after.sum("chat_push_dropped_total") - before.sum("chat_push_dropped_total"));
-        m.put("slowConsumerCloses4003", after.sum("chat_ws_closes_total", "code=\"4003\"")
-                - before.sum("chat_ws_closes_total", "code=\"4003\""));
-        double n = after.sum("chat_ws_send_ack_seconds_count") - before.sum("chat_ws_send_ack_seconds_count");
-        double sum = after.sum("chat_ws_send_ack_seconds_sum") - before.sum("chat_ws_send_ack_seconds_sum");
+        m.put("messagesCreated", delta(before, after, "chat_messages_sent_total", "outcome=\"created\""));
+        m.put("messagesDuplicate", delta(before, after, "chat_messages_sent_total", "outcome=\"duplicate\""));
+        m.put("messagesRejected", delta(before, after, "chat_messages_sent_total", "outcome=\"rejected\""));
+        m.put("pushDropped", delta(before, after, "chat_push_dropped_total"));
+        m.put("slowConsumerCloses4003", delta(before, after, "chat_ws_closes_total", "code=\"4003\""));
+        double n = delta(before, after, "chat_ws_send_ack_seconds_count");
+        double sum = delta(before, after, "chat_ws_send_ack_seconds_sum");
         m.put("serverAckMeanMs", n > 0 ? round(1000 * sum / n) : Double.NaN);
-        m.put("headsRequests", after.sum("chat_heads_requests_total") - before.sum("chat_heads_requests_total"));
+        m.put("headsRequests", delta(before, after, "chat_heads_requests_total"));
         return m;
+    }
+
+    private static double delta(List<PrometheusText> before, List<PrometheusText> after, String name,
+                                String... labels) {
+        double d = 0;
+        for (int i = 0; i < before.size(); i++) {
+            d += after.get(i).sum(name, labels) - before.get(i).sum(name, labels);
+        }
+        return d;
     }
 
     private static long gcMillis() {

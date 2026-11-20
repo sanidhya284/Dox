@@ -2,6 +2,8 @@ package com.chatplatform.shared.ratelimit;
 
 import com.chatplatform.shared.exception.RateLimitedException;
 import com.chatplatform.shared.ratelimit.FixedWindowRateLimiter.Decision;
+import com.chatplatform.shared.redis.RedisGuard;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -13,41 +15,58 @@ import java.util.UUID;
  * consumption). The client IP is {@code request.getRemoteAddr()}, which Tomcat's RemoteIpValve sets from
  * X-Forwarded-For only when the request comes from a trusted (private or loopback) proxy.
  *
- * <p>All limits are per instance and in memory (Phase 4 moves them to Redis). Many users behind one
- * NAT share an IP, so the per-IP limits apply to all of them together.
+ * <p>With {@code ratelimit.store=local} (default) every limit is per instance and in memory. With {@code redis},
+ * each limit is shared by all instances, with a per-instance fallback while Redis is unreachable (ADR-0013). Many
+ * users behind one NAT share an IP, so the per-IP limits apply to all of them together.
  */
 @Component
 @org.springframework.boot.context.properties.EnableConfigurationProperties(RateLimitProperties.class)
 public class RateLimits {
 
-    private final FixedWindowRateLimiter registerPerIp;
-    private final FixedWindowRateLimiter loginPerIp;
-    private final FixedWindowRateLimiter loginPerIpAndUser;
-    private final FixedWindowRateLimiter ticketPerUser;
-    private final FixedWindowRateLimiter failedHandshakesPerIp;
-    private final FixedWindowRateLimiter searchPerUser;
-    private final FixedWindowRateLimiter guestPerIp;
-    private final FixedWindowRateLimiter signupGlobal;
-    private final FixedWindowRateLimiter sendPerUser;
-    private final FixedWindowRateLimiter sendPerGuest;
-    private final FixedWindowRateLimiter dmPerUser;
-    private final FixedWindowRateLimiter dmPerGuest;
+    private final SharedLimiter registerPerIp;
+    private final SharedLimiter loginPerIp;
+    private final SharedLimiter loginPerIpAndUser;
+    private final SharedLimiter ticketPerUser;
+    private final SharedLimiter failedHandshakesPerIp;
+    private final SharedLimiter searchPerUser;
+    private final SharedLimiter guestPerIp;
+    private final SharedLimiter signupGlobal;
+    private final SharedLimiter sendPerUser;
+    private final SharedLimiter sendPerGuest;
+    private final SharedLimiter dmPerUser;
+    private final SharedLimiter dmPerGuest;
+    private final SharedLimiter botReplies;
+    private final RedisRateLimitStore store;
+    private final RedisGuard guard;
 
+    /** In memory only (unit tests that construct components by hand). */
     public RateLimits(RateLimitProperties p) {
+        this(p, (RedisRateLimitStore) null, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public RateLimits(RateLimitProperties p, ObjectProvider<RedisRateLimitStore> store, RedisGuard guard) {
+        this(p, store.getIfAvailable(), guard);
+    }
+
+    private RateLimits(RateLimitProperties p, RedisRateLimitStore store, RedisGuard guard) {
+        this.store = store;
+        this.guard = guard;
         Duration minute = Duration.ofMinutes(1);
         int maxKeys = p.maxKeys();
-        this.registerPerIp = limiter(p.registerPerIpPerHour(), Duration.ofHours(1), maxKeys);
-        this.loginPerIp = limiter(p.loginPerIpPerMinute(), minute, maxKeys);
-        this.loginPerIpAndUser = limiter(p.loginPerIpAndUserPerMinute(), minute, maxKeys);
-        this.ticketPerUser = limiter(p.ticketPerUserPerMinute(), minute, maxKeys);
-        this.failedHandshakesPerIp = limiter(p.failedHandshakesPerIpPerMinute(), minute, maxKeys);
-        this.searchPerUser = limiter(p.searchPerUserPerMinute(), minute, maxKeys);
-        this.guestPerIp = limiter(p.guestPerIpPerHour(), Duration.ofHours(1), maxKeys);
-        this.signupGlobal = limiter(p.signupGlobalPerHour(), Duration.ofHours(1), 1);
-        this.sendPerUser = limiter(p.sendPerUserPerMinute(), minute, maxKeys);
-        this.sendPerGuest = limiter(p.sendPerGuestPerMinute(), minute, maxKeys);
-        this.dmPerUser = limiter(p.dmPerUserPerHour(), Duration.ofHours(1), maxKeys);
-        this.dmPerGuest = limiter(p.dmPerGuestPerHour(), Duration.ofHours(1), maxKeys);
+        this.registerPerIp = limiter("register", p.registerPerIpPerHour(), Duration.ofHours(1), maxKeys);
+        this.loginPerIp = limiter("login", p.loginPerIpPerMinute(), minute, maxKeys);
+        this.loginPerIpAndUser = limiter("login_user", p.loginPerIpAndUserPerMinute(), minute, maxKeys);
+        this.ticketPerUser = limiter("ticket", p.ticketPerUserPerMinute(), minute, maxKeys);
+        this.failedHandshakesPerIp = limiter("handshake_fail", p.failedHandshakesPerIpPerMinute(), minute, maxKeys);
+        this.searchPerUser = limiter("search", p.searchPerUserPerMinute(), minute, maxKeys);
+        this.guestPerIp = limiter("guest", p.guestPerIpPerHour(), Duration.ofHours(1), maxKeys);
+        this.signupGlobal = limiter("signup", p.signupGlobalPerHour(), Duration.ofHours(1), 1);
+        this.sendPerUser = limiter("send", p.sendPerUserPerMinute(), minute, maxKeys);
+        this.sendPerGuest = limiter("send_guest", p.sendPerGuestPerMinute(), minute, maxKeys);
+        this.dmPerUser = limiter("dm", p.dmPerUserPerHour(), Duration.ofHours(1), maxKeys);
+        this.dmPerGuest = limiter("dm_guest", p.dmPerGuestPerHour(), Duration.ofHours(1), maxKeys);
+        this.botReplies = limiter("bot", 1, Duration.ofSeconds(10), maxKeys);
     }
 
     /** Effectively no limits (unit tests that construct components by hand). */
@@ -84,8 +103,16 @@ public class RateLimits {
         enforce(searchPerUser.tryAcquire(userId.toString()));
     }
 
-    private static FixedWindowRateLimiter limiter(int limit, Duration window, int maxKeys) {
-        return new FixedWindowRateLimiter(limit, window, maxKeys, System::currentTimeMillis);
+    private SharedLimiter limiter(String name, int limit, Duration window, int maxKeys) {
+        return new SharedLimiter(name, limit, window, maxKeys, store, guard);
+    }
+
+    /**
+     * The welcome bot replies at most once per 10 s per conversation (ADR-0012). Shared, so two messages committed
+     * on different instances still get one reply (ADR-0013); during a Redis outage it is per instance.
+     */
+    public boolean botReplyAllowed(UUID conversationId) {
+        return botReplies.tryAcquire(conversationId.toString()).allowed();
     }
 
     public void checkRegister(String ip) {

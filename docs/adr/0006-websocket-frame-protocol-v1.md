@@ -66,4 +66,4 @@ The handler is not transactional and calls the `@Transactional` `MessageService.
 - **No rate limit:** there is no per-socket send rate limit yet.
 - **Dropped pushes:** a full push queue drops pushes (logged and counted, `MessagePushListener.droppedPushes()`); clients recover from history.
 - **Needs a transaction:** `@TransactionalEventListener` ignores events published without an active transaction (no push would happen). `sendMessage` is `@Transactional`; the REST-send and WebSocket-send push tests would fail if it were not, but no test publishes outside a transaction on purpose.
-- **Single instance:** multi-instance push needs a Redis fan-out (Phase 4).
+- **Single instance:** multi-instance push needs a Redis fan-out (Phase 4). *Amended 2026-11-19:* done in [ADR-0013](0013-two-instances-and-redis.md) (bus, Decision 1; the socket cap across instances, Decision 6).
