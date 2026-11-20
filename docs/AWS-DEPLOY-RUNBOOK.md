@@ -408,64 +408,130 @@ No run started Tomcat, migrated, scheduled the cleanup, or seeded anything (chec
 
 ## 9b. Two instances (Phase 4, ADR-0013): switch on, deploy, switch back
 
-Not done on the live server yet; the decision is yours. Everything below runs as the `deploy` user in `/opt/chat`. Every deploy already copies the files it needs (`compose.phase4.yml.example`, `caddy/Caddyfile`, `switch_instances.sh`), and they do nothing until you switch.
+Not done on the live server yet; the decision is yours. Everything below runs as the `deploy` user in `/opt/chat`, and **none of it needs sudo** (`deploy` is in the docker group). Every deploy already copies the files it needs (`compose.phase4.yml.example`, `caddy/Caddyfile`, `switch_instances.sh`), and they do nothing until you switch.
 
-**Memory first** (ADR-0013 Decision 10, BENCHMARKS 7e). Two instances set limits on every container: app and app2 512m each (heap 40%, capped code cache, metaspace and direct memory, Tomcat 64 threads, no swap), db 320m, redis 96m, web 64m, 1504 MiB in total; measured on a laptop at about 0.8 GiB for all five under load. Before switching:
-```bash
-free -m                                      # note "available" and swap "used" now, with one instance
-docker stats --no-stream                     # today's app (768m limit) and db usage
-```
-Switch only if `available` is comfortably above what the second app adds (about 280 MiB idle, about 350 MiB under load measured) and swap use is small.
+**Memory budget** (ADR-0013 Decision 10, BENCHMARKS 7e). Two instances set limits on every container: app and app2 512m each (heap 40%, capped code cache, metaspace and direct memory, Tomcat 64 threads, no swap), db 320m, redis 96m, web 64m, 1504 MiB in total; measured on a laptop at about 0.8 GiB for all five under load, about 280 MiB per app idle and about 350 under load.
 
-**Switch on** (runs the currently deployed tag; nothing new is deployed):
+### 9b.1 Pre-checks (read-only)
 ```bash
+ssh -i ~/.ssh/chat-deploy deploy@dox-chat.in
 cd /opt/chat
-cp compose.phase4.yml.example compose.phase4.yml
-./switch_instances.sh two      # redis + app2 first, then web (Caddy restarts: ~1 s blip), then app
-docker compose -f compose.yml -f compose.phase4.yml ps     # app, app2 healthy; redis, web up
+free -m                                   # "available" and swap "used" with one instance
+docker stats --no-stream                  # app (768m limit) and db (~100 MiB expected)
+df -h /                                   # free disk (redis adds ~15 MB; fix anything under ~2 GB first)
+docker system df
+cat .deployed-tag                         # these three must show the same commit
+curl -s https://dox-chat.in/api/version
+docker compose ps --format '{{.Service}} {{.Image}} {{.Status}}'
+ls -l compose.phase4.yml.example caddy/Caddyfile switch_instances.sh   # all three present
+ls compose.phase4.yml                     # must NOT exist yet
+sha256sum compose.phase4.yml.example      # must equal, on the laptop: git fetch origin && git show origin/main:deploy/compose.phase4.yml | shasum -a 256
+grep -E 'SERVER_TOMCAT_THREADS_MAX|memswap_limit' compose.phase4.yml.example   # both present
+grep -c '^METRICS_PASSWORD=.\+' .env      # 1 = set (prints the count, never the value); needed for the socket check in 9b.4
 ```
+Switch only if `available` is comfortably above what the second app adds (about 280 MiB idle, about 350 under load) and swap use is small.
+
+**Record the baseline** (the thresholds in 9b.5 compare against it):
+```bash
+B=/opt/chat/baseline-two-instances-$(date -u +%Y%m%dT%H%MZ).txt
+{ date -u; echo "tag: $(cat .deployed-tag)"; echo; free -m; echo; df -h /; echo
+  docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}'; echo
+  docker inspect -f '{{.Name}} restarts={{.RestartCount}} started={{.State.StartedAt}}' $(docker compose ps -q); } > "$B"
+cat "$B"
+```
+
+### 9b.2 Switch on, in order (runs the deployed tag; nothing new is deployed)
+1. A fresh backup:
+   ```bash
+   ./backup.sh
+   ```
+2. Postgres's limit, live, **without restarting it**, and only if `docker stats` showed db well under 320 MiB. Neither the switch nor any deploy replaces the `db` container (`deploy.sh` starts it with `--no-recreate`; the two-instance check asserts it), so the override's 320m would otherwise apply only to a newly created `db`. A limit below what Postgres is using could get it killed, which is why this is a separate, checked step.
+   ```bash
+   docker update --memory 320m --memory-swap 640m $(docker compose ps -q db)     # swap kept: 320m + 320m
+   docker inspect -f 'mem={{.HostConfig.Memory}} restarts={{.RestartCount}} started={{.State.StartedAt}}' $(docker compose ps -q db)
+   ```
+   Expect `mem=335544320`, restarts and start time unchanged.
+3. Optional, so the switch downloads nothing:
+   ```bash
+   docker compose -f compose.yml -f compose.phase4.yml.example pull redis
+   ```
+4. Enable the override and switch:
+   ```bash
+   cp compose.phase4.yml.example compose.phase4.yml
+   ./switch_instances.sh two      # redis + app2 first, then web (Caddy restarts: ~1 s blip), then app with the new limits (app2 serves)
+   ```
+   It must end with `== TWO INSTANCES on <tag>` after its post-deploy check.
+5. ```bash
+   docker compose -f compose.yml -f compose.phase4.yml ps     # app, app2 healthy; redis, web up
+   ```
 From now on `deploy.sh` (and so every automatic deploy) sees `compose.phase4.yml` and deploys one instance at a time.
 
-**Postgres's limit, without restarting it.** Neither the switch nor any deploy replaces the `db` container (`deploy.sh` starts it with `--no-recreate`; the two-instance check asserts it), so the 320m in the override applies only to a newly created `db`. Apply it to the running one in place, only if it uses well under 320 MiB:
+### 9b.3 Watch for 30 minutes (then after the next few deploys)
 ```bash
-docker stats --no-stream $(docker compose ps -q db)                 # MEM USAGE well under 320MiB? then:
-docker update --memory 320m --memory-swap 640m $(docker compose ps -q db)   # live; swap kept (640m = 320m + 320m swap)
+cat /opt/chat/baseline-two-instances-*.txt     # the numbers below compare against this
+watch -n 30 'free -m; echo; docker stats --no-stream --format "table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}"'
 ```
-Setting a limit below what Postgres is using can get it killed, which is why this is a separate, checked step. Switching back to one instance leaves this limit in place (harmless at the measured ~100 MiB).
-
-**What a deploy then does:**
-- `app`, then `app2`: each is stopped with SIGTERM (6 s drain while Caddy takes it out of rotation, then up to 20 s graceful shutdown; `stop_grace_period` 35 s) and must be healthy before the next one is touched.
-- An instance that doesn't come up healthy is rolled back on its own; the other one never stopped serving.
-- `web` only if needed: a Caddyfile-only change is reloaded in place (no restart; open WebSockets reconnect once); a UI change recreates Caddy, about 1 s of refused requests.
-- Users: no downtime for app deploys, but each socket reconnects up to twice, and the UI catches up by itself.
-
-**Check after switching or any deploy:**
+In another terminal, every few minutes:
+```bash
+docker inspect -f '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKilled}}' $(docker compose -f compose.yml -f compose.phase4.yml ps -q)   # stays 0
+docker compose -f compose.yml -f compose.phase4.yml logs --since 30m web | grep -c '"status":50[0-9]'   # a few from the switch blip; must not keep growing
+docker compose -f compose.yml -f compose.phase4.yml logs --tail 200 web | grep -c "host is up"            # Caddy sees both
+```
+Logs, left running:
+```bash
+docker compose -f compose.yml -f compose.phase4.yml logs -f --since 5m app app2 | grep -iE 'error|exception|outofmemory|redis|breaker'
+```
+The post-deploy check right away and again at 30 minutes:
 ```bash
 python3 postdeploy_check.py --env .env --tag manual
-docker compose -f compose.yml -f compose.phase4.yml logs --tail 50 web | grep -c "host is up"   # health checks see both
+```
+`oom=` resets when Docker restarts a container; `restarts=` doesn't, so watch that.
+
+### 9b.4 The live site by hand
+1. **Guest demo:** "Try the demo" gives the welcome DM and the bot's reply.
+2. **A DM across instances:** two browsers (or a normal and a private window), two different users, a DM both ways. Each message appears live in the other window within about 1 s without a reload, and the read receipt updates. Which instance each socket is on (needs `METRICS_PASSWORD`; the password is read inside the container and never printed):
+   ```bash
+   for s in app app2; do echo "$s: $(docker compose -f compose.yml -f compose.phase4.yml exec -T $s bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080; printf "GET /actuator/prometheus HTTP/1.0\r\nAuthorization: Basic %s\r\n\r\n" "$(printf "metrics:%s" "$METRICS_PASSWORD" | base64 -w0)" >&3; grep "^chat_ws_sessions" <&3')"; done
+   ```
+   Each should show at least 1 with both browsers open. If both landed on one instance, close one browser and reopen it (Caddy sends a new socket to the instance with fewer connections).
+3. Reload one browser mid-conversation: nothing missing.
+
+### 9b.5 Roll back now if any of these
+- `app` or `app2` restarts more than once in the 30 minutes, or shows `oom=true`. (One crash is survivable; the other instance serves.)
+- `app` or `app2` above **450 MiB** in `docker stats` for 5 minutes (measured peak under heavy synthetic load: 350).
+- `db` above **280 MiB** (limit 320).
+- `free -m`: `available` below **200 MiB**, or swap `used` more than **200 MiB above the baseline file** and still rising.
+- The post-deploy check fails, or Caddy's 5xx count keeps growing after the switch.
+- The guest demo fails, or a DM needs a reload to appear.
+
+**Rollback to one instance:**
+```bash
+cd /opt/chat
+./switch_instances.sh one      # app back to single settings (app2 serves), then web (~1 s blip), then app2 + redis removed
+```
+It must end with `== ONE INSTANCE on <tag>` after its post-deploy check. It moves `compose.phase4.yml` to `compose.phase4.yml.off`, so the next deploy takes the single-instance path again; Redis holds nothing that needs keeping. Then:
+```bash
+docker compose ps
+python3 postdeploy_check.py --env .env --tag manual
+```
+The db limit stays (harmless at ~100 MiB). If the limit itself is the problem, raise it live instead of removing it (no restart):
+```bash
+docker update --memory 1g --memory-swap 2g $(docker compose ps -q db)
 ```
 
-**Watch after switching** (the first hour, then after the next few deploys):
-```bash
-free -m                                      # "available" should stay well above 0; swap "used" should not keep growing
-docker stats --no-stream                     # app/app2 measured ~280 MiB idle, ~350 under load (limit 512); db ~100 (limit 320)
-docker inspect -f '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKilled}}' $(docker compose -f compose.yml -f compose.phase4.yml ps -q)
-```
-Switch back if an app keeps restarting or shows `oom=true`, if an app sits near its 512 MiB, if db approaches 320 MiB, or if `available` falls low and swap keeps growing. An app dying alone is survivable (the other serves, Caddy retries), but a pattern of it means the limits are wrong for the server.
+### 9b.6 After switching
+**What a deploy does:**
+- `app`, then `app2`: each is stopped with SIGTERM (6 s drain while Caddy takes it out of rotation, then up to 20 s graceful shutdown; `stop_grace_period` 35 s) and must be healthy before the next one is touched.
+- An instance that doesn't come up healthy is rolled back on its own; the other one never stopped serving. If that is `app2`, `app` is rolled back too (no mixed versions).
+- `web` only if needed: a Caddyfile-only change is reloaded in place (no restart; open WebSockets reconnect once); a UI change recreates Caddy, about 1 s of refused requests.
+- Users: no downtime for app deploys, but each socket reconnects up to twice, and the UI catches up by itself.
 
 **If one app dies:** a crash (OOM, JVM fault) is restarted by Docker in about 1 s and is back in Caddy's rotation in about 9 s; meanwhile the other instance serves, and only sends in flight on the dead one fail (measured 1–2 per crash, none stored). `docker kill` or `docker stop` by hand is NOT restarted by the policy; bring it back with:
 ```bash
 docker compose -f compose.yml -f compose.phase4.yml up -d --no-deps app2      # or app; healthy in ~11 s
 ```
 
-**Switch back to one instance** (also the rollback if two instances misbehave):
-```bash
-cd /opt/chat
-./switch_instances.sh one      # app back to single settings (app2 serves), then web (~1 s blip), then app2 + redis removed
-```
-It moves `compose.phase4.yml` to `compose.phase4.yml.off`, so the next deploy takes the single-instance path again. Redis holds nothing that needs keeping.
-
-**Drill on a laptop first** (no server): `deploy/drill/two_instance_check.sh <tag1> <tag2>` with locally built `chat-app`/`chat-web` images; it must print `TWO-INSTANCE CHECK PASSED` (0 failed requests under the probe, including a deploy whose second instance fails and both are rolled back). It uses its own compose project (`chatcheck`), so a local `chat` stack is left alone; it needs ports 80/443 free.
+**Drill on a laptop first** (no server): `deploy/drill/two_instance_check.sh <tag1> <tag2>` with locally built `chat-app`/`chat-web` images; it must print `TWO-INSTANCE CHECK PASSED` (0 failed requests under the probe, including a deploy whose second instance fails and both are rolled back, and a `db` that is never replaced). It uses its own compose project (`chatcheck`), so a local `chat` stack is left alone; it needs ports 80/443 free.
 
 ## 10. Operating until April
 
