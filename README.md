@@ -1,6 +1,6 @@
 # Chat Platform
 
-A real-time chat backend built as a learning project for backend engineering: a small, correct, well-tested system whose design decisions are written down and defended in [ADRs](docs/adr/). PostgreSQL is the source of truth; WebSockets are only a delivery optimization. Anyone can sign up, or **try the demo** as a 24-hour guest with a bot to talk to.
+A real-time chat backend(https://dox-chat.in) built as a learning project for backend engineering: a small, correct, well-tested system whose design decisions are written down and defended in [ADRs](docs/adr/). PostgreSQL is the source of truth; WebSockets are only a delivery optimization. Anyone can sign up, or **try the demo** as a 24-hour guest with a bot to talk to.
 
 | Desktop (dark) | Desktop (light) |
 |---|---|
