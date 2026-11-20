@@ -408,7 +408,7 @@ No run started Tomcat, migrated, scheduled the cleanup, or seeded anything (chec
 
 ## 9b. Two instances (Phase 4, ADR-0013): switch on, deploy, switch back
 
-Not done on the live server yet; the decision is yours. Everything below runs as the `deploy` user in `/opt/chat`, and **none of it needs sudo** (`deploy` is in the docker group). Every deploy already copies the files it needs (`compose.phase4.yml.example`, `caddy/Caddyfile`, `switch_instances.sh`), and they do nothing until you switch.
+**Done on the live server on 2026-11-20** (two instances since then; record in HANDOFF); 9b.1–9b.4 stay as the procedure for a re-switch after a rollback. Everything below runs as the `deploy` user in `/opt/chat`, and **none of it needs sudo** (`deploy` is in the docker group). Every deploy already copies the files it needs (`compose.phase4.yml.example`, `caddy/Caddyfile`, `switch_instances.sh`), and they do nothing until you switch.
 
 **Memory budget** (ADR-0013 Decision 10, BENCHMARKS 7e). Two instances set limits on every container: app and app2 512m each (heap 40%, capped code cache, metaspace and direct memory, Tomcat 64 threads, no swap), db 320m, redis 96m, web 64m, 1504 MiB in total; measured on a laptop at about 0.8 GiB for all five under load, about 280 MiB per app idle and about 350 under load.
 
