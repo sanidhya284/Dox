@@ -66,6 +66,9 @@ services:
       APP_UPSTREAMS: ${APP_UPSTREAMS:-app:8080}
       HSTS_SNIPPET: ${HSTS_SNIPPET:-hsts}
       ACME_MODE: ${ACME_MODE:-default}
+      # The Poneglyph site on this server (ADR-0014): poneglyph.<DOMAIN> in production,
+      # poneglyph.localhost locally and in CI (Caddy's local CA; nothing is requested from ACME).
+      PONEGLYPH_HOST: ${PONEGLYPH_HOST:-poneglyph.${DOMAIN}}
     ports:
       - "${HTTP_PORT:-80}:80"
       - "${HTTPS_PORT:-443}:443"
@@ -76,7 +79,21 @@ services:
     depends_on:
       app:
         condition: service_healthy
+    networks:
+      default: {}
+      # Shared with Poneglyph's own Caddy on the same server (ADR-0014). A fixed address, so
+      # Poneglyph trusts X-Forwarded-For from exactly this container and nothing else.
+      edge:
+        ipv4_address: 10.89.0.10
     mem_limit: 128m
+
+networks:
+  # ADR-0014: created by this stack; the Poneglyph stack joins it as `external`.
+  edge:
+    name: edge
+    ipam:
+      config:
+        - subnet: 10.89.0.0/24
 
 volumes:
   db_data:

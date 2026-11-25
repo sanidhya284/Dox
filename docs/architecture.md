@@ -195,6 +195,7 @@ Runs before every request. Extracts `Authorization: Bearer <token>`, validates t
   - `db` (Postgres 16, a volume, no port);
   - `app` (the `prod` profile, `mem_limit` 768m, a bash `/dev/tcp` healthcheck, no port);
   - `web` (Caddy 2.8: automatic TLS, the built UI, and a reverse proxy for `/api/*`, `/ws` and `/actuator/health`; every other `/actuator*` is 404; publishes 80 and 443).
+  - `web` also terminates TLS for `poneglyph.dox-chat.in`, a separate project on the same server. It forwards that host only, without logging it, to Poneglyph's own Caddy over the shared `edge` network, where `web` sits at `10.89.0.10` ([ADR-0014](adr/0014-share-the-server-with-poneglyph.md)).
 - **Secrets** come from `deploy/.env` (git-ignored; templates `.env.example` and `.env.local.example`).
 - **Local build:** `compose.build.yml` builds both images from source.
 - **Phase 4:** an override (`compose.phase4.yml`) adds `app2` and `redis`, widens `APP_UPSTREAMS`, and sets memory limits on every container (app and app2 512m with the heap at 40%, SerialGC, capped code cache, metaspace and direct memory, Tomcat 64 threads, and no swap; db 320m, redis 96m, web 64m: 1504 MiB in total; ADR-0013 Decision 10). `deploy.sh` never recreates `db` (`--no-recreate`).

@@ -2,7 +2,8 @@
 # Exposes only: the UI, /api/*, /ws and /actuator/health. Every other /actuator path and /internal/* is 404.
 # Environment (set by compose): DOMAIN, REDIRECT_HOSTS, APP_UPSTREAMS (default "app:8080"; Phase 4 adds a second instance),
 # APP_LB ("single" or "pair"), APP_HEALTH_URI (pair only; default /internal/ready),
-# HSTS_SNIPPET ("hsts" in production, "nohsts" for local https://localhost so the browser doesn't pin localhost).
+# HSTS_SNIPPET ("hsts" in production, "nohsts" for local https://localhost so the browser doesn't pin localhost),
+# PONEGLYPH_HOST (ADR-0014; compose sets poneglyph.<DOMAIN>).
 
 (hsts) {
 	# No preload: this is a demo domain, and preload is hard to undo.
@@ -116,3 +117,14 @@
 		file_server
 	}
 }
+
+# Poneglyph, a separate project sharing this server (ADR-0014). This Caddy terminates TLS for it and forwards to
+# Poneglyph's own Caddy over the `edge` network, at that container's fixed address. Poneglyph's own rules
+# (body-size cap, rate limits) live in its repo. Deliberately NO `log` directive: Poneglyph keeps no client
+# addresses, so its requests must not appear in this access log either. X-Forwarded-For is set from the real
+# peer here (this Caddy trusts no upstream proxy), so it can't be spoofed.
+{$PONEGLYPH_HOST:poneglyph.localhost} {
+	import tls_{$ACME_MODE:default}
+	reverse_proxy 10.89.0.20:80
+}
+
