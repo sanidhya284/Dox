@@ -533,6 +533,53 @@ docker compose -f compose.yml -f compose.phase4.yml up -d --no-deps app2      # 
 
 **Drill on a laptop first** (no server): `deploy/drill/two_instance_check.sh <tag1> <tag2>` with locally built `chat-app`/`chat-web` images; it must print `TWO-INSTANCE CHECK PASSED` (0 failed requests under the probe, including a deploy whose second instance fails and both are rolled back, and a `db` that is never replaced). It uses its own compose project (`chatcheck`), so a local `chat` stack is left alone; it needs ports 80/443 free.
 
+## 9c. Sharing the server with Poneglyph (ADR-0014)
+
+Poneglyph (a separate repo) runs on this box behind Dox's Caddy at `poneglyph.dox-chat.in`. Dox's side is one network and one Caddyfile site block, both in this repo.
+
+### 9c.1 Before the PR is merged
+- **DNS:** the CNAME `poneglyph` → `dox-chat.in` must resolve, or Caddy keeps failing to get the certificate. Check: `dig +short poneglyph.dox-chat.in` shows `dox-chat.in.` and the same address as `dig +short dox-chat.in`.
+- **No clash with the subnet** (read-only): `docker network ls -q | xargs docker network inspect --format '{{.Name}} {{range .IPAM.Config}}{{.Subnet}}{{end}}'` must show nothing in `10.89.0.0/24`.
+- **Pick a quiet time.**
+
+### 9c.2 The rollout (once)
+1. **Merge the PR.** CI and the automatic deploy run as usual. The deploy copies the new `caddy/Caddyfile` and reloads it in place ("only the Caddyfile changed"); the new site isn't reachable yet, because `web` isn't on `edge`.
+2. **Back up the live config first:**
+   ```bash
+   cd /opt/chat && cp caddy/Caddyfile caddy/Caddyfile.bak-$(date +%F-%H%M) && cp compose.yml compose.yml.bak-$(date +%F-%H%M)
+   ```
+3. **Recreate `web` once,** so compose creates `edge` and attaches Caddy at `10.89.0.10`. This is the same ~1 s blip as a UI change (ADR-0013 Decision 9):
+   ```bash
+   cd /opt/chat && docker compose -f compose.yml -f compose.phase4.yml up -d --no-deps web
+   ```
+   (Single-instance mode: `docker compose -f compose.yml up -d --no-deps web`.)
+4. **Check right away:**
+   - `curl -s -o /dev/null -w "%{http_code}\n" https://dox-chat.in/` → 200;
+   - `python3 postdeploy_check.py --env .env --tag manual` passes;
+   - log in to Dox in a browser;
+   - `docker inspect $(docker compose ps -q web) --format '{{json .NetworkSettings.Networks}}'` shows `edge` with `10.89.0.10`.
+5. **Once Poneglyph is up:**
+   - `curl -s https://poneglyph.dox-chat.in/health` → `{"status":"ok",...}`;
+   - `docker logs $(docker compose ps -q web) --since 10m 2>&1 | grep -c poneglyph.dox-chat.in` → 0 (not in Dox's access log).
+
+### 9c.3 Roll back at once if Dox is affected
+- **Caddyfile only:**
+  ```bash
+  cp caddy/Caddyfile.bak-<stamp> caddy/Caddyfile && docker exec $(docker compose ps -q web) caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+  ```
+  Then revert the PR, so the next deploy doesn't copy the site block back.
+- **The `web` recreate:**
+  ```bash
+  cp compose.yml.bak-<stamp> compose.yml && docker compose -f compose.yml -f compose.phase4.yml up -d --no-deps web
+  ```
+  Same ~1 s blip; then revert the PR.
+
+### 9c.4 Emergency path only (not the normal rollout)
+- **If `web` can't be recreated** (say, mid-incident) and Poneglyph must be reachable:
+  - `docker network create --subnet 10.89.0.0/24 edge` (if it's missing), then `docker network connect --ip 10.89.0.10 edge $(docker compose ps -q web)`. No restart.
+  - A network made this way isn't labelled by compose, so before the next `web` recreate run `docker network disconnect edge <web>` and `docker network rm edge` (once Poneglyph's containers have left it) and let compose create it.
+- **Appending the site block by hand** to `/opt/chat/caddy/Caddyfile`, then `caddy validate` and `caddy reload`, also works, but the next deploy overwrites it with the repo's copy.
+
 ## 10. Operating until April
 
 - **Weekly (5 minutes):** Billing, Credits (burn rate vs the estimate); `df -h /`; `docker compose ps`; the monitor's history; `sudo apt list --upgradable`.
