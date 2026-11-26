@@ -32,7 +32,7 @@
 - **The free plan ends 7 Apr 2027,** when both projects stop unless the account is upgraded.
 
 ## Amendment (2026-11-26): the error log drops client addresses
-- **What happened:** Caddy's error log (`http.log.error`) records the whole request, client address included, whenever an upstream fails. The access log is a different logger, so leaving out `log` didn't cover this. Between the Caddyfile reload and Poneglyph's start, 57 such lines for `poneglyph.dox-chat.in` (mostly scanners) were written. That container log was truncated on the operator's decision.
+- **What happened:** Caddy's error log (`http.log.error`) records the whole request, client address included, whenever an upstream fails. The access log is a different logger, so leaving out `log` didn't cover this. Between the Caddyfile reload and Poneglyph's start, 57 such lines for `poneglyph.dox-chat.in` (mostly scanners) were written. The operator chose to truncate that container log, but by the time the filter was live, Docker's rotation (10 MB × 3 files) had already deleted those lines: the oldest remaining file starts 2026-11-26 08:54 UTC, and none of the remaining files has a Poneglyph line with address fields. Nothing was truncated.
 - **Decision:** a global `log default` filter deletes `request>remote_ip`, `request>client_ip`, `request>remote_port` and `request>headers>X-Forwarded-For` from every line the default logger writes. The message, host, method and URI stay.
 - **Cost:** Dox's own error lines lose client addresses too. Its access log keeps them, because it's a separate logger with its own filter. Tested on Caddy 2.8.4.
 
