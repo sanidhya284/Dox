@@ -1,6 +1,6 @@
 # ADR-0014 — Share the Server with Poneglyph (an `edge` network and one site block)
 
-**Status:** Accepted  **Date:** 2026-11-26  **Phase:** ops
+**Status:** Accepted  **Date:** 2026-11-26 (amended 2026-11-26: error-log filter)  **Phase:** ops
 
 ## Context
 - **What's being added:** Poneglyph is a separate project (its own repo, ADRs 0035 and 0036 there) that will run on this server. It's the only option under the AWS project's $35 monthly spend limit, which would otherwise pause both projects.
@@ -30,3 +30,9 @@
   - A broken Caddyfile change can affect both sites. Caddy refuses an invalid config on reload and keeps the old one, and runbook 9c has the rollback.
   - The fixed `10.89.0.0/24` must not clash with other networks on the box (checked 2026-11-26: only `172.17/16` and `172.18/16`).
 - **The free plan ends 7 Apr 2027,** when both projects stop unless the account is upgraded.
+
+## Amendment (2026-11-26): the error log drops client addresses
+- **What happened:** Caddy's error log (`http.log.error`) records the whole request, client address included, whenever an upstream fails. The access log is a different logger, so leaving out `log` didn't cover this. Between the Caddyfile reload and Poneglyph's start, 57 such lines for `poneglyph.dox-chat.in` (mostly scanners) were written. That container log was truncated on the operator's decision.
+- **Decision:** a global `log default` filter deletes `request>remote_ip`, `request>client_ip`, `request>remote_port` and `request>headers>X-Forwarded-For` from every line the default logger writes. The message, host, method and URI stay.
+- **Cost:** Dox's own error lines lose client addresses too. Its access log keeps them, because it's a separate logger with its own filter. Tested on Caddy 2.8.4.
+

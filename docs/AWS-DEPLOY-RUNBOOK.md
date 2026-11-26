@@ -562,6 +562,9 @@ Poneglyph (a separate repo) runs on this box behind Dox's Caddy at `poneglyph.do
    - `curl -s https://poneglyph.dox-chat.in/health` → `{"status":"ok",...}`;
    - `docker logs $(docker compose ps -q web) --since 10m 2>&1 | grep -c poneglyph.dox-chat.in` → 0 (not in Dox's access log).
 
+- **No client addresses in Caddy's error log either:** a global `log default` filter drops them (ADR-0014 amendment). Check: `docker logs $(docker compose ps -q web) --since 10m 2>&1 | grep http.log.error | grep -cE 'remote_ip|client_ip'` → 0.
+- **Done 2026-11-26:** merged as PR #19, deployed `sha-0f6c2a2`, `web` recreated (backups `*.bak-2026-11-25-2248`), and the post-deploy check passed.
+
 ### 9c.3 Roll back at once if Dox is affected
 - **Caddyfile only:**
   ```bash

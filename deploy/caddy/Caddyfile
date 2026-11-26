@@ -5,6 +5,25 @@
 # HSTS_SNIPPET ("hsts" in production, "nohsts" for local https://localhost so the browser doesn't pin localhost),
 # PONEGLYPH_HOST (ADR-0014; compose sets poneglyph.<DOMAIN>).
 
+# Global options (ADR-0014, amended 2026-11-26): Caddy's error log (logger http.log.error, e.g. a failed upstream)
+# records the whole request, client address included. Poneglyph, which shares this Caddy, keeps no client addresses,
+# so the default logger drops them; the message, host, method and URI stay. The access log below is a separate
+# logger with its own filter and is unchanged.
+{
+	log default {
+		output stderr
+		format filter {
+			wrap json
+			fields {
+				request>remote_ip delete
+				request>client_ip delete
+				request>remote_port delete
+				request>headers>X-Forwarded-For delete
+			}
+		}
+	}
+}
+
 (hsts) {
 	# No preload: this is a demo domain, and preload is hard to undo.
 	header Strict-Transport-Security "max-age=31536000"
